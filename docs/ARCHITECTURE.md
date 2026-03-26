@@ -1,36 +1,25 @@
 # Architecture
 
+## Purpose
+
+Proof-of-concept GPU-native TurboQuant core. Once validated, the algorithm will be re-implemented directly inside vLLM.
+
 ## Tech Stack
 
 | Layer | Choice |
 |-------|--------|
 | Language | Python 3.10+ |
 | ML framework | PyTorch >= 2.1.0 |
-| Serving | vLLM >= 0.6.0 |
-| Attention kernels | FlashInfer |
-| Performance extensions | Rust or C++ (if needed for custom kernels) |
 | Testing | pytest >= 7.0 |
 | Build | setuptools |
+| Device | CUDA only (DGX Spark, SM121) |
 
-## System Overview
+## Design Decisions
 
-```
-┌─────────────────────────────────────────────┐
-│              User / Application              │
-├──────────────┬──────────────┬───────────────┤
-│  vLLM        │  SGLang      │  HuggingFace  │
-│  Integration │  Integration │  (direct)     │
-├──────────────┴──────────────┴───────────────┤
-│           FlashInfer Kernels                 │
-│        (quantized KV attention)              │
-├─────────────────────────────────────────────┤
-│              TurboQuant Core                 │
-│  ┌──────────┐ ┌──────────┐ ┌─────────────┐ │
-│  │ Quantizer│ │ KV Cache │ │  Codebook   │ │
-│  │ MSE/Prod │ │          │ │  + Hadamard │ │
-│  └──────────┘ └──────────┘ └─────────────┘ │
-└─────────────────────────────────────────────┘
-```
+- **Classes** for all modules (Codebook, RandomHadamardRotation, QJL, TurboQuantMSE, TurboQuantProd)
+- **GPU-only** — all tensors initialized directly on CUDA, no CPU fallback
+- **Bit-packed storage** — 3-bit values packed into bytes for true 5x compression vs fp16
+- **Proof of concept** — will be re-implemented inside vLLM, so keep it simple
 
 ## Directory Structure
 
@@ -39,44 +28,30 @@ turboquant/
 ├── turboquant/               # Core library
 │   ├── __init__.py           # Public API exports
 │   ├── quantizer.py          # TurboQuantMSE, TurboQuantProd
-│   ├── kv_cache.py           # TurboQuantCache (HF-compatible)
-│   ├── hadamard.py           # Fast Walsh-Hadamard transform, random rotation
+│   ├── hadamard.py           # FWHT + RandomHadamardRotation
 │   ├── codebook.py           # Lloyd-Max codebook, scalar quantization
-│   ├── qjl.py                # Quantized Johnson-Lindenstrauss (1-bit)
-│   ├── vllm_integration.py   # vLLM attention patching
-│   └── sglang_integration.py # SGLang attention patching
+│   └── qjl.py                # QJL 1-bit transform
 ├── tests/
-│   ├── test_algorithm.py     # Algorithm correctness tests
-│   └── bench_kv_cache.py     # Performance benchmarks
-├── examples/
-│   ├── vllm_example.py
-│   └── sglang_example.py
+│   └── test_algorithm.py     # Algorithm correctness tests (GPU)
 ├── pyproject.toml
 └── docs/
 ```
 
 ## Module Boundaries
 
-### Import Rules
-
-- `turboquant.quantizer` imports from `codebook`, `hadamard`, `qjl` (core primitives)
-- `turboquant.kv_cache` imports from `quantizer` only
-- `turboquant.vllm_integration` imports from `quantizer` only
-- `turboquant.sglang_integration` imports from `quantizer` only
-- Integration modules (`vllm_integration`, `sglang_integration`) never import from each other
-- `codebook`, `hadamard`, `qjl` are leaf modules with no internal imports
-
 ### Dependency Direction
 
 ```
-integrations (vllm, sglang) → kv_cache → quantizer → {codebook, hadamard, qjl}
+quantizer → {codebook, hadamard, qjl}
 ```
 
-No reverse dependencies. No circular imports.
+- `codebook`, `hadamard`, `qjl` are leaf modules with no internal imports
+- No integration modules — vLLM integration lives in the vLLM repo
 
 ## Constraints
 
-- All quantization operations must work with `@torch.no_grad()` (inference only)
+- All quantization operations run under `@torch.no_grad()` (inference only)
 - Codebook centroids are precomputed constants, not learned parameters
+- All tensors created with `device="cuda"` directly
+- All tensor operations support arbitrary batch dimensions (`[..., d]` pattern)
 - Random seeds must be deterministic for reproducibility
-- All tensor operations must support arbitrary batch dimensions (`[..., d]` pattern)

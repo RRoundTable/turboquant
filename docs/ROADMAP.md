@@ -2,33 +2,28 @@
 
 ## Now
 
-### 1. GPU-native TurboQuant
+### 1. Eager-mode vLLM integration (without FlashInfer)
 
-Port TurboQuant core to GPU-only execution. Currently the algorithm works on GPU tensors but several components (codebook lookups, Hadamard sign generation, QJL projection matrix) are initialized on CPU and lazily moved. Make everything GPU-native:
+Implement TurboQuant core algorithm on GPU and integrate with vLLM in eager mode (no kernel fusion). This validates correctness and measures quality impact before optimizing performance.
 
-- [ ] Codebook centroids and boundaries initialized directly on GPU
-- [ ] Hadamard random signs generated on GPU
-- [ ] QJL projection matrix generated on GPU
-- [ ] Remove all CPU-to-GPU transfers in hot paths (quantize/dequantize)
-- [ ] Validate correctness with existing test suite on CUDA
-- [ ] Benchmark: quantize/dequantize latency on GPU vs current implementation
+- [ ] Implement GPU-native TurboQuant core (codebook, Hadamard, QJL — all on CUDA)
+- [ ] Research vLLM's KV cache architecture and integration points
+- [ ] Integrate as a vLLM KV cache quantization backend (eager mode, not monkey-patch)
+- [ ] Validate: end-to-end text generation with quantized KV cache
+- [ ] Measure: perplexity impact, memory savings, throughput overhead
 
-### 2. FlashInfer integration with kernel fusion
+### 2. FlashInfer kernel fusion
 
-Integrate TurboQuant into FlashInfer so quantization/dequantization happens inside the attention kernel, not as a separate Python step:
+Fuse TurboQuant quantization/dequantization into FlashInfer's attention kernels to eliminate overhead from eager mode.
 
-- [ ] Study FlashInfer's custom KV cache layout API and kernel extension points
-- [ ] Register TurboQuant as a custom KV cache data type/layout in FlashInfer
 - [ ] Fuse dequantization into FlashInfer's prefill and decode attention kernels
 - [ ] Fuse quantization into KV cache write path
-- [ ] Support FlashInfer's paged KV cache (page table management with quantized entries)
-- [ ] Integration test: end-to-end attention with quantized KV through FlashInfer
-- [ ] Throughput benchmark vs unquantized FlashInfer attention
+- [ ] Support FlashInfer's paged KV cache with quantized entries
+- [ ] Throughput benchmark: fused vs eager vs unquantized
 
 ## Next
 
-- [ ] vLLM production integration — wire FlashInfer+TurboQuant as a vLLM KV cache backend
-- [ ] Benchmark suite — perplexity, throughput, memory across model sizes
+- [ ] Benchmark suite — perplexity (WikiText-2, MMLU), throughput, memory across model sizes (7B, 13B, 70B)
 - [ ] Outlier calibration pipeline — automatic outlier channel detection from calibration data
 
 ## Later
