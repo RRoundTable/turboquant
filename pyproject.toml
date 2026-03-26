@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turboquant"
+version = "0.1.0"
+description = "TurboQuant: Near-optimal KV cache quantization for LLM inference"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = [
+    "torch>=2.1.0",
+]
+
+[project.optional-dependencies]
+vllm = ["vllm>=0.6.0"]
+sglang = ["sglang>=0.4.0"]
+dev = ["pytest>=7.0", "numpy"]
+
+[tool.setuptools.packages.find]
+include = ["turboquant*"]
