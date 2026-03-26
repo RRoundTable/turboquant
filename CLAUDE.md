@@ -2,12 +2,35 @@
 
 Near-optimal KV cache quantization for LLM inference (arXiv:2504.19874).
 
+## Environment
+
+- **GPU node**: `ssh -q mlsys-dgx-spark` (DGX Spark, NVIDIA GB10, aarch64)
+- **Workdir on node**: `~/workdir/turboquant`
+- **Python**: 3.12, managed with `uv`
+- **GPU only** — no CPU device support
+
+## Setup
+
+```bash
+# On DGX Spark node
+cd ~/workdir/turboquant
+uv venv
+uv pip install -e ".[dev]"
+uv pip install flashinfer vllm
+```
+
 ## Build & Test
 
 ```bash
-pip install -e ".[dev]"        # Install with dev dependencies
-pytest tests/ -v               # Run all tests
-python tests/test_algorithm.py # Run standalone validation
+uv run pytest tests/ -v               # Run all tests
+uv run python tests/test_algorithm.py  # Standalone validation
+```
+
+## Remote Workflow
+
+```bash
+# From local machine
+ssh -q mlsys-dgx-spark "cd ~/workdir/turboquant && uv run pytest tests/ -v"
 ```
 
 ## Architecture
@@ -30,3 +53,4 @@ Read `docs/ARCHITECTURE.md` for module boundaries and import rules.
 - All quantization ops run under `@torch.no_grad()`
 - Tensor operations must support arbitrary batch dimensions (`[..., d]` pattern)
 - Integration modules never import from each other
+- GPU only — never initialize tensors on CPU; use `device="cuda"` directly
