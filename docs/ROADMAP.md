@@ -60,9 +60,18 @@ Uses FlashInfer headers for math/types but does NOT modify FlashInfer source cod
 4. Replace `forward` with fused CUDA decode kernel (read packed bytes → dequant → attention)
 5. Benchmark actual VRAM reduction and TPOT improvement
 
+### Phase 5: Fused Kernel Integration — NOW
+
+Wire the standalone fused CUDA decode kernel into vLLM's attention backend. Store quantized bytes in paged cache, use fused kernel for decode attention.
+
+- [ ] Store quantized bytes (not fp16) in vLLM's paged KV cache
+- [ ] Call fused CUDA decode kernel from vLLM's `forward()` for decode
+- [ ] Prefill fallback: eager dequant → FlashAttention
+- [ ] Benchmark: TPOT with fused kernel vs eager simulation
+- [ ] Max batch size: measure VRAM savings from compressed cache
+
 ## Next
 
-- [ ] Wire fused CUDA kernel into vLLM (requires cache allocator change)
 - [ ] Outlier calibration pipeline — automatic outlier channel detection
 - [ ] Multi-model support — validate across Llama, Mistral, Qwen architectures
 
