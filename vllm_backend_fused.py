@@ -1,11 +1,12 @@
 # TurboQuant backend with fused CUDA decode kernel.
-# Stores quantized bytes in vLLM's paged KV cache.
-# Decode: fused CUDA kernel (dequant + attention in one kernel).
-# Prefill: eager dequant → FlashAttention fallback.
+# Maintains separate quantized KV tensors alongside vLLM's cache.
+# Write: quantize → store in own tensors + fp16 in vLLM cache (for prefill FA).
+# Decode: fused CUDA kernel reads from own quantized tensors.
 
 import math
 import os
 import functools
+from pathlib import Path
 from typing import ClassVar, Optional
 
 import torch
@@ -20,8 +21,7 @@ from vllm.v1.attention.backends.fa_utils import reshape_and_cache_flash
 
 TILE_DIMS = 64
 QUANT_BYTES_PER_CHUNK = 32  # 64 dims × 4 bits / 8
-NORM_BYTES_PER_CHUNK = 2    # FP16
-BYTES_PER_CHUNK = QUANT_BYTES_PER_CHUNK + NORM_BYTES_PER_CHUNK  # 34
+NORM_BYTES_PER_CHUNK = 2
 
 _C4 = [-2.7326368,-2.0693470,-1.6180345,-1.2562491,-0.9423684,-0.6567591,-0.3880823,-0.1284154,
         0.1284154, 0.3880823, 0.6567591, 0.9423684, 1.2562491, 1.6180345, 2.0693470, 2.7326368]
@@ -34,17 +34,7 @@ def _next_pow2(n):
 
 
 def _pack_4bit(idx):
-    """Pack pairs of 4-bit indices into bytes. idx: [..., N] → [..., N/2]"""
     return ((idx[..., 0::2] << 4) | (idx[..., 1::2] & 0x0F)).to(torch.uint8)
-
-
-def _unpack_4bit(packed, count):
-    """Unpack 4-bit nibble-packed bytes. packed: [..., N/2] → [..., N]"""
-    p = packed.to(torch.int32)
-    out = torch.zeros(*packed.shape[:-1], count, dtype=torch.int32, device=packed.device)
-    out[..., 0::2] = (p >> 4) & 0x0F
-    out[..., 1::2] = p & 0x0F
-    return out.to(torch.uint8)
 
 
 class TurboQuantBackend(FlashAttentionBackend):
@@ -72,19 +62,28 @@ class TurboQuantMetadataBuilder(FlashAttentionMetadataBuilder):
 class TurboQuantFusedImpl(FlashAttentionImpl):
     """TurboQuant with fused CUDA decode kernel.
 
-    Write path: L2 normalize → Hadamard rotate → 4-bit codebook quantize → pack → store in cache.
-    Decode path: fused CUDA kernel reads packed bytes, dequants inline, computes attention.
-    Prefill path: eager dequant → FlashAttention (fallback).
+    Maintains separate quantized KV tensors for the fused decode kernel.
+    Prefill uses FlashAttention (parent) with quantize-dequant simulation.
+    Decode uses the fused CUDA kernel via JIT.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._pd = _next_pow2(self.head_size)
         self._dc = self._pd // TILE_DIMS
-        self._total_quant_bytes = self._dc * BYTES_PER_CHUNK  # bytes per head per token
+        self._quant_bytes_per_head = self._dc * QUANT_BYTES_PER_CHUNK
         self._hi_b = None
         self._hi_c = None
         self._signs = None
+        self._fused_module = None
+
+        # Separate quantized storage (allocated on first use)
+        # Layout: [num_pages, page_size, num_kv_heads, quant_bytes_per_head] uint8
+        # Norms: [num_pages, page_size, num_kv_heads, dim_chunks] fp16
+        self._k_quant = None
+        self._v_quant = None
+        self._k_norms = None
+        self._v_norms = None
 
     def _ensure(self, dev):
         if self._hi_b is not None:
@@ -97,6 +96,21 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         signs = torch.sign(torch.randn(self._pd, generator=gen))
         signs[signs == 0] = 1.0
         self._signs = signs.to(dev)
+
+    def _ensure_quant_storage(self, kv_cache):
+        """Allocate separate quantized tensors matching cache dimensions."""
+        if self._k_quant is not None:
+            return
+        # kv_cache: [2, num_blocks, block_size, num_kv_heads, head_size]
+        num_blocks = kv_cache.shape[1]
+        block_size = kv_cache.shape[2]
+        dev = kv_cache.device
+        self._k_quant = torch.zeros(num_blocks, block_size, self.num_kv_heads,
+                                     self._quant_bytes_per_head, dtype=torch.uint8, device=dev)
+        self._v_quant = torch.zeros_like(self._k_quant)
+        self._k_norms = torch.zeros(num_blocks, block_size, self.num_kv_heads,
+                                     self._dc, dtype=torch.float16, device=dev)
+        self._v_norms = torch.zeros_like(self._k_norms)
 
     def _fwht(self, x):
         d = x.shape[-1]; x = x.clone(); shape = x.shape; h = 1
@@ -119,97 +133,81 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             x = x[..., :self.head_size]
         return x
 
-    @torch.no_grad()
-    def _quantize_to_bytes(self, x):
-        """Quantize x to packed bytes + norms.
-
-        Args:
-            x: [N, num_kv_heads, head_size] fp16
-        Returns:
-            packed: [N, num_kv_heads, total_quant_bytes] uint8
-        """
+    def _quantize_dequantize(self, x):
+        """Quantize-dequant simulation (for prefill write path + FA read)."""
         self._ensure(x.device)
         xf = x.float()
-        N = xf.shape[0]
-
         norms = xf.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         normalized = xf / norms
-        norms_fp16 = norms.squeeze(-1).to(torch.float16)  # [N, num_kv_heads]
+        norms = norms.to(torch.float16).float()
+        rotated = self._hadamard_rotate(normalized)
+        indices = torch.bucketize(rotated.contiguous(), self._hi_b)
+        quantized = self._hi_c[indices]
+        reconstructed = self._hadamard_inverse(quantized)
+        return (reconstructed * norms).to(x.dtype)
 
-        rotated = self._hadamard_rotate(normalized)  # [N, num_kv_heads, padded_dim]
+    @torch.no_grad()
+    def _quantize_and_store(self, key_or_value, slot_mapping, is_key=True):
+        """Quantize and store in separate quantized tensors."""
+        self._ensure(key_or_value.device)
+        num_tokens = slot_mapping.shape[0]
+        x = key_or_value[:num_tokens].float()
+        block_size = self._k_quant.shape[1]
 
-        result = torch.zeros(N, self.num_kv_heads, self._total_quant_bytes,
-                             dtype=torch.uint8, device=x.device)
+        norms = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)  # [N, heads, 1]
+        normalized = x / norms
+        norms_fp16 = norms.squeeze(-1).to(torch.float16)  # [N, heads]
+        rotated = self._hadamard_rotate(normalized)  # [N, heads, padded_dim]
+
+        quant_store = self._k_quant if is_key else self._v_quant
+        norm_store = self._k_norms if is_key else self._v_norms
 
         for chunk in range(self._dc):
             ds = chunk * TILE_DIMS
             cd = rotated[..., ds:ds + TILE_DIMS]
-
-            # 4-bit quantize all 64 dims
             indices = torch.bucketize(cd.contiguous(), self._hi_b).to(torch.uint8)
-            packed = _pack_4bit(indices)  # [N, num_kv_heads, 32]
+            packed = _pack_4bit(indices)  # [N, heads, 32]
 
-            # Norm as 2 bytes
-            norm_bytes = norms_fp16.view(N, self.num_kv_heads, 1).contiguous()
-            norm_bytes = norm_bytes.view(torch.uint8).view(N, self.num_kv_heads, 2)
+            byte_off = chunk * QUANT_BYTES_PER_CHUNK
+            for t in range(num_tokens):
+                slot = slot_mapping[t].item()
+                bid = slot // block_size
+                boff = slot % block_size
+                quant_store[bid, boff, :, byte_off:byte_off + QUANT_BYTES_PER_CHUNK] = packed[t]
+                norm_store[bid, boff, :, chunk] = norms_fp16[t]
 
-            byte_off = chunk * BYTES_PER_CHUNK
-            result[..., byte_off:byte_off + QUANT_BYTES_PER_CHUNK] = packed
-            result[..., byte_off + QUANT_BYTES_PER_CHUNK:byte_off + BYTES_PER_CHUNK] = norm_bytes
+    def _get_fused_module(self):
+        """JIT-compile the fused decode kernel."""
+        if self._fused_module is not None:
+            return self._fused_module
 
-        return result
+        csrc = Path(__file__).parent.parent / "turboquant" / "csrc"
+        if not csrc.exists():
+            csrc = Path(os.environ.get("TURBOQUANT_CSRC",
+                        os.path.expanduser("~/workdir/turboquant/csrc")))
 
-    @torch.no_grad()
-    def _dequantize_from_bytes(self, packed_bytes):
-        """Dequantize packed bytes back to fp16.
-
-        Args:
-            packed_bytes: [N, num_kv_heads, total_quant_bytes] uint8
-        Returns:
-            x: [N, num_kv_heads, head_size] fp16
-        """
-        self._ensure(packed_bytes.device)
-        N = packed_bytes.shape[0]
-
-        rotated = torch.zeros(N, self.num_kv_heads, self._pd,
-                              dtype=torch.float32, device=packed_bytes.device)
-        norms = None
-
-        for chunk in range(self._dc):
-            byte_off = chunk * BYTES_PER_CHUNK
-            quant = packed_bytes[..., byte_off:byte_off + QUANT_BYTES_PER_CHUNK]
-            norm_raw = packed_bytes[..., byte_off + QUANT_BYTES_PER_CHUNK:byte_off + BYTES_PER_CHUNK]
-
-            # Unpack norm
-            norm_fp16 = norm_raw.contiguous().view(torch.float16)  # [N, num_kv_heads, 1]
-            if norms is None:
-                norms = norm_fp16.float().squeeze(-1)  # [N, num_kv_heads]
-
-            # Unpack 4-bit indices
-            indices = _unpack_4bit(quant, TILE_DIMS)
-            ds = chunk * TILE_DIMS
-            rotated[..., ds:ds + TILE_DIMS] = self._hi_c[indices.long()]
-
-        reconstructed = self._hadamard_inverse(rotated)
-        return (reconstructed * norms.unsqueeze(-1)).to(torch.float16)
+        from turboquant.decode_kernel import _get_module
+        self._fused_module = _get_module()
+        return self._fused_module
 
     @torch.no_grad()
     def do_kv_cache_update(self, layer, key, value, kv_cache, slot_mapping):
-        """Quantize K/V and store packed bytes in cache."""
+        """Quantize-dequant for FA cache + store quantized bytes for fused kernel."""
+        self._ensure_quant_storage(kv_cache)
         num_tokens = slot_mapping.shape[0]
-        block_size = kv_cache.shape[2]
 
-        k_packed = self._quantize_to_bytes(key[:num_tokens])  # [N, num_kv_heads, total_bytes]
-        v_packed = self._quantize_to_bytes(value[:num_tokens])
+        # Store quantized bytes in separate tensors (for fused decode kernel)
+        self._quantize_and_store(key, slot_mapping, is_key=True)
+        self._quantize_and_store(value, slot_mapping, is_key=False)
 
-        # Scatter into paged cache
-        for t in range(num_tokens):
-            slot = slot_mapping[t].item()
-            bid = slot // block_size
-            boff = slot % block_size
-            n = self._total_quant_bytes
-            kv_cache[0, bid, boff, :, :n] = k_packed[t].to(torch.int8)
-            kv_cache[1, bid, boff, :, :n] = v_packed[t].to(torch.int8)
+        # Also store quantize-dequanted fp16 in vLLM cache (for prefill FA)
+        key_qd = self._quantize_dequantize(key[:num_tokens])
+        value_qd = self._quantize_dequantize(value[:num_tokens])
+        key_cache, value_cache = kv_cache.unbind(0)
+        reshape_and_cache_flash(
+            key_qd, value_qd, key_cache, value_cache, slot_mapping,
+            self.kv_cache_dtype, layer._k_scale, layer._v_scale,
+        )
 
     @torch.no_grad()
     def forward(self, layer, query, key, value, kv_cache, attn_metadata,
@@ -219,89 +217,73 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 output = torch.zeros_like(query)
             return output
 
-        num_actual = attn_metadata.num_actual_tokens
         max_query_len = attn_metadata.max_query_len
-        block_table = attn_metadata.block_table
-        seq_lens = attn_metadata.seq_lens
-        block_size = kv_cache.shape[2]
-
-        q = query[:num_actual]
-        if output is None:
-            output = torch.empty_like(q)
-
         is_decode = (max_query_len == 1)
 
         if not is_decode:
-            # Prefill: do_kv_cache_update already stored quantized bytes.
-            # For FlashAttention, we need fp16 in cache. Create a temp fp16 cache,
-            # write quantize-dequanted K/V there, run FA, then DON'T touch the real cache.
-            # Actually simpler: just use quantize-dequant simulation like before.
-            self._ensure(key.device)
-            n = num_actual
-            key_qd = self._dequantize_from_bytes(self._quantize_to_bytes(key[:n]))
-            value_qd = self._dequantize_from_bytes(self._quantize_to_bytes(value[:n]))
-
-            # Create temp fp16 cache for FA prefill
-            temp_cache = torch.zeros_like(kv_cache)
-            key_cache_tmp, value_cache_tmp = temp_cache.unbind(0)
-            reshape_and_cache_flash(
-                key_qd, value_qd, key_cache_tmp, value_cache_tmp,
-                attn_metadata.slot_mapping, self.kv_cache_dtype,
-                layer._k_scale, layer._v_scale,
-            )
-            # Run FA on temp cache (real cache keeps quantized bytes untouched)
-            return super().forward(layer, query, key_qd, value_qd, temp_cache,
+            # Prefill: use parent FlashAttention (reads fp16 from vLLM cache)
+            return super().forward(layer, query, key, value, kv_cache,
                                    attn_metadata, output, output_scale, **kwargs)
 
-        # === DECODE PATH: dequant from quantized cache ===
-        token_offset = 0
-        for req_idx in range(seq_lens.shape[0]):
-            seq_len = seq_lens[req_idx].item()
-            req_q = q[token_offset:token_offset + 1].float()
+        # === DECODE: fused CUDA kernel ===
+        num_actual = attn_metadata.num_actual_tokens
+        q = query[:num_actual]  # [N, num_qo_heads, head_dim]
+        if output is None:
+            output = torch.empty_like(q)
 
-            # Dequantize K/V from quantized cache for this request
-            k_deq = torch.zeros(seq_len, self.num_kv_heads, self.head_size,
-                                device=query.device, dtype=torch.float32)
-            v_deq = torch.zeros_like(k_deq)
+        block_table = attn_metadata.block_table  # [num_reqs, max_blocks]
+        seq_lens = attn_metadata.seq_lens         # [num_reqs]
+        block_size = self._k_quant.shape[1]
 
-            blocks = block_table[req_idx]
-            for kv_idx, deq in enumerate([k_deq, v_deq]):
-                for tok in range(seq_len):
-                    bid = blocks[tok // block_size].item()
-                    boff = tok % block_size
-                    packed = kv_cache[kv_idx, bid, boff].to(torch.uint8)  # [num_kv_heads, head_size]
+        try:
+            module = self._get_fused_module()
 
-                    for h in range(self.num_kv_heads):
-                        head_bytes = packed[h, :self._total_quant_bytes]
-                        rotated = torch.zeros(self._pd, device=query.device, dtype=torch.float32)
-                        norm_val = None
+            # Build paged KV arrays for the fused kernel
+            # The kernel expects: k_quant flat, v_quant flat, k_norms flat, v_norms flat
+            # + page indices, indptr, last_page_len
+            num_reqs = seq_lens.shape[0]
 
-                        for chunk in range(self._dc):
-                            bo = chunk * BYTES_PER_CHUNK
-                            quant = head_bytes[bo:bo + QUANT_BYTES_PER_CHUNK]
-                            norm_raw = head_bytes[bo + QUANT_BYTES_PER_CHUNK:bo + BYTES_PER_CHUNK]
-                            if norm_val is None:
-                                norm_val = norm_raw.contiguous().view(torch.float16).float().item()
+            # Build indptr and page indices from block_table
+            page_indices_list = []
+            indptr = [0]
+            last_page_lens = []
 
-                            indices = _unpack_4bit(quant, TILE_DIMS)
-                            ds = chunk * TILE_DIMS
-                            rotated[ds:ds + TILE_DIMS] = self._hi_c[indices.long()]
+            for req in range(num_reqs):
+                sl = seq_lens[req].item()
+                num_pages = (sl + block_size - 1) // block_size
+                for p in range(num_pages):
+                    page_indices_list.append(block_table[req, p].item())
+                indptr.append(indptr[-1] + num_pages)
+                last_page_lens.append(sl - (num_pages - 1) * block_size if num_pages > 0 else 0)
 
-                        inv = self._hadamard_inverse(rotated.unsqueeze(0)).squeeze(0)
-                        deq[tok, h] = inv * norm_val
+            kv_indices = torch.tensor(page_indices_list, dtype=torch.int32, device=q.device)
+            kv_indptr = torch.tensor(indptr, dtype=torch.int32, device=q.device)
+            kv_last_page_len = torch.tensor(last_page_lens, dtype=torch.int32, device=q.device)
 
-            # GQA expand
-            gqa = self.num_heads // self.num_kv_heads
-            if gqa > 1:
-                k_deq = k_deq.repeat_interleave(gqa, dim=1)
-                v_deq = v_deq.repeat_interleave(gqa, dim=1)
+            # Kernel expects HND layout: [num_pages, num_heads, page_size, ...]
+            # Our tensors are NHD: [num_pages, page_size, num_heads, ...]
+            # Transpose to HND before flattening
+            k_q_hnd = self._k_quant.permute(0, 2, 1, 3).contiguous()
+            v_q_hnd = self._v_quant.permute(0, 2, 1, 3).contiguous()
+            k_n_hnd = self._k_norms.permute(0, 2, 1, 3).contiguous()
+            v_n_hnd = self._v_norms.permute(0, 2, 1, 3).contiguous()
 
-            # SDPA
-            rq = req_q.transpose(0, 1).unsqueeze(0)
-            rk = k_deq.float().transpose(0, 1).unsqueeze(0)
-            rv = v_deq.float().transpose(0, 1).unsqueeze(0)
-            attn_out = F.scaled_dot_product_attention(rq, rk, rv, scale=self.scale)
-            output[token_offset:token_offset + 1] = attn_out.squeeze(0).transpose(0, 1).to(query.dtype)
-            token_offset += 1
+            result = module.decode_attention(
+                q, k_q_hnd.view(-1),
+                v_q_hnd.view(-1),
+                k_n_hnd.view(torch.uint8).view(-1).view(torch.float16),
+                v_n_hnd.view(torch.uint8).view(-1).view(torch.float16),
+                kv_indices, kv_indptr, kv_last_page_len,
+                self.num_heads, self.num_kv_heads, block_size,
+                self.head_size, self._pd, self.scale,
+            )
+            output[:num_actual] = result[:num_actual]
+
+        except Exception as e:
+            # Fallback to parent FlashAttention if fused kernel fails
+            import sys
+            print(f"[TQ] Fused kernel failed ({e}), falling back to FA", file=sys.stderr)
+            return super().forward(layer, query, key, value, kv_cache,
+                                   attn_metadata, output, output_scale, **kwargs)
 
         return output
