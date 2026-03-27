@@ -27,8 +27,8 @@ TEST(Tile, Constants) {
     EXPECT_EQ(TurboQuantTile::kLoDims, 32);
     EXPECT_EQ(TurboQuantTile::kHiBits, 4);
     EXPECT_EQ(TurboQuantTile::kLoBits, 3);
-    EXPECT_EQ(TurboQuantTile::kHiMagLevels, 8);
-    EXPECT_EQ(TurboQuantTile::kLoMagLevels, 4);
+    EXPECT_EQ(TurboQuantTile::kHiLevels, 16);
+    EXPECT_EQ(TurboQuantTile::kLoLevels, 8);
     EXPECT_EQ(TurboQuantTile::kHiBytesPerRow, 16);
     EXPECT_EQ(TurboQuantTile::kLoBytesPerRow, 12);
 }
