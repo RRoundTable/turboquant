@@ -127,21 +127,61 @@ This overhead is eliminated by the fused CUDA kernel (Phase 3), which also reduc
 
 ---
 
-## 5. Project Status
+## 5. Fused Kernel Integration (Phase 5)
+
+The fused CUDA decode kernel is now running inside vLLM for Qwen3-1.7B.
+
+### Bugs Fixed During Integration
+
+| Bug | Symptom | Fix |
+|-----|---------|-----|
+| `dequant_chunk_parallel` used 4/3-bit split | Dims 32-63 wrong (cos=0.57) | Updated to uniform 4-bit for all threads |
+| `kQuantBytesPerChunk = 28` | Chunk 1 read at wrong offset (cos=0.57→0.0) | Changed to 32 (64 dims × 4 bits / 8) |
+| `bdy = 1` hardcoded | GQA heads not processed (cos=0.09) | Dispatch on gqa_ratio: bdy ∈ {1,2,4,8} |
+| Bound check used `ty`-dependent index | Wrong tokens masked in GQA (cos=0.71) | Changed to `tile_start + j` |
+| HEAD_DIM=64 hardcoded in binding | Illegal memory access for 128-dim | Dispatch on head_dim: 64 or 128 |
+| `state_t` only holds 64 output dims | Dims 64-127 zeroed for head_dim=128 | Per-chunk `o_acc[MAX_CHUNKS][vec_size]` |
+| No Q rotation / output un-rotation | Kernel reads rotated KV, Q was unrotated | Rotate Q before kernel, un-rotate output |
+| NHD vs HND storage layout | Kernel read wrong pages | Store quantized tensors in HND layout |
+
+### Standalone Kernel Tests
+
+All 8 configurations pass at cosine=1.000000:
+
+| Config | Cosine |
+|--------|--------|
+| 1 head, 1 token | 1.000000 |
+| 1 head, 4 tokens | 1.000000 |
+| 1 head, 16 tokens | 1.000000 |
+| 2 heads, 1 token | 1.000000 |
+| 8 heads, 1 token | 1.000000 |
+| 8 heads, 16 tokens | 1.000000 |
+| 8kv 16qo, 1 token (GQA) | 1.000000 |
+| 8kv 16qo, 16 tokens (GQA) | 1.000000 |
+
+### vLLM E2E with Fused Kernel
+
+Qwen3-1.7B generates coherent text through the fused CUDA kernel path:
+- Decode: quantized bytes → CUDA kernel (dequant + attention) → rotate Q → un-rotate output
+- Prefill: quantize-dequant simulation → FlashAttention (fallback)
+- "100°C" correct, "Water boils at 100°C in the standard atmosphere" — coherent
+
+## 6. Project Status
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | C++ tile layout (4-bit, 544B, 16-byte aligned) | **Complete** |
+| 1 | C++ tile layout (uniform 4-bit, 544B) | **Complete** |
 | 2 | CUDA write kernel (bit-exact) | **Complete** |
 | 3a | Fused decode kernel (cosine=1.0) | **Complete** |
 | 3b | Parallel dequant (1.72× speedup, 0 spilling) | **Complete** |
 | 3c | Python JIT wrapper | **Complete** |
 | 4 | vLLM backend (FA subclass + quant sim) | **Complete** |
-| 4 | E2E quality (7/8 factual match) | **Complete** |
-| 4 | TTFT/TPOT benchmark (2× overhead) | **Complete** |
-| 4 | Wire fused CUDA kernel into vLLM | Not started |
-| 4 | Max batch size / memory savings | Not started |
-| 4 | Perplexity eval (WikiText, LongBench) | Not started |
+| 4 | E2E quality (7/8 factual match, eager sim) | **Complete** |
+| 4 | TTFT/TPOT benchmark (1.84× overhead, eager sim) | **Complete** |
+| 5 | **Fused CUDA kernel in vLLM decode path** | **Complete** |
+| 5 | TTFT/TPOT with fused kernel | Not measured |
+| 5 | Max batch size / memory savings | Not measured |
+| - | Perplexity eval (WikiText, LongBench) | Not started |
 
 ### Test Counts
 
@@ -149,35 +189,37 @@ This overhead is eliminated by the fused CUDA kernel (Phase 3), which also reduc
 |-------|-------|----------|
 | C++ CPU (tile, pack, roundtrip, fp16) | 37 | roundtable |
 | CUDA write kernel | 2 | DGX Spark GPU |
-| CUDA decode kernel | 1 | DGX Spark GPU |
-| CUDA decode benchmark | 5 configs | DGX Spark GPU |
+| CUDA fused decode kernel (standalone) | 8 configs | DGX Spark GPU/container |
+| CUDA decode benchmark | 5 seq_lens | DGX Spark GPU |
 | Python algorithm | 31 | DGX Spark GPU |
 | Python tile | 12 | DGX Spark GPU |
 | Python write kernel | 10 | DGX Spark GPU |
-| vLLM E2E quality | 8 prompts | DGX Spark container |
-| vLLM TTFT/TPOT | 4 prompts × 3 runs | DGX Spark container |
+| vLLM E2E quality (eager sim) | 8 prompts | DGX Spark container |
+| vLLM E2E quality (fused kernel) | 2 prompts | DGX Spark container |
+| vLLM TTFT/TPOT (eager sim) | 4 prompts × 3 runs | DGX Spark container |
 
 ### Key Findings
 
 1. **4-bit quantization with Hadamard rotation produces correct LLM output** at 4× compression.
-2. **3.5-bit mixed quantization fails** due to attention KL divergence explosion from high-norm KV vectors (KL jumps 74× despite only 0.006 cosine drop).
-3. **The fused CUDA decode kernel works standalone** (cosine=1.0, 0 register spilling) but is **NOT integrated into vLLM**.
-4. **Python simulation adds 1.84× overhead** in the vLLM backend.
-5. **FlashInfer source was NOT modified.** The fused kernel is standalone, using FlashInfer headers only.
+2. **3.5-bit mixed quantization fails** — attention KL divergence explodes 74× from high-norm KV vectors.
+3. **Fused CUDA decode kernel works in vLLM** — dequant + attention in one kernel, no FlashAttention fallback for decode.
+4. **Eager simulation overhead is 1.84×** — from Python Hadamard rotation + codebook quantize-dequant.
+5. **FlashInfer source was NOT modified.** Kernel is standalone, uses FlashInfer headers for math/types only.
+6. **Rotated attention is mathematically equivalent** — Q·K = (RQ)·(RK) for orthogonal R. Output needs one inverse rotation.
 
-### What IS and IS NOT kernel fusion
+### What IS and IS NOT done
 
 | Component | Status | Detail |
 |-----------|--------|--------|
-| Fused decode kernel (standalone) | **Built and tested** | `decode_turboquant.cuh` — dequant + attention in one CUDA kernel |
-| Fused kernel in vLLM | **NOT connected** | vLLM uses Python quantize-dequant + FlashAttention |
-| Compressed KV cache | **NOT implemented** | vLLM stores fp16 (same size as baseline) |
-| Memory savings | **NOT achieved** | Requires cache allocator change |
-| FlashInfer modification | **NOT done** | Kernel is standalone, includes FlashInfer headers |
+| Fused decode kernel (standalone) | **Done** | cosine=1.0 across 8 configs |
+| Fused kernel in vLLM decode path | **Done** | Qwen3-1.7B generates coherent text |
+| Prefill with fused kernel | **Not done** | Falls back to FA with quantize-dequant sim |
+| Compressed KV cache allocation | **Partial** | Quantized data in separate tensors, vLLM cache still fp16-sized |
+| Actual memory savings | **Not measured** | Separate quantized tensors add memory, don't save it yet |
+| TPOT improvement from fusion | **Not measured** | Need benchmark comparing fused vs eager |
+| FlashInfer modification | **Not done** | Kernel is standalone |
 
-The current vLLM integration is a **quality simulation** — it proves 4-bit quantization doesn't degrade output, but does not yet deliver memory savings or speed improvement. The 1.84× overhead comes from the Python Hadamard rotation + codebook quantize-dequant on every KV write.
-
-### Compression (Theoretical)
+### Compression
 
 | Format | Bits/value | Bytes per 16×64 tile | Compression vs fp16 |
 |--------|-----------|---------------------|-------------------|
@@ -185,14 +227,11 @@ The current vLLM integration is a **quality simulation** — it proves 4-bit qua
 | 4-bit uniform | 4.03 (with norm) | 544 | 3.76× |
 | 3.5-bit mixed | 3.53 (with norm) | 480 | 4.27× (quality too low) |
 
-Note: Compression is theoretical. The vLLM integration currently stores fp16 in cache (no actual compression).
-
 ### Repositories
 
-| Repo | Branch | Location | FlashInfer modified? |
-|------|--------|----------|---------------------|
-| turboquant | main | local `/Users/roundtable/workdir/turboquant` | N/A |
-| vLLM fork | turboquant/v0.18.0-docker | DGX Spark `~/workdir/vllm` | No |
-| FlashInfer | turboquant/decode-fusion (empty) | DGX Spark `~/workdir/flashinfer` | **No — not modified** |
-| Docker image | vllm-turboquant:v0.18.0 | DGX Spark | N/A |
-| Container (working) | vllm-omni:v1-pretrain-v018 | DGX Spark | N/A |
+| Repo | Branch | Location |
+|------|--------|----------|
+| turboquant | main | local `/Users/roundtable/workdir/turboquant` |
+| vLLM fork | turboquant/v0.18.0-docker | DGX Spark `~/workdir/vllm` |
+| FlashInfer | turboquant/decode-fusion (unused) | DGX Spark `~/workdir/flashinfer` |
+| Container | vllm-omni:v1-pretrain-v018 | DGX Spark |
