@@ -103,31 +103,37 @@ torch::Tensor turboquant_decode_attention(
     auto lse = torch::zeros({batch_size, num_qo_heads},
                             torch::dtype(torch::kFloat32).device(q.device()));
 
-    // Kernel launch parameters (HEAD_DIM=64 specialization)
-    constexpr uint32_t HEAD_DIM = 64;
+    // Common params
     constexpr uint32_t vec_size = 8;
-    constexpr uint32_t bdx = HEAD_DIM / vec_size;  // 8
     constexpr uint32_t bdy = 1;
     constexpr uint32_t bdz = 1;
     constexpr uint32_t tile_size_per_bdx = 4;
     constexpr uint32_t tile_tokens = tile_size_per_bdx * bdy * bdz;
-
     uint32_t smem_size = 2 * tile_tokens * 64 * sizeof(__half) + 2 * bdy * bdz * sizeof(float);
 
     dim3 grid(batch_size, num_kv_heads);
-    dim3 block(bdx, bdy, bdz);
 
-    auto kernel = BatchDecodeWithTurboQuantKVKernel<HEAD_DIM, vec_size, bdx, bdy, bdz, tile_size_per_bdx, int32_t>;
-    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+    const __half* q_ptr = reinterpret_cast<const __half*>(q.data_ptr<at::Half>());
+    __half* o_ptr = reinterpret_cast<__half*>(o.data_ptr<at::Half>());
+    float* lse_ptr = lse.data_ptr<float>();
+    auto stream = c10::cuda::getCurrentCUDAStream();
 
-    kernel<<<grid, block, smem_size, c10::cuda::getCurrentCUDAStream()>>>(
-        paged_kv,
-        reinterpret_cast<const __half*>(q.data_ptr<at::Half>()),
-        reinterpret_cast<__half*>(o.data_ptr<at::Half>()),
-        lse.data_ptr<float>(),
-        num_qo_heads,
-        sm_scale
-    );
+    // bdx always 8 (covers one 64-dim chunk). Kernel iterates over dim_chunks.
+    #define LAUNCH_KERNEL(HD) do { \
+        constexpr uint32_t bdx = 64 / vec_size; /* always 8 */ \
+        dim3 block(bdx, bdy, bdz); \
+        auto kernel = BatchDecodeWithTurboQuantKVKernel<HD, vec_size, bdx, bdy, bdz, tile_size_per_bdx, int32_t>; \
+        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size); \
+        kernel<<<grid, block, smem_size, stream>>>( \
+            paged_kv, q_ptr, o_ptr, lse_ptr, num_qo_heads, sm_scale); \
+    } while(0)
+
+    if (head_dim <= 64) {
+        LAUNCH_KERNEL(64);
+    } else {
+        LAUNCH_KERNEL(128);
+    }
+    #undef LAUNCH_KERNEL
 
     return o;
 }
