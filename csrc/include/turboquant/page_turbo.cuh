@@ -49,9 +49,9 @@ struct paged_kv_turbo_t {
     static constexpr uint32_t kTileDims = 64;
     static constexpr uint32_t kHiDims = 32;
     static constexpr uint32_t kLoDims = 32;
-    static constexpr uint32_t kHiBytesPerToken = 16;  // 32 dims × 4 bits / 8
-    static constexpr uint32_t kLoBytesPerToken = 12;  // 32 dims × 3 bits / 8
-    static constexpr uint32_t kQuantBytesPerChunk = kHiBytesPerToken + kLoBytesPerToken;  // 28
+    static constexpr uint32_t kHiBytesPerToken = 32;  // 64 dims × 4 bits / 8 (uniform 4-bit)
+    static constexpr uint32_t kLoBytesPerToken = 0;   // unused (uniform 4-bit, no 3-bit lo)
+    static constexpr uint32_t kQuantBytesPerChunk = 32;  // 64 dims × 4 bits / 8
 
     flashinfer::uint_fastdiv page_size;
     uint32_t num_heads;
@@ -177,41 +177,20 @@ struct paged_kv_turbo_t {
 
     // Parallel dequant: thread `tx` (0..7) writes its 8-dim slice.
     // bdx=8, vec_size=8: thread tx owns dims [tx*8 .. tx*8+7].
-    // tx 0-3: hi dims (4-bit nibble packed, 4 bytes per thread → 8 dims)
-    // tx 4-7: lo dims (3-bit GGML packed, 3 bytes per 8-dim group)
+    // Uniform 4-bit: all 64 dims are nibble-packed (32 bytes).
+    // Thread tx reads 4 packed bytes starting at quant_bytes[tx * 4].
     __device__ __forceinline__ static void dequant_chunk_parallel(
         const uint8_t* quant_bytes, float norm, float codebook_scale,
         __half* out, uint32_t tx
     ) {
         float s = codebook_scale * norm;
-        uint32_t dim_start = tx * 8;
-
-        if (tx < 4) {
-            // Hi dims: tx*8 .. tx*8+7, 4-bit nibble packed
-            // 8 dims = 4 packed bytes starting at quant_bytes[tx * 4]
-            const uint8_t* src = quant_bytes + tx * 4;
-            __half* dst = out + dim_start;
-            #pragma unroll
-            for (uint32_t i = 0; i < 4; i++) {
-                uint8_t packed = src[i];
-                dst[i * 2]     = __float2half(kCodebook4bit[(packed >> 4) & 0x0F] * s);
-                dst[i * 2 + 1] = __float2half(kCodebook4bit[packed & 0x0F] * s);
-            }
-        } else {
-            // Lo dims: (tx-4)*8 + 32 .. (tx-4)*8 + 39
-            // Each 8-dim group is 3 bytes in GGML layout
-            uint32_t group = tx - 4;
-            const uint8_t* p = quant_bytes + kHiBytesPerToken + group * 3;
-            __half* dst = out + kHiDims + group * 8;
-
-            dst[0] = __float2half(kCodebook3bit[p[0] & 7] * s);
-            dst[1] = __float2half(kCodebook3bit[(p[0] >> 3) & 7] * s);
-            dst[2] = __float2half(kCodebook3bit[((p[0] >> 6) & 3) | ((p[1] & 1) << 2)] * s);
-            dst[3] = __float2half(kCodebook3bit[(p[1] >> 1) & 7] * s);
-            dst[4] = __float2half(kCodebook3bit[(p[1] >> 4) & 7] * s);
-            dst[5] = __float2half(kCodebook3bit[((p[1] >> 7) & 1) | ((p[2] & 3) << 1)] * s);
-            dst[6] = __float2half(kCodebook3bit[(p[2] >> 2) & 7] * s);
-            dst[7] = __float2half(kCodebook3bit[(p[2] >> 5) & 7] * s);
+        const uint8_t* src = quant_bytes + tx * 4;
+        __half* dst = out + tx * 8;
+        #pragma unroll
+        for (uint32_t i = 0; i < 4; i++) {
+            uint8_t packed = src[i];
+            dst[i * 2]     = __float2half(kCodebook4bit[(packed >> 4) & 0x0F] * s);
+            dst[i * 2 + 1] = __float2half(kCodebook4bit[packed & 0x0F] * s);
         }
     }
 };
