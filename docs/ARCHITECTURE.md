@@ -2,16 +2,16 @@
 
 ## Purpose
 
-TurboQuant KV cache quantization for LLM inference. Four-phase development: memory layout (C++) → write kernel (CUDA) → read kernel (FlashInfer fusion) → vLLM integration.
+TurboQuant KV cache quantization for LLM inference. Four-phase development: memory layout (C++) → write kernel (CUDA) → standalone fused decode kernel (CUDA, uses FlashInfer headers) → vLLM integration (eager simulation, kernel fusion not yet connected).
 
 ## Tech Stack
 
 | Layer | Choice |
 |-------|--------|
 | Tile layout / packing | C++17 |
-| Kernels | CUDA / Triton |
+| Kernels | CUDA (standalone, uses FlashInfer headers for math/types) |
 | Algorithm PoC | Python 3.10+, PyTorch >= 2.1.0 |
-| Attention fusion | FlashInfer (JIT) |
+| Attention fusion | Standalone CUDA kernel (FlashInfer NOT modified) |
 | Serving integration | vLLM v0.18.0 |
 | Testing | GoogleTest (C++), pytest (Python) |
 | Build | CMake (C++), setuptools (Python) |

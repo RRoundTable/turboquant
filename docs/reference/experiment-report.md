@@ -160,24 +160,39 @@ This overhead is eliminated by the fused CUDA kernel (Phase 3), which also reduc
 ### Key Findings
 
 1. **4-bit quantization with Hadamard rotation produces correct LLM output** at 4× compression.
-2. **3.5-bit mixed quantization fails** due to attention KL divergence explosion from high-norm KV vectors.
-3. **The fused CUDA decode kernel works** (cosine=1.0, 0 register spilling) but is not yet wired into vLLM.
-4. **Python simulation adds 2× overhead** — eliminated by fused kernel integration.
+2. **3.5-bit mixed quantization fails** due to attention KL divergence explosion from high-norm KV vectors (KL jumps 74× despite only 0.006 cosine drop).
+3. **The fused CUDA decode kernel works standalone** (cosine=1.0, 0 register spilling) but is **NOT integrated into vLLM**.
+4. **Python simulation adds 1.84× overhead** in the vLLM backend.
+5. **FlashInfer source was NOT modified.** The fused kernel is standalone, using FlashInfer headers only.
 
-### Compression
+### What IS and IS NOT kernel fusion
+
+| Component | Status | Detail |
+|-----------|--------|--------|
+| Fused decode kernel (standalone) | **Built and tested** | `decode_turboquant.cuh` — dequant + attention in one CUDA kernel |
+| Fused kernel in vLLM | **NOT connected** | vLLM uses Python quantize-dequant + FlashAttention |
+| Compressed KV cache | **NOT implemented** | vLLM stores fp16 (same size as baseline) |
+| Memory savings | **NOT achieved** | Requires cache allocator change |
+| FlashInfer modification | **NOT done** | Kernel is standalone, includes FlashInfer headers |
+
+The current vLLM integration is a **quality simulation** — it proves 4-bit quantization doesn't degrade output, but does not yet deliver memory savings or speed improvement. The 1.84× overhead comes from the Python Hadamard rotation + codebook quantize-dequant on every KV write.
+
+### Compression (Theoretical)
 
 | Format | Bits/value | Bytes per 16×64 tile | Compression vs fp16 |
 |--------|-----------|---------------------|-------------------|
 | FP16 baseline | 16 | 2048 | 1.0× |
 | 4-bit uniform | 4.03 (with norm) | 544 | 3.76× |
-| 3.5-bit mixed | 3.53 (with norm) | 480 | 4.27× |
+| 3.5-bit mixed | 3.53 (with norm) | 480 | 4.27× (quality too low) |
+
+Note: Compression is theoretical. The vLLM integration currently stores fp16 in cache (no actual compression).
 
 ### Repositories
 
-| Repo | Branch | Location |
-|------|--------|----------|
-| turboquant | main | local `/Users/roundtable/workdir/turboquant` |
-| vLLM fork | turboquant/v0.18.0-docker | DGX Spark `~/workdir/vllm` |
-| FlashInfer fork | turboquant/decode-fusion | DGX Spark `~/workdir/flashinfer` |
-| Docker image | vllm-turboquant:v0.18.0 | DGX Spark |
-| Container (working) | vllm-omni:v1-pretrain-v018 | DGX Spark |
+| Repo | Branch | Location | FlashInfer modified? |
+|------|--------|----------|---------------------|
+| turboquant | main | local `/Users/roundtable/workdir/turboquant` | N/A |
+| vLLM fork | turboquant/v0.18.0-docker | DGX Spark `~/workdir/vllm` | No |
+| FlashInfer | turboquant/decode-fusion (empty) | DGX Spark `~/workdir/flashinfer` | **No — not modified** |
+| Docker image | vllm-turboquant:v0.18.0 | DGX Spark | N/A |
+| Container (working) | vllm-omni:v1-pretrain-v018 | DGX Spark | N/A |
