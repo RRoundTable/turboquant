@@ -13,15 +13,20 @@ CUDA_TEST_SRC := tests/test_write_kernel.cu
 OBJ      := $(SRC:.cpp=.o)
 TEST_OBJ := $(TEST_SRC:.cpp=.o)
 
-.PHONY: all test test-cuda clean
+.PHONY: all test test-cuda test-decode clean
 
 all: test
 
 build/turboquant_tests: $(OBJ) $(TEST_OBJ) | build
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
+FLASHINFER_INC := $(HOME)/workdir/flashinfer/include
+
 build/test_write_kernel: $(OBJ) $(CUDA_TEST_SRC) | build
 	$(NVCC) $(NVFLAGS) -o $@ $(OBJ) $(CUDA_TEST_SRC) -lcudart
+
+build/test_decode_turboquant: $(OBJ) tests/test_decode_turboquant.cu | build
+	$(NVCC) $(NVFLAGS) -I$(FLASHINFER_INC) -o $@ $(OBJ) tests/test_decode_turboquant.cu -lcudart
 
 build:
 	mkdir -p build
@@ -34,6 +39,9 @@ test: build/turboquant_tests
 
 test-cuda: build/test_write_kernel
 	./build/test_write_kernel
+
+test-decode: build/test_decode_turboquant
+	./build/test_decode_turboquant
 
 clean:
 	rm -f $(OBJ) $(TEST_OBJ) build/turboquant_tests build/test_write_kernel

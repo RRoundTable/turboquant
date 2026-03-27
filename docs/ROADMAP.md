@@ -25,15 +25,39 @@ Kernel that takes model KV output, compresses it, writes to VRAM. Tested indepen
 
 **Verification gate:** Zero bit-wise error vs PyTorch reference + write bandwidth profiling.
 
-### Phase 3: Read Kernel (Decode Dequant + Attention Fusion)
+### Phase 3: Read Kernel (Decode Dequant + Attention Fusion) — FlashInfer Fork
 
-FlashInfer integration. Load `TurboQuantTile` from VRAM, inline dequantize in SRAM/registers, compute attention. Tested with dummy data (not Phase 2 output) to isolate variables.
+Fork FlashInfer's decode kernel (`decode.cuh`) to fuse TurboQuant dequantization into the attention KV loading path. Replace `cp_async` raw byte copy with synchronous load → unpack → codebook lookup → norm rescale → write fp16 to shared memory. The existing `compute_qk` and `update_local_state` paths stay unchanged — they read fp16 from smem as before.
 
-- [ ] Implement dequant + attention kernel (or L2 ping-pong pipeline)
+Working tree: `~/workdir/flashinfer` on DGX Spark.
+
+#### 3a. Fork decode kernel (single-buffer, correctness first)
+
+- [x] Study FlashInfer decode kernel data flow (documented in `docs/reference/flashinfer-decode-injection.md`)
+- [ ] Create `paged_kv_turbo_t` struct: quantized KV data + norms + codebook + same page table
+- [ ] Create `decode_turboquant.cuh`: fork `BatchDecodeWithPagedKVCacheDevice`, replace `cp_async` KV loads with sync load-dequant-store to smem
+- [ ] Single-buffer pipeline: load+dequant → syncthreads → compute → syncthreads → repeat
 - [ ] Dummy injection test: pre-compressed tiles → attention output within atol=1e-3 of `scaled_dot_product_attention`
-- [ ] NCU profiling: zero register spilling (no local memory traffic). If spilling, reduce tile size or redistribute threads.
 
-**Verification gate:** Accuracy vs SDPA reference + zero register spill.
+**Verification gate:** Accuracy vs SDPA reference.
+
+#### 3b. NCU profiling and optimization (if needed)
+
+- [ ] NCU profiling: check register spilling, memory throughput, compute utilization
+- [ ] If register spilling: reduce tile size or redistribute threads
+- [ ] If memory-bound: add double-buffer pipeline (manual two-stage smem alternation)
+- [ ] If compute-bound on dequant: consider warp specialization (producer/consumer split)
+- [ ] Benchmark: fused dequant-attention vs separate dequant + standard attention
+
+**Verification gate:** Zero register spill + throughput within 2× of fp16 baseline.
+
+#### 3c. FlashInfer JIT integration
+
+- [ ] JIT module generator: `gen_batch_decode_turboquant_module()`
+- [ ] Python wrapper: `BatchDecodeWithTurboQuantKVCacheWrapper`
+- [ ] Register in FlashInfer's backend dispatch
+
+**Verification gate:** Python API works end-to-end with TurboQuant tiles.
 
 ### Phase 4: End-to-End System Integration
 
