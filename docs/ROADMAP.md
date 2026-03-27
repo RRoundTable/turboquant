@@ -72,6 +72,31 @@ Fused CUDA decode kernel running in vLLM. Qwen3-1.7B generates coherent text.
 - [ ] Benchmark: TPOT with fused kernel vs eager simulation
 - [ ] Max batch size: measure VRAM savings
 
+### Phase 6: Benchmarks and Comparison — NOW
+
+Comprehensive comparison between vanilla FlashInfer and TurboQuant across all key metrics.
+
+#### 6a. FlashInfer vs TurboQuant kernel benchmark
+- [ ] Standalone kernel benchmark: vanilla FlashInfer decode vs TurboQuant fused decode (same seq_lens, same hardware)
+- [ ] Measure: latency per token, memory bandwidth utilization, throughput (tokens/μs)
+- [ ] Sweep: seq_len = 64, 256, 1024, 4096
+
+#### 6b. vLLM serving comparison
+- [ ] vLLM + FlashInfer backend (baseline): TTFT, TPOT on Qwen3-1.7B
+- [ ] vLLM + TurboQuant fused backend: TTFT, TPOT on same model/prompts
+- [ ] Compare: output quality (factual accuracy, cosine similarity)
+- [ ] Compare: memory footprint (GPU memory used at same batch size)
+
+#### 6c. Compressed cache and memory savings
+- [ ] Eliminate duplicate storage (fp16 cache + quantized tensors → quantized only)
+- [ ] Measure: max batch size with compressed cache vs fp16 baseline
+- [ ] Calculate: actual VRAM reduction at various context lengths
+
+#### 6d. Perplexity evaluation
+- [ ] WikiText-2 perplexity: baseline vs TurboQuant 4-bit
+- [ ] LongBench accuracy
+- [ ] NIAH (Needle In A Haystack) at 100k+ tokens
+
 ## Next
 
 - [ ] Outlier calibration pipeline — automatic outlier channel detection
