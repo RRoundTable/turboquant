@@ -197,35 +197,31 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
     __half* v_smem = k_smem + tile_tokens * kTileDims;
     float* smem_md = reinterpret_cast<float*>(v_smem + tile_tokens * kTileDims);
 
-    // Load query into registers
-    vec_t<float, vec_size> q_vec;
-    q_vec.cast_load(q + batch_idx * num_qo_heads * HEAD_DIM + qo_head_idx * HEAD_DIM + tx * vec_size);
+    // Output accumulator: one vec_size float array per dim_chunk.
+    // Each thread (tx) handles dims [tx*8 .. tx*8+7] within each 64-dim chunk.
+    // For HEAD_DIM=128, dim_chunks=2: thread stores to chunk0 and chunk1 output positions.
+    // Max 4 chunks (HEAD_DIM=256). Statically allocate for up to 4.
+    constexpr uint32_t MAX_CHUNKS = HEAD_DIM / kTileDims;
+    float o_acc[MAX_CHUNKS][vec_size];
+    for (uint32_t c = 0; c < MAX_CHUNKS; c++)
+        for (uint32_t i = 0; i < vec_size; i++)
+            o_acc[c][i] = 0.f;
 
-    // Iterate over KV chunks
-    // For head_dim > 64, we process each dim_chunk and accumulate QK across chunks
-    // Actually — for the QK dot product, we need the FULL head_dim, not chunks.
-    // But KV is stored in 64-dim chunks. So we need to accumulate across chunks.
-    //
-    // Approach: for each KV token tile, iterate over dim_chunks:
-    //   partial_s[j] += dot(q_chunk, k_chunk)  for each chunk
-    // Then do softmax on the accumulated s[j], then accumulate V similarly.
+    float m_global = -flashinfer::math::inf;
+    float d_global = 0.f;
 
-    state_t<vec_size> st;
     IdType last_indptr = paged_kv.indptr[paged_kv.batch_size];
-
     uint32_t num_tile_iters = (kv_len + tile_tokens - 1) / tile_tokens;
     uint32_t packed_page_iter_base = paged_kv.indptr[batch_idx] * paged_kv.page_size;
 
     for (uint32_t tile_iter = 0; tile_iter < num_tile_iters; tile_iter++) {
         uint32_t tile_start = tile_iter * tile_tokens;
-        uint32_t tile_end = min(tile_start + tile_tokens, kv_len);
 
-        // Accumulate QK scores across dim chunks
+        // === QK scores: accumulate dot products across all dim chunks ===
         float s[bdy * tile_size_per_bdx];
         for (uint32_t j = 0; j < bdy * tile_size_per_bdx; j++) s[j] = 0.f;
 
         for (uint32_t chunk = 0; chunk < dim_chunks; chunk++) {
-            // Load + dequant K tile for this chunk
             load_dequant_kv_tile<tile_size_per_bdx, bdx, bdy, bdz>(
                 paged_kv, paged_kv.k_quant, paged_kv.k_norms, k_smem,
                 HEAD_DIM, kv_head_idx, chunk,
@@ -236,10 +232,8 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
             );
             block.sync();
 
-            // Partial QK: accumulate dot products for this chunk's dims
             uint32_t q_dim_start = chunk * kTileDims;
             vec_t<float, vec_size> q_chunk;
-            // Load the appropriate q slice
             if (q_dim_start + tx * vec_size < HEAD_DIM) {
                 q_chunk.cast_load(q + batch_idx * num_qo_heads * HEAD_DIM
                                     + qo_head_idx * HEAD_DIM
@@ -248,7 +242,6 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
                 for (uint32_t i = 0; i < vec_size; i++) q_chunk[i] = 0.f;
             }
 
-            // Dot product with K from smem
             #pragma unroll
             for (uint32_t j = 0; j < bdy * tile_size_per_bdx; ++j) {
                 vec_t<float, vec_size> k_vec;
@@ -258,7 +251,6 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
                 for (uint32_t i = 0; i < vec_size; ++i) {
                     partial += q_chunk[i] * k_vec[i];
                 }
-                // Reduce across bdx threads
                 #pragma unroll
                 for (uint32_t offset = bdx / 2; offset > 0; offset /= 2) {
                     partial += flashinfer::math::shfl_xor_sync(partial, offset);
@@ -268,35 +260,33 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
             block.sync();
         }
 
-        // Apply scale and softmax update
-        float m_prev = st.m;
+        // === Online softmax update ===
+        float m_prev = m_global;
         #pragma unroll
         for (uint32_t j = 0; j < bdy * tile_size_per_bdx; ++j) {
             s[j] *= sm_scale_log2;
             s[j] = (tile_start + (tz * bdy + ty) * tile_size_per_bdx + j < kv_len)
                     ? s[j] : -flashinfer::math::inf;
-            st.m = max(st.m, s[j]);
+            m_global = max(m_global, s[j]);
         }
 
-        float o_scale = flashinfer::math::ptx_exp2(m_prev - st.m);
-        st.d *= o_scale;
+        float o_scale = flashinfer::math::ptx_exp2(m_prev - m_global);
+        d_global *= o_scale;
         #pragma unroll
         for (uint32_t j = 0; j < bdy * tile_size_per_bdx; ++j) {
-            s[j] = flashinfer::math::ptx_exp2(s[j] - st.m);
-            st.d += s[j];
+            s[j] = flashinfer::math::ptx_exp2(s[j] - m_global);
+            d_global += s[j];
         }
-        #pragma unroll
-        for (uint32_t i = 0; i < vec_size; ++i) {
-            st.o[i] *= o_scale;
-        }
+        // Scale existing output accumulators
+        for (uint32_t c = 0; c < MAX_CHUNKS; c++)
+            for (uint32_t i = 0; i < vec_size; i++)
+                o_acc[c][i] *= o_scale;
 
-        // Accumulate V across dim chunks (only the dims corresponding to output)
-        // Output dims = the original head_dim, covered by tx * vec_size
+        // === V accumulation: each chunk writes to its own output slice ===
         for (uint32_t chunk = 0; chunk < dim_chunks; chunk++) {
             uint32_t v_dim_start = chunk * kTileDims;
             if (v_dim_start + tx * vec_size >= HEAD_DIM) continue;
 
-            // Load + dequant V tile for this chunk
             load_dequant_kv_tile<tile_size_per_bdx, bdx, bdy, bdz>(
                 paged_kv, paged_kv.v_quant, paged_kv.v_norms, v_smem,
                 HEAD_DIM, kv_head_idx, chunk,
@@ -307,50 +297,37 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
             );
             block.sync();
 
-            // Accumulate: o[i] += s[j] * v_vec[i]
             #pragma unroll
             for (uint32_t j = 0; j < bdy * tile_size_per_bdx; ++j) {
                 vec_t<float, vec_size> v_vec;
                 v_vec.cast_load(v_smem + (j * bdx + tx) * vec_size);
                 #pragma unroll
                 for (uint32_t i = 0; i < vec_size; ++i) {
-                    st.o[i] += s[j] * v_vec[i];
+                    o_acc[chunk][i] += s[j] * v_vec[i];
                 }
             }
             block.sync();
         }
     }
 
-    // Sync across warps (bdz > 1)
-    if constexpr (bdz > 1) {
-        constexpr uint32_t head_dim_val = bdx * vec_size;
-        st.o.store(reinterpret_cast<float*>(smem_raw) + (tz * bdy + ty) * head_dim_val + tx * vec_size);
-        smem_md[(tz * bdy + ty) * 2] = st.m;
-        smem_md[(tz * bdy + ty) * 2 + 1] = st.d;
-        block.sync();
-        st.init();
-        #pragma unroll
-        for (uint32_t j = 0; j < bdz; ++j) {
-            float mz = smem_md[(j * bdy + ty) * 2];
-            float dz = smem_md[(j * bdy + ty) * 2 + 1];
-            vec_t<float, vec_size> oz;
-            oz.load(reinterpret_cast<float*>(smem_raw) + (j * bdy + ty) * head_dim_val + tx * vec_size);
-            st.merge(oz, mz, dz);
-        }
-    }
+    // Final normalization and output write
+    float d_rcp = (m_global != -flashinfer::math::inf) ? flashinfer::math::ptx_rcp(d_global) : 0.f;
 
-    // Final output normalization
-    float d_rcp = (st.m != -flashinfer::math::inf) ? flashinfer::math::ptx_rcp(st.d) : 0.f;
-    #pragma unroll
-    for (uint32_t i = 0; i < vec_size; ++i) {
-        st.o[i] *= d_rcp;
-    }
-
-    // Write output
     if (tz == 0) {
-        st.o.cast_store(o + (batch_idx * num_qo_heads + qo_head_idx) * HEAD_DIM + tx * vec_size);
+        for (uint32_t chunk = 0; chunk < dim_chunks; chunk++) {
+            uint32_t o_dim_start = chunk * kTileDims;
+            if (o_dim_start + tx * vec_size >= HEAD_DIM) continue;
+
+            __half* o_ptr = o + (batch_idx * num_qo_heads + qo_head_idx) * HEAD_DIM
+                              + o_dim_start + tx * vec_size;
+            #pragma unroll
+            for (uint32_t i = 0; i < vec_size; ++i) {
+                o_ptr[i] = __float2half(o_acc[chunk][i] * d_rcp);
+            }
+        }
         if (lse != nullptr) {
-            lse[batch_idx * num_qo_heads + qo_head_idx] = st.get_lse();
+            lse[batch_idx * num_qo_heads + qo_head_idx] =
+                m_global + __logf(d_global);
         }
     }
 }

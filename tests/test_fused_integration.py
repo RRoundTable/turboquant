@@ -169,8 +169,17 @@ def test_layout_match():
         kv_indptr = torch.tensor([0, num_pages], dtype=torch.int32, device=DEVICE)
         kv_last_page_len = torch.tensor([seq_len], dtype=torch.int32, device=DEVICE)
 
+        # The kernel computes attention on ROTATED K/V. So we must:
+        # 1. Rotate Q before passing to kernel
+        # 2. Inverse-rotate the kernel output
+        Q_float = Q.float()
+        # Q is [1, num_qo_heads, head_dim] — rotate each head
+        Q_rotated = hadamard_rotate(Q_float)  # [1, num_qo_heads, padded_dim]
+        # Truncate back to head_dim for the kernel (it uses HEAD_DIM for output)
+        Q_rotated_hd = Q_rotated[..., :head_dim].to(torch.float16)
+
         fused_output = module.decode_attention(
-            Q.unsqueeze(0) if Q.dim() == 2 else Q,
+            Q_rotated_hd,
             k_quant.view(-1).contiguous(),
             v_quant.view(-1).contiguous(),
             k_norms.contiguous().view(-1).view(torch.uint8).view(torch.float16),
@@ -180,10 +189,18 @@ def test_layout_match():
             head_dim, padded_dim, sm_scale,
         )
 
+        # Inverse-rotate the output: kernel returns R(output), we need output
+        fused_float = fused_output.float()
+        # Pad to padded_dim for inverse rotation
+        if head_dim < padded_dim:
+            fused_float = F.pad(fused_float, (0, padded_dim - head_dim))
+        fused_unrotated = hadamard_inverse(fused_float)
+
         cos = F.cosine_similarity(
-            ref_output.float().flatten(), fused_output.float().flatten(), dim=0
+            ref_output.float().flatten(), fused_unrotated.float().flatten(), dim=0
         ).item()
-        print(f"Fused output norm: {fused_output.norm():.4f}")
+        print(f"Fused output norm (before unrotate): {fused_output.norm():.4f}")
+        print(f"Fused output norm (after unrotate): {fused_unrotated.norm():.4f}")
         print(f"Cosine similarity: {cos:.6f}")
         print(f"{'PASS' if cos > 0.95 else 'FAIL'}")
     except Exception as e:
