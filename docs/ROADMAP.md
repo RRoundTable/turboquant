@@ -70,7 +70,7 @@ Working tree: `~/workdir/vllm` on DGX Spark (branch `turboquant/v0.17.1-integrat
 - [x] Build `vllm-turboquant:v0.18.0` Docker container (torch 2.10.0+cu129, CUDA 12.9.1)
 - [x] Wire TurboQuant write kernel into `do_kv_cache_update` (quantize → paged cache)
 - [x] Wire TurboQuant dequant + SDPA into `forward` (eager mode, cosine=0.982)
-- [ ] End-to-end test: `--kv-cache-dtype turboquant` with a real model
+- [ ] End-to-end test: `--kv-cache-dtype turboquant` with a real model (needs config plumbing for backend selector)
 - [ ] TTFT measurement: Phase 2 write overhead vs BF16 baseline
 - [ ] TPOT measurement: decode speed improvement from Phase 3 read fusion (target: 3-4× faster)
 - [ ] Max batch size: measure concurrent users before OOM (proves VRAM savings)
