@@ -78,8 +78,8 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         self._fused_module = None
 
         # Separate quantized storage (allocated on first use)
-        # Layout: [num_pages, page_size, num_kv_heads, quant_bytes_per_head] uint8
-        # Norms: [num_pages, page_size, num_kv_heads, dim_chunks] fp16
+        # HND Layout: [num_pages, num_kv_heads, page_size, quant_bytes_per_head] uint8
+        # Norms: [num_pages, num_kv_heads, page_size, dim_chunks] fp16
         self._k_quant = None
         self._v_quant = None
         self._k_norms = None
@@ -105,10 +105,11 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         num_blocks = kv_cache.shape[1]
         block_size = kv_cache.shape[2]
         dev = kv_cache.device
-        self._k_quant = torch.zeros(num_blocks, block_size, self.num_kv_heads,
+        # HND layout: [num_pages, num_kv_heads, page_size, bytes]
+        self._k_quant = torch.zeros(num_blocks, self.num_kv_heads, block_size,
                                      self._quant_bytes_per_head, dtype=torch.uint8, device=dev)
         self._v_quant = torch.zeros_like(self._k_quant)
-        self._k_norms = torch.zeros(num_blocks, block_size, self.num_kv_heads,
+        self._k_norms = torch.zeros(num_blocks, self.num_kv_heads, block_size,
                                      self._dc, dtype=torch.float16, device=dev)
         self._v_norms = torch.zeros_like(self._k_norms)
 
@@ -148,16 +149,16 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
 
     @torch.no_grad()
     def _quantize_and_store(self, key_or_value, slot_mapping, is_key=True):
-        """Quantize and store in separate quantized tensors."""
+        """Quantize and store in HND layout: [pages, heads, entries, bytes]."""
         self._ensure(key_or_value.device)
         num_tokens = slot_mapping.shape[0]
         x = key_or_value[:num_tokens].float()
-        block_size = self._k_quant.shape[1]
+        block_size = self._k_quant.shape[2]  # HND: [pages, heads, entries, bytes]
 
-        norms = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)  # [N, heads, 1]
+        norms = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         normalized = x / norms
-        norms_fp16 = norms.squeeze(-1).to(torch.float16)  # [N, heads]
-        rotated = self._hadamard_rotate(normalized)  # [N, heads, padded_dim]
+        norms_fp16 = norms.squeeze(-1).to(torch.float16)
+        rotated = self._hadamard_rotate(normalized)
 
         quant_store = self._k_quant if is_key else self._v_quant
         norm_store = self._k_norms if is_key else self._v_norms
@@ -166,15 +167,16 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             ds = chunk * TILE_DIMS
             cd = rotated[..., ds:ds + TILE_DIMS]
             indices = torch.bucketize(cd.contiguous(), self._hi_b).to(torch.uint8)
-            packed = _pack_4bit(indices)  # [N, heads, 32]
+            packed = _pack_4bit(indices)
 
             byte_off = chunk * QUANT_BYTES_PER_CHUNK
             for t in range(num_tokens):
                 slot = slot_mapping[t].item()
                 bid = slot // block_size
                 boff = slot % block_size
-                quant_store[bid, boff, :, byte_off:byte_off + QUANT_BYTES_PER_CHUNK] = packed[t]
-                norm_store[bid, boff, :, chunk] = norms_fp16[t]
+                # HND: [page, head, entry, bytes]
+                quant_store[bid, :, boff, byte_off:byte_off + QUANT_BYTES_PER_CHUNK] = packed[t]
+                norm_store[bid, :, boff, chunk] = norms_fp16[t]
 
     def _get_fused_module(self):
         """JIT-compile the fused decode kernel."""
@@ -226,28 +228,23 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                                    attn_metadata, output, output_scale, **kwargs)
 
         # === DECODE: fused CUDA kernel ===
+        self._ensure(query.device)
         num_actual = attn_metadata.num_actual_tokens
-        q = query[:num_actual]  # [N, num_qo_heads, head_dim]
+        q = query[:num_actual]
         if output is None:
             output = torch.empty_like(q)
 
-        block_table = attn_metadata.block_table  # [num_reqs, max_blocks]
-        seq_lens = attn_metadata.seq_lens         # [num_reqs]
-        block_size = self._k_quant.shape[1]
+        block_table = attn_metadata.block_table
+        seq_lens = attn_metadata.seq_lens
+        block_size = self._k_quant.shape[2]  # HND: [pages, heads, entries, bytes]
 
         try:
             module = self._get_fused_module()
-
-            # Build paged KV arrays for the fused kernel
-            # The kernel expects: k_quant flat, v_quant flat, k_norms flat, v_norms flat
-            # + page indices, indptr, last_page_len
             num_reqs = seq_lens.shape[0]
 
-            # Build indptr and page indices from block_table
             page_indices_list = []
             indptr = [0]
             last_page_lens = []
-
             for req in range(num_reqs):
                 sl = seq_lens[req].item()
                 num_pages = (sl + block_size - 1) // block_size
@@ -260,27 +257,26 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             kv_indptr = torch.tensor(indptr, dtype=torch.int32, device=q.device)
             kv_last_page_len = torch.tensor(last_page_lens, dtype=torch.int32, device=q.device)
 
-            # Kernel expects HND layout: [num_pages, num_heads, page_size, ...]
-            # Our tensors are NHD: [num_pages, page_size, num_heads, ...]
-            # Transpose to HND before flattening
-            k_q_hnd = self._k_quant.permute(0, 2, 1, 3).contiguous()
-            v_q_hnd = self._v_quant.permute(0, 2, 1, 3).contiguous()
-            k_n_hnd = self._k_norms.permute(0, 2, 1, 3).contiguous()
-            v_n_hnd = self._v_norms.permute(0, 2, 1, 3).contiguous()
+            # Rotate Q (kernel operates on rotated KV)
+            q_rotated = self._hadamard_rotate(q.float()).to(torch.float16)
 
+            # Already HND layout — no transpose needed
             result = module.decode_attention(
-                q, k_q_hnd.view(-1),
-                v_q_hnd.view(-1),
-                k_n_hnd.view(torch.uint8).view(-1).view(torch.float16),
-                v_n_hnd.view(torch.uint8).view(-1).view(torch.float16),
+                q_rotated,
+                self._k_quant.view(-1),
+                self._v_quant.view(-1),
+                self._k_norms.view(-1).view(torch.uint8).view(torch.float16),
+                self._v_norms.view(-1).view(torch.uint8).view(torch.float16),
                 kv_indices, kv_indptr, kv_last_page_len,
                 self.num_heads, self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
             )
-            output[:num_actual] = result[:num_actual]
+
+            # Un-rotate output
+            result_unrot = self._hadamard_inverse(result.float())
+            output[:num_actual] = result_unrot[:num_actual].to(query.dtype)
 
         except Exception as e:
-            # Fallback to parent FlashAttention if fused kernel fails
             import sys
             print(f"[TQ] Fused kernel failed ({e}), falling back to FA", file=sys.stderr)
             return super().forward(layer, query, key, value, kv_cache,
