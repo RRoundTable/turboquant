@@ -43,6 +43,12 @@ test-cuda: build/test_write_kernel
 test-decode: build/test_decode_turboquant
 	./build/test_decode_turboquant
 
+bench-decode: build/bench_decode_turboquant
+	./build/bench_decode_turboquant
+
+build/bench_decode_turboquant: $(OBJ) tests/bench_decode_turboquant.cu | build
+	$(NVCC) $(NVFLAGS) -I$(FLASHINFER_INC) -o $@ $(OBJ) tests/bench_decode_turboquant.cu -lcudart
+
 clean:
 	rm -f $(OBJ) $(TEST_OBJ) build/turboquant_tests build/test_write_kernel
 	rmdir build 2>/dev/null || true
