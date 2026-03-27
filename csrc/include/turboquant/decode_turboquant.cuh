@@ -265,7 +265,7 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
         #pragma unroll
         for (uint32_t j = 0; j < bdy * tile_size_per_bdx; ++j) {
             s[j] *= sm_scale_log2;
-            s[j] = (tile_start + (tz * bdy + ty) * tile_size_per_bdx + j < kv_len)
+            s[j] = (tile_start + j < kv_len)
                     ? s[j] : -flashinfer::math::inf;
             m_global = max(m_global, s[j]);
         }

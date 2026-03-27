@@ -105,35 +105,43 @@ torch::Tensor turboquant_decode_attention(
 
     // Common params
     constexpr uint32_t vec_size = 8;
-    constexpr uint32_t bdy = 1;
     constexpr uint32_t bdz = 1;
     constexpr uint32_t tile_size_per_bdx = 4;
-    constexpr uint32_t tile_tokens = tile_size_per_bdx * bdy * bdz;
-    uint32_t smem_size = 2 * tile_tokens * 64 * sizeof(__half) + 2 * bdy * bdz * sizeof(float);
 
     dim3 grid(batch_size, num_kv_heads);
-
     const __half* q_ptr = reinterpret_cast<const __half*>(q.data_ptr<at::Half>());
     __half* o_ptr = reinterpret_cast<__half*>(o.data_ptr<at::Half>());
     float* lse_ptr = lse.data_ptr<float>();
     auto stream = c10::cuda::getCurrentCUDAStream();
 
-    // bdx always 8 (covers one 64-dim chunk). Kernel iterates over dim_chunks.
-    #define LAUNCH_KERNEL(HD) do { \
-        constexpr uint32_t bdx = 64 / vec_size; /* always 8 */ \
-        dim3 block(bdx, bdy, bdz); \
-        auto kernel = BatchDecodeWithTurboQuantKVKernel<HD, vec_size, bdx, bdy, bdz, tile_size_per_bdx, int32_t>; \
+    uint32_t gqa_ratio = num_qo_heads / num_kv_heads;
+
+    // Dispatch on HEAD_DIM and GQA ratio (bdy = gqa_ratio)
+    #define LAUNCH_KERNEL(HD, BDY) do { \
+        constexpr uint32_t bdx = 64 / vec_size; \
+        constexpr uint32_t tile_tokens = tile_size_per_bdx * BDY * bdz; \
+        uint32_t smem_size = 2 * tile_tokens * 64 * sizeof(__half) + 2 * BDY * bdz * sizeof(float); \
+        dim3 block(bdx, BDY, bdz); \
+        auto kernel = BatchDecodeWithTurboQuantKVKernel<HD, vec_size, bdx, BDY, bdz, tile_size_per_bdx, int32_t>; \
         cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size); \
         kernel<<<grid, block, smem_size, stream>>>( \
             paged_kv, q_ptr, o_ptr, lse_ptr, num_qo_heads, sm_scale); \
     } while(0)
 
+    #define DISPATCH_GQA(HD) do { \
+        if (gqa_ratio <= 1) { LAUNCH_KERNEL(HD, 1); } \
+        else if (gqa_ratio <= 2) { LAUNCH_KERNEL(HD, 2); } \
+        else if (gqa_ratio <= 4) { LAUNCH_KERNEL(HD, 4); } \
+        else { LAUNCH_KERNEL(HD, 8); } \
+    } while(0)
+
     if (head_dim <= 64) {
-        LAUNCH_KERNEL(64);
+        DISPATCH_GQA(64);
     } else {
-        LAUNCH_KERNEL(128);
+        DISPATCH_GQA(128);
     }
     #undef LAUNCH_KERNEL
+    #undef DISPATCH_GQA
 
     return o;
 }
