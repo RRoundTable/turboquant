@@ -61,9 +61,16 @@ Working tree: `~/workdir/flashinfer` on DGX Spark.
 
 ### Phase 4: End-to-End System Integration
 
-Integrate Phase 2 (write) + Phase 3 (read) into vLLM/SGLang backend via PagedAttention binding.
+Integrate Phase 2 (write) + Phase 3 (read) into vLLM backend via PagedAttention binding.
 
-- [ ] Python/C++ binding with vLLM KV cache manager
+Working tree: `~/workdir/vllm` on DGX Spark (branch `turboquant/v0.17.1-integration`).
+
+- [x] Create `TurboQuantBackend` + `TurboQuantImpl` in `vllm/v1/attention/backends/turboquant.py`
+- [x] Register `TURBOQUANT` in `AttentionBackendEnum`
+- [ ] **BLOCKED**: DGX Spark torch 2.11.0.dev incompatible with vLLM (requires torch 2.10.0). Need compatible environment.
+- [ ] Wire TurboQuant write kernel into `do_kv_cache_update`
+- [ ] Wire TurboQuant fused decode kernel into `forward`
+- [ ] End-to-end test: `--kv-cache-dtype turboquant` with a real model
 - [ ] TTFT measurement: Phase 2 write overhead vs BF16 baseline
 - [ ] TPOT measurement: decode speed improvement from Phase 3 read fusion (target: 3-4× faster)
 - [ ] Max batch size: measure concurrent users before OOM (proves VRAM savings)
