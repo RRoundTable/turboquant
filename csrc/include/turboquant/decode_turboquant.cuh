@@ -138,22 +138,17 @@ __device__ __forceinline__ void load_dequant_kv_tile(
                 page_iter, kv_head_idx, entry_idx, chunk_idx, last_indptr);
             float norm = __half2float(kv_norms[norm_off]);
 
-            // Dequant into shared memory
-            // smem layout: [tile_rows, head_dim] in fp16
-            // This thread writes the full 64-dim chunk for this row
-            // Only thread tx==0 does the dequant (sequential per row, parallelized across rows)
-            if (tx == 0) {
-                paged_kv_turbo_t<IdType>::dequant_chunk_to_smem(
-                    qdata, norm, codebook_scale,
-                    smem + row_in_tile * kTileDims
-                );
-            }
+            // Parallel dequant: each of bdx threads writes its 8-dim slice
+            paged_kv_turbo_t<IdType>::dequant_chunk_parallel(
+                qdata, norm, codebook_scale,
+                smem + row_in_tile * kTileDims, tx
+            );
         } else {
-            // Zero fill for out-of-bounds
-            if (tx == 0) {
-                for (uint32_t d = 0; d < kTileDims; d++) {
-                    smem[row_in_tile * kTileDims + d] = __float2half(0.0f);
-                }
+            // Zero fill for out-of-bounds (each thread zeros its own slice)
+            __half* dst = smem + row_in_tile * kTileDims + tx * 8;
+            #pragma unroll
+            for (uint32_t i = 0; i < 8; i++) {
+                dst[i] = __float2half(0.0f);
             }
         }
     }

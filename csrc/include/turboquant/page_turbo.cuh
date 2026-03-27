@@ -149,47 +149,69 @@ struct paged_kv_turbo_t {
 
     // ── Inline dequantization ────────────────────────────────────────
 
-    // Dequantize one token's 64-dim chunk from packed bytes into fp16 smem.
-    // `quant_bytes` points to 28 bytes (16 hi + 12 lo).
-    // `norm` is the FP16 L2 norm for this token.
-    // Writes 64 half values to `out`.
+    // Serial dequant: one thread writes all 64 dims (used as fallback).
     __device__ __forceinline__ static void dequant_chunk_to_smem(
         const uint8_t* quant_bytes, float norm, float codebook_scale,
         __half* out
     ) {
-        // Dequantize first 32 dims (4-bit, nibble-packed)
+        float s = codebook_scale * norm;
         for (uint32_t i = 0; i < kHiBytesPerToken; i++) {
             uint8_t packed = quant_bytes[i];
-            uint8_t idx_even = (packed >> 4) & 0x0F;
-            uint8_t idx_odd  = packed & 0x0F;
-            float val_even = kCodebook4bit[idx_even] * codebook_scale * norm;
-            float val_odd  = kCodebook4bit[idx_odd]  * codebook_scale * norm;
-            out[i * 2]     = __float2half(val_even);
-            out[i * 2 + 1] = __float2half(val_odd);
+            out[i * 2]     = __float2half(kCodebook4bit[(packed >> 4) & 0x0F] * s);
+            out[i * 2 + 1] = __float2half(kCodebook4bit[packed & 0x0F] * s);
         }
-
-        // Dequantize last 32 dims (3-bit, GGML group-of-8 packed)
-        const uint8_t* lo_bytes = quant_bytes + kHiBytesPerToken;
+        const uint8_t* lo = quant_bytes + kHiBytesPerToken;
         __half* lo_out = out + kHiDims;
         for (uint32_t g = 0; g < kLoDims / 8; g++) {
-            const uint8_t* p = lo_bytes + g * 3;
-            uint8_t v0 = p[0] & 7;
-            uint8_t v1 = (p[0] >> 3) & 7;
-            uint8_t v2 = ((p[0] >> 6) & 3) | ((p[1] & 1) << 2);
-            uint8_t v3 = (p[1] >> 1) & 7;
-            uint8_t v4 = (p[1] >> 4) & 7;
-            uint8_t v5 = ((p[1] >> 7) & 1) | ((p[2] & 3) << 1);
-            uint8_t v6 = (p[2] >> 2) & 7;
-            uint8_t v7 = (p[2] >> 5) & 7;
+            const uint8_t* p = lo + g * 3;
+            lo_out[g*8+0] = __float2half(kCodebook3bit[p[0] & 7] * s);
+            lo_out[g*8+1] = __float2half(kCodebook3bit[(p[0] >> 3) & 7] * s);
+            lo_out[g*8+2] = __float2half(kCodebook3bit[((p[0] >> 6) & 3) | ((p[1] & 1) << 2)] * s);
+            lo_out[g*8+3] = __float2half(kCodebook3bit[(p[1] >> 1) & 7] * s);
+            lo_out[g*8+4] = __float2half(kCodebook3bit[(p[1] >> 4) & 7] * s);
+            lo_out[g*8+5] = __float2half(kCodebook3bit[((p[1] >> 7) & 1) | ((p[2] & 3) << 1)] * s);
+            lo_out[g*8+6] = __float2half(kCodebook3bit[(p[2] >> 2) & 7] * s);
+            lo_out[g*8+7] = __float2half(kCodebook3bit[(p[2] >> 5) & 7] * s);
+        }
+    }
 
-            lo_out[g * 8 + 0] = __float2half(kCodebook3bit[v0] * codebook_scale * norm);
-            lo_out[g * 8 + 1] = __float2half(kCodebook3bit[v1] * codebook_scale * norm);
-            lo_out[g * 8 + 2] = __float2half(kCodebook3bit[v2] * codebook_scale * norm);
-            lo_out[g * 8 + 3] = __float2half(kCodebook3bit[v3] * codebook_scale * norm);
-            lo_out[g * 8 + 4] = __float2half(kCodebook3bit[v4] * codebook_scale * norm);
-            lo_out[g * 8 + 5] = __float2half(kCodebook3bit[v5] * codebook_scale * norm);
-            lo_out[g * 8 + 6] = __float2half(kCodebook3bit[v6] * codebook_scale * norm);
-            lo_out[g * 8 + 7] = __float2half(kCodebook3bit[v7] * codebook_scale * norm);
+    // Parallel dequant: thread `tx` (0..7) writes its 8-dim slice.
+    // bdx=8, vec_size=8: thread tx owns dims [tx*8 .. tx*8+7].
+    // tx 0-3: hi dims (4-bit nibble packed, 4 bytes per thread → 8 dims)
+    // tx 4-7: lo dims (3-bit GGML packed, 3 bytes per 8-dim group)
+    __device__ __forceinline__ static void dequant_chunk_parallel(
+        const uint8_t* quant_bytes, float norm, float codebook_scale,
+        __half* out, uint32_t tx
+    ) {
+        float s = codebook_scale * norm;
+        uint32_t dim_start = tx * 8;
+
+        if (tx < 4) {
+            // Hi dims: tx*8 .. tx*8+7, 4-bit nibble packed
+            // 8 dims = 4 packed bytes starting at quant_bytes[tx * 4]
+            const uint8_t* src = quant_bytes + tx * 4;
+            __half* dst = out + dim_start;
+            #pragma unroll
+            for (uint32_t i = 0; i < 4; i++) {
+                uint8_t packed = src[i];
+                dst[i * 2]     = __float2half(kCodebook4bit[(packed >> 4) & 0x0F] * s);
+                dst[i * 2 + 1] = __float2half(kCodebook4bit[packed & 0x0F] * s);
+            }
+        } else {
+            // Lo dims: (tx-4)*8 + 32 .. (tx-4)*8 + 39
+            // Each 8-dim group is 3 bytes in GGML layout
+            uint32_t group = tx - 4;
+            const uint8_t* p = quant_bytes + kHiBytesPerToken + group * 3;
+            __half* dst = out + kHiDims + group * 8;
+
+            dst[0] = __float2half(kCodebook3bit[p[0] & 7] * s);
+            dst[1] = __float2half(kCodebook3bit[(p[0] >> 3) & 7] * s);
+            dst[2] = __float2half(kCodebook3bit[((p[0] >> 6) & 3) | ((p[1] & 1) << 2)] * s);
+            dst[3] = __float2half(kCodebook3bit[(p[1] >> 1) & 7] * s);
+            dst[4] = __float2half(kCodebook3bit[(p[1] >> 4) & 7] * s);
+            dst[5] = __float2half(kCodebook3bit[((p[1] >> 7) & 1) | ((p[2] & 3) << 1)] * s);
+            dst[6] = __float2half(kCodebook3bit[(p[2] >> 2) & 7] * s);
+            dst[7] = __float2half(kCodebook3bit[(p[2] >> 5) & 7] * s);
         }
     }
 };
