@@ -111,33 +111,28 @@ class TurboQuantImpl(FlashAttentionImpl):
         return x
 
     def _quantize_dequantize(self, x):
-        """Simulate 3.5-bit quantization with Hadamard rotation."""
+        """Simulate 4-bit quantization with Hadamard rotation.
+
+        Fully vectorized — no Python loops. Operates on entire batch at once.
+        """
         self._ensure(x.device)
         xf = x.float()
 
-        # L2 normalize
+        # L2 normalize + snap norms to fp16
         norms = xf.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         normalized = xf / norms
         norms = norms.to(torch.float16).float()
 
-        # Hadamard rotate
-        rotated = self._hadamard_rotate(normalized)  # [..., padded_dim]
+        # Hadamard rotate (vectorized FWHT on full padded_dim)
+        rotated = self._hadamard_rotate(normalized)
 
-        # Quantize-dequantize each 64-dim chunk
-        result = torch.zeros_like(rotated)
-        for chunk in range(self._dc):
-            ds = chunk * TILE_DIMS
-            de = ds + TILE_DIMS
-            cd = rotated[..., ds:de]
-
-            # 4-bit (16 levels) for all dims
-            idx = torch.bucketize(cd.contiguous(), self._hi_b)
-            result[..., ds:de] = self._hi_c[idx]
+        # 4-bit codebook quantize-dequant (fully vectorized, no chunk loop)
+        indices = torch.bucketize(rotated.contiguous(), self._hi_b)
+        quantized = self._hi_c[indices]
 
         # Inverse Hadamard rotate
-        reconstructed = self._hadamard_inverse(result)
+        reconstructed = self._hadamard_inverse(quantized)
 
-        # Rescale by norms
         return (reconstructed * norms).to(x.dtype)
 
     @torch.no_grad()
