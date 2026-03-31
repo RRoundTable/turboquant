@@ -101,7 +101,7 @@ Memory: 3.76× compression confirmed (512 → 136 bytes/token/head).
 
 Blocked on kernel performance. The fused kernel is too slow for meaningful serving benchmarks.
 
-### Phase 7: Modify FlashInfer decode kernel — NEXT
+### Phase 7: Modify FlashInfer decode kernel — NOW
 
 Follow FlashInfer's existing architecture. Add TurboQuant as a new KV dtype alongside FP8/FP16. Only change the KV loading path — everything else stays FlashInfer's optimized code.
 
