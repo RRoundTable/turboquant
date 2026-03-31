@@ -106,7 +106,7 @@ torch::Tensor turboquant_decode_attention(
 
     // Common params
     constexpr uint32_t vec_size = 8;
-    constexpr uint32_t bdz = 1;  // TODO: increase to 16 for 6x speedup (needs tile size fix for small seq_lens)
+    constexpr uint32_t bdz = 1;  // bdz>1 merge has bugs, see bench_bdz_sweep.py for measured 6x speedup potential
     constexpr uint32_t tile_size_per_bdx = 4;
 
     dim3 grid(batch_size, num_kv_heads);
