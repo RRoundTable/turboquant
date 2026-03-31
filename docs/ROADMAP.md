@@ -124,11 +124,12 @@ Working tree: `~/workdir/flashinfer` on DGX Spark.
 - [x] Benchmark: 1739 μs (84× vs SDPA) — correct but slow
 
 #### Optimization steps (see `docs/reference/optimization-plan.md`):
-- [ ] **7a.** Fix bdz>1 merge → ~290 μs (6× from threads)
-- [ ] **7b.** Precompute page offsets → ~190 μs (avoid per-token __ldg)
+- [x] **7a.** Fix bdz>1 merge → 373 μs (4.7× speedup, 18× vs SDPA)
+- [x] **7b.** Precompute page offsets → skipped (net negative from smem pressure)
 - [ ] **7c.** In-kernel FWHT → eliminate 203 μs Python overhead
 - [ ] **7d.** Modify FlashInfer source directly → ~25-30 μs (production path)
 
+Current: 373 μs kernel + 203 μs Python FWHT = 576 μs total decode.
 Theoretical lower bound: ~18 μs (faster than SDPA for memory-bound decode).
 
 ## Next

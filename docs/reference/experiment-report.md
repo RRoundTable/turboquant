@@ -73,6 +73,7 @@ Throughput (single-buffer, parallel dequant, head_dim=64 standalone test):
 | TQ standalone (bdz=1, 16 threads) | 856.5 μs | 41.6× slower | Scalar, no pipeline |
 | TQ standalone (bdz=16, 256 threads) | 142.0 μs | 6.9× slower | Scalar, no pipeline |
 | TQ FlashInfer-style (bdz=1) | 1739.3 μs | 84.1× slower | Correct, page lookup overhead |
+| **TQ FlashInfer-style (bdz=16)** | **373.4 μs** | **18.1× slower** | **Correct, all tests pass** |
 
 ### bdz (Thread Parallelism) Sweep
 
@@ -223,7 +224,9 @@ Qwen3-1.7B generates coherent text through the fused CUDA kernel path:
 | 6a | bdz>1 merge integration | **Blocked** (cross-tz softmax merge bug) |
 | 6a | In-kernel FWHT | **Blocked** (shuffle vs warp layout) |
 | 7 | FlashInfer-style kernel (correctness) | **Complete** (cosine=1.0, all configs) |
-| 7 | FlashInfer-style kernel (performance) | **84× slower** (bdz=1, no pipeline) |
+| 7 | FlashInfer-style kernel (performance) | **18× slower** (bdz=16, merge working) |
+| 7a | bdz=16 merge fix (4 bugs) | **Complete** (4.7× speedup) |
+| 7b | Precompute page offsets | **Skipped** (net negative from smem pressure) |
 | - | Perplexity eval (WikiText, LongBench) | Not started |
 
 ### Test Counts
