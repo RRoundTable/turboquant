@@ -67,6 +67,7 @@ torch::Tensor flashinfer_turbo_decode(
     torch::Tensor kv_indices,     // [total_pages] int32
     torch::Tensor kv_indptr,      // [batch + 1] int32
     torch::Tensor kv_last_page_len, // [batch] int32
+    torch::Tensor signs,          // [padded_dim] float32 (empty = no rotation)
     int num_qo_heads,
     int num_kv_heads,
     int page_size,
@@ -120,10 +121,12 @@ torch::Tensor flashinfer_turbo_decode(
         dim3 block(bdx, BDY, bdz); \
         auto kernel = FlashInferDecodeWithTurboQuantKV<vec_size, bdx, BDY, bdz, tile_size_per_bdx, num_stages_smem, int32_t>; \
         cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size); \
+        const float* signs_ptr = signs.numel() > 0 ? signs.data_ptr<float>() : nullptr; \
         kernel<<<grid, block, smem_size, c10::cuda::getCurrentCUDAStream()>>>( \
             reinterpret_cast<const __half*>(q.data_ptr<at::Half>()), \
             reinterpret_cast<__half*>(o.data_ptr<at::Half>()), \
             lse.data_ptr<float>(), \
+            signs_ptr, \
             paged_kv, \
             req_indices.data_ptr<int32_t>(), \
             kv_tile_indices.data_ptr<int32_t>(), \
@@ -226,9 +229,9 @@ def setup_data(seq_len):
                     deq[t, h, chunk * 64:chunk * 64 + 64] = c4[idx.long()] * norm
 
     gqa = NUM_QO_HEADS // NUM_KV_HEADS
-    # Use fp16-rounded Q to match what kernel receives
-    RQ_fp16 = RQ.half().float()
-    rq = RQ_fp16.transpose(0, 1).unsqueeze(0)
+    # Reference uses fp32 rotated Q. Kernel now takes unrotated Q and rotates internally.
+    # For reference, rotate Q in fp32 for best precision.
+    rq = RQ.transpose(0, 1).unsqueeze(0)
     rk = deq_RK.repeat_interleave(gqa, dim=1).transpose(0, 1).unsqueeze(0)
     rv = deq_RV.repeat_interleave(gqa, dim=1).transpose(0, 1).unsqueeze(0)
     ref = inv_rotate(torch.nn.functional.scaled_dot_product_attention(
@@ -258,18 +261,19 @@ def main():
         kp = torch.tensor([0, num_pages], dtype=torch.int32, device=DEVICE)
         kl = torch.tensor([seq_len - (num_pages - 1) * PAGE_SIZE], dtype=torch.int32, device=DEVICE)
 
-        # Kernel takes rotated Q, returns rotated output
+        # Pass UNROTATED Q + signs — kernel handles rotation internally
         fused = module.decode(
-            data["RQ"].half().unsqueeze(0),
+            data["Q"].half().unsqueeze(0),
             data["k_q"].view(-1), data["v_q"].view(-1),
             data["k_n"].view(-1).view(torch.uint8).view(torch.float16),
             data["v_n"].view(-1).view(torch.uint8).view(torch.float16),
             ki, kp, kl,
+            data["signs"],  # [padded_dim] float32
             NUM_QO_HEADS, NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, 128,
             1.0 / math.sqrt(HEAD_DIM))
 
-        # Un-rotate output
-        fused_unrot = data["inv_rotate"](fused.float().squeeze(0))
+        # Output is already un-rotated by kernel
+        fused_unrot = fused.float().squeeze(0)
 
         cos = torch.nn.functional.cosine_similarity(
             data["ref"].flatten(), fused_unrot.flatten(), dim=0).item()
@@ -286,11 +290,12 @@ def main():
 
     def run_kernel():
         return module.decode(
-            data["RQ"].half().unsqueeze(0),
+            data["Q"].half().unsqueeze(0),
             data["k_q"].view(-1), data["v_q"].view(-1),
             data["k_n"].view(-1).view(torch.uint8).view(torch.float16),
             data["v_n"].view(-1).view(torch.uint8).view(torch.float16),
             ki, kp, kl,
+            data["signs"],
             NUM_QO_HEADS, NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, 128,
             1.0 / math.sqrt(HEAD_DIM))
 
