@@ -115,14 +115,16 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
     uint32_t packed_page_iter_base = paged_kv.indptr[batch_idx] * paged_kv.page_size + chunk_start;
     IdType last_indptr = paged_kv.indptr[paged_kv.batch_size];
 
-    // Each tz group processes tile_size_per_bdx tokens per tile iteration.
-    // smem row for this tz: (tz * bdy + ty) * tile_size_per_bdx + j
-    uint32_t my_smem_base = (tz * bdy + ty) * tile_size_per_bdx;
+    // Each tz group loads bdy * tile_size_per_bdx tokens cooperatively (ty helps load).
+    // All ty threads within the same tz read ALL bdy * tile_size_per_bdx tokens for QK.
+    // smem row base for this tz: tz * bdy * tile_size_per_bdx
+    uint32_t my_tz_smem_base = tz * bdy * tile_size_per_bdx;
+    constexpr uint32_t tokens_per_tz = bdy * tile_size_per_bdx;
 
     for (uint32_t iter = 0; iter < flashinfer::ceil_div(chunk_size, tile_tokens); ++iter) {
         // === QK: accumulate across dim chunks ===
-        float s[tile_size_per_bdx];
-        for (uint32_t j = 0; j < tile_size_per_bdx; j++) s[j] = 0.f;
+        float s[tokens_per_tz];
+        for (uint32_t j = 0; j < tokens_per_tz; j++) s[j] = 0.f;
 
         for (uint32_t chunk = 0; chunk < dim_chunks; chunk++) {
             dequant_load_kv_tile<tile_size_per_bdx, vec_size, bdx, bdy, bdz>(
@@ -134,11 +136,11 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
             );
             block.sync();
 
-            // Each tz reads its OWN rows from smem
+            // Each tz reads ALL its tokens (bdy * tile_size_per_bdx) from smem
             #pragma unroll
-            for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
+            for (uint32_t j = 0; j < tokens_per_tz; ++j) {
                 vec_t<float, vec_size> k_vec;
-                k_vec.cast_load(k_smem + ((my_smem_base + j) * bdx + tx) * vec_size);
+                k_vec.cast_load(k_smem + ((my_tz_smem_base + j) * bdx + tx) * vec_size);
                 float partial = 0.f;
                 #pragma unroll
                 for (uint32_t i = 0; i < vec_size; ++i) {
@@ -153,27 +155,32 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
             block.sync();
         }
 
-        // === Online softmax — each tz processes its own token range ===
-        uint32_t my_token_base = iter * tile_tokens + my_smem_base;
+        // === Online softmax — each tz processes its token range ===
+        uint32_t my_token_base = iter * tile_tokens + my_tz_smem_base;
         float m_prev = m_global;
         #pragma unroll
-        for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
+        for (uint32_t j = 0; j < tokens_per_tz; ++j) {
             s[j] *= sm_scale_log2;
             s[j] = (my_token_base + j < chunk_size) ? s[j] : -flashinfer::math::inf;
             m_global = max(m_global, s[j]);
         }
-        float o_scale = (m_prev != -flashinfer::math::inf && m_prev != m_global)
-                        ? flashinfer::math::ptx_exp2(m_prev - m_global) : 1.0f;
-        if (m_prev == -flashinfer::math::inf) o_scale = (m_global == -flashinfer::math::inf) ? 1.0f : 0.0f;
-        d_global *= o_scale;
-        #pragma unroll
-        for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
-            s[j] = flashinfer::math::ptx_exp2(s[j] - m_global);
-            d_global += s[j];
+        // NaN-safe softmax: when all scores are -inf, skip accumulation
+        if (m_global == -flashinfer::math::inf) {
+            // All tokens invalid — o_acc stays zero, d_global stays 0
+        } else {
+            float o_scale = (m_prev == -flashinfer::math::inf) ? 0.0f
+                          : flashinfer::math::ptx_exp2(m_prev - m_global);
+            d_global *= o_scale;
+            #pragma unroll
+            for (uint32_t j = 0; j < tokens_per_tz; ++j) {
+                s[j] = (s[j] == -flashinfer::math::inf) ? 0.0f
+                      : flashinfer::math::ptx_exp2(s[j] - m_global);
+                d_global += s[j];
+            }
+            for (uint32_t c = 0; c < dim_chunks; c++)
+                for (uint32_t i = 0; i < vec_size; i++)
+                    o_acc[c][i] *= o_scale;
         }
-        for (uint32_t c = 0; c < dim_chunks; c++)
-            for (uint32_t i = 0; i < vec_size; i++)
-                o_acc[c][i] *= o_scale;
 
         // === V accumulation — each tz reads its own rows ===
         for (uint32_t chunk = 0; chunk < dim_chunks; chunk++) {
@@ -190,9 +197,9 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
             block.sync();
 
             #pragma unroll
-            for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
+            for (uint32_t j = 0; j < tokens_per_tz; ++j) {
                 vec_t<float, vec_size> v_vec;
-                v_vec.cast_load(v_smem + ((my_smem_base + j) * bdx + tx) * vec_size);
+                v_vec.cast_load(v_smem + ((my_tz_smem_base + j) * bdx + tx) * vec_size);
                 #pragma unroll
                 for (uint32_t i = 0; i < vec_size; ++i) {
                     o_acc[chunk][i] += s[j] * v_vec[i];
@@ -217,11 +224,22 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
         block.sync();
 
         if (tz == 0) {
-            // Start with this tz's values (already in registers)
             for (uint32_t z = 1; z < bdz; z++) {
                 uint32_t other = z * bdy + ty;
                 float m_other = merge_smem[other * merge_entry_size + 0];
                 float d_other = merge_smem[other * merge_entry_size + 1];
+
+                // Skip if other tz had no valid tokens
+                if (m_other == -flashinfer::math::inf) continue;
+                // Skip if self had no valid tokens — take other's values
+                if (m_global == -flashinfer::math::inf) {
+                    m_global = m_other;
+                    d_global = d_other;
+                    for (uint32_t c = 0; c < dim_chunks; c++)
+                        for (uint32_t i = 0; i < vec_size; i++)
+                            o_acc[c][i] = merge_smem[other * merge_entry_size + 2 + c * vec_size + i];
+                    continue;
+                }
 
                 float m_new = max(m_global, m_other);
                 float s_self = flashinfer::math::ptx_exp2(m_global - m_new);
