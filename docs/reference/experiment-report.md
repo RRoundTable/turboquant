@@ -67,11 +67,12 @@ Throughput (single-buffer, parallel dequant, head_dim=64 standalone test):
 
 ### Kernel vs SDPA Comparison (Qwen3 config, head_dim=128, 8kv/16qo heads)
 
-| Kernel | seq_len=1024 | vs SDPA |
-|--------|-------------|---------|
-| FP16 SDPA (FlashAttention/cuDNN) | 20.5 μs | 1.0× |
-| TQ fused (bdz=1, 16 threads) | 856.5 μs | 41.6× slower |
-| TQ fused (bdz=16, 256 threads) | 142.0 μs | 6.9× slower |
+| Kernel | seq_len=1024 | vs SDPA | Notes |
+|--------|-------------|---------|-------|
+| FP16 SDPA (FlashAttention/cuDNN) | 20.5 μs | 1.0× | Tensor cores, pipelined |
+| TQ standalone (bdz=1, 16 threads) | 856.5 μs | 41.6× slower | Scalar, no pipeline |
+| TQ standalone (bdz=16, 256 threads) | 142.0 μs | 6.9× slower | Scalar, no pipeline |
+| TQ FlashInfer-style (bdz=1) | 1739.3 μs | 84.1× slower | Correct, page lookup overhead |
 
 ### bdz (Thread Parallelism) Sweep
 
@@ -221,6 +222,8 @@ Qwen3-1.7B generates coherent text through the fused CUDA kernel path:
 | 6a | Time breakdown analysis | **Complete** (compute-bound) |
 | 6a | bdz>1 merge integration | **Blocked** (cross-tz softmax merge bug) |
 | 6a | In-kernel FWHT | **Blocked** (shuffle vs warp layout) |
+| 7 | FlashInfer-style kernel (correctness) | **Complete** (cosine=1.0, all configs) |
+| 7 | FlashInfer-style kernel (performance) | **84× slower** (bdz=1, no pipeline) |
 | - | Perplexity eval (WikiText, LongBench) | Not started |
 
 ### Test Counts

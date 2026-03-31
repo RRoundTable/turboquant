@@ -117,15 +117,19 @@ Working tree: `~/workdir/flashinfer` on DGX Spark.
 2. Keep `cast_load` (reads fp16 from smem → float registers, same as FP16 path)
 3. Keep QK, softmax, V accumulate **completely unchanged**
 
-#### Tasks:
-- [ ] Add `DTypeKV = turboquant_4bit` to FlashInfer's type dispatch (`vec_dtypes.cuh`)
-- [ ] Add `paged_kv_turbo_t` to FlashInfer's page system (`page.cuh`)
-- [ ] Modify KV tile loading in `decode.cuh`: new code path for 4-bit dequant to smem
-- [ ] Add codebook as `__constant__` memory (16 floats × 1/√d scaling)
-- [ ] JIT module: `gen_batch_decode_turboquant_module()`
-- [ ] Python API: `BatchDecodeWithTurboQuantKVCacheWrapper`
-- [ ] Test: cosine=1.0 vs Python reference
-- [ ] Benchmark: FlashInfer+TurboQuant vs vanilla FlashInfer (expect near-parity for memory-bound configs)
+#### Done:
+- [x] `flashinfer_dequant_load.cuh`: dequant_load_to_smem (replaces cp_async per element)
+- [x] `flashinfer_decode_turbo.cuh`: FlashInfer-style kernel with dequant load
+- [x] Correctness: cosine=1.0 (head_dim=64/128, GQA, 1-64 tokens)
+- [x] Benchmark: 1739 μs (84× vs SDPA) — correct but slow
+
+#### Optimization steps (see `docs/reference/optimization-plan.md`):
+- [ ] **7a.** Fix bdz>1 merge → ~290 μs (6× from threads)
+- [ ] **7b.** Precompute page offsets → ~190 μs (avoid per-token __ldg)
+- [ ] **7c.** In-kernel FWHT → eliminate 203 μs Python overhead
+- [ ] **7d.** Modify FlashInfer source directly → ~25-30 μs (production path)
+
+Theoretical lower bound: ~18 μs (faster than SDPA for memory-bound decode).
 
 ## Next
 
