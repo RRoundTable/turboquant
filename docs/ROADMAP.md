@@ -101,14 +101,31 @@ Memory: 3.76× compression confirmed (512 → 136 bytes/token/head).
 
 Blocked on kernel performance. The fused kernel is too slow for meaningful serving benchmarks.
 
-### Phase 7: FlashInfer kernel modification — NEXT
+### Phase 7: Modify FlashInfer decode kernel — NEXT
 
-The right path forward: modify FlashInfer's `decode.cuh` to add a TurboQuant KV loading path. This gives us FlashInfer's existing optimizations (tensor cores, pipelining, warp specialization) with our 4-bit dequant fused into the KV load.
+Follow FlashInfer's existing architecture. Add TurboQuant as a new KV dtype alongside FP8/FP16. Only change the KV loading path — everything else stays FlashInfer's optimized code.
 
-- [ ] Fork FlashInfer `decode.cuh` → add `DTypeKV = turboquant_4bit` type dispatch
-- [ ] Replace `cp_async` KV load with: load 4-bit packed bytes → codebook lookup → write fp16 to smem
-- [ ] Keep all existing QK, softmax, V accumulation unchanged
-- [ ] Benchmark: FlashInfer+TurboQuant vs vanilla FlashInfer
+Working tree: `~/workdir/flashinfer` on DGX Spark.
+
+#### What FlashInfer already does for FP8:
+1. `cp_async` loads FP8 bytes from VRAM → shared memory
+2. `cast_load` converts FP8 → float in registers (hardware type cast)
+3. QK dot product, softmax, V accumulate — all optimized with tensor cores
+
+#### What we change for TurboQuant 4-bit:
+1. Replace `cp_async` with: load 4-bit packed bytes → **codebook lookup** → write fp16 to smem
+2. Keep `cast_load` (reads fp16 from smem → float registers, same as FP16 path)
+3. Keep QK, softmax, V accumulate **completely unchanged**
+
+#### Tasks:
+- [ ] Add `DTypeKV = turboquant_4bit` to FlashInfer's type dispatch (`vec_dtypes.cuh`)
+- [ ] Add `paged_kv_turbo_t` to FlashInfer's page system (`page.cuh`)
+- [ ] Modify KV tile loading in `decode.cuh`: new code path for 4-bit dequant to smem
+- [ ] Add codebook as `__constant__` memory (16 floats × 1/√d scaling)
+- [ ] JIT module: `gen_batch_decode_turboquant_module()`
+- [ ] Python API: `BatchDecodeWithTurboQuantKVCacheWrapper`
+- [ ] Test: cosine=1.0 vs Python reference
+- [ ] Benchmark: FlashInfer+TurboQuant vs vanilla FlashInfer (expect near-parity for memory-bound configs)
 
 ## Next
 
