@@ -55,7 +55,7 @@ All within 2× of paper theoretical bounds across dimensions 64-512.
 | Registers per thread | 50 (no spilling) |
 | Local memory | 0 bytes |
 
-Throughput (single-buffer, parallel dequant):
+Throughput (single-buffer, parallel dequant, head_dim=64 standalone test):
 
 | seq_len | Latency (μs) | Tokens/μs |
 |---------|-------------|-----------|
@@ -64,6 +64,41 @@ Throughput (single-buffer, parallel dequant):
 | 256 | 254.1 | 1.01 |
 | 1024 | 1004.2 | 1.02 |
 | 4096 | 4008.7 | 1.02 |
+
+### Kernel vs SDPA Comparison (Qwen3 config, head_dim=128, 8kv/16qo heads)
+
+| Kernel | seq_len=1024 | vs SDPA |
+|--------|-------------|---------|
+| FP16 SDPA (FlashAttention/cuDNN) | 20.5 μs | 1.0× |
+| TQ fused (bdz=1, 16 threads) | 856.5 μs | 41.6× slower |
+| TQ fused (bdz=16, 256 threads) | 142.0 μs | 6.9× slower |
+
+### bdz (Thread Parallelism) Sweep
+
+| bdz | Threads/block | Latency (μs) | vs baseline |
+|-----|--------------|-------------|-------------|
+| 1 | 16 | 856.5 | 1.00× |
+| 2 | 32 | 475.6 | 1.80× |
+| 4 | 64 | 277.5 | 3.09× |
+| 8 | 128 | 176.3 | 4.86× |
+| 16 | 256 | 142.0 | 6.03× |
+
+Note: bdz>1 measured with separate kernel compilations (bench_bdz_sweep.py).
+Integration into default kernel blocked by cross-tz merge bug.
+
+### Time Breakdown (seq_len=1024, bdz=16)
+
+| Component | Time |
+|-----------|------|
+| SDPA target | 20.5 μs |
+| TQ fused kernel | ~142 μs |
+| - Memory read (4-bit, 1088 KB) | ~65 μs |
+| - Compute (QK + softmax + V) | ~77 μs |
+| Python FWHT un-rotation | 203 μs |
+| Codebook lookup only | 12.3 μs |
+
+Kernel is **compute-bound** after bdz optimization. Double-buffering won't help.
+Python FWHT is the dominant overhead (203 μs > kernel itself).
 
 Linear scaling. 1.72× speedup from parallelizing dequant across 8 threads.
 
@@ -179,8 +214,13 @@ Qwen3-1.7B generates coherent text through the fused CUDA kernel path:
 | 4 | E2E quality (7/8 factual match, eager sim) | **Complete** |
 | 4 | TTFT/TPOT benchmark (1.84× overhead, eager sim) | **Complete** |
 | 5 | **Fused CUDA kernel in vLLM decode path** | **Complete** |
-| 5 | TTFT/TPOT with fused kernel | Not measured |
+| 5 | TTFT/TPOT with fused kernel | Not measured (kernel too slow) |
 | 5 | Max batch size / memory savings | Not measured |
+| 6a | Kernel benchmark: TQ vs SDPA | **Complete** (41.6× → 6.9× with bdz=16) |
+| 6a | bdz sweep optimization | **Complete** (6× speedup measured) |
+| 6a | Time breakdown analysis | **Complete** (compute-bound) |
+| 6a | bdz>1 merge integration | **Blocked** (cross-tz softmax merge bug) |
+| 6a | In-kernel FWHT | **Blocked** (shuffle vs warp layout) |
 | - | Perplexity eval (WikiText, LongBench) | Not started |
 
 ### Test Counts
@@ -202,10 +242,13 @@ Qwen3-1.7B generates coherent text through the fused CUDA kernel path:
 
 1. **4-bit quantization with Hadamard rotation produces correct LLM output** at 4× compression.
 2. **3.5-bit mixed quantization fails** — attention KL divergence explodes 74× from high-norm KV vectors.
-3. **Fused CUDA decode kernel works in vLLM** — dequant + attention in one kernel, no FlashAttention fallback for decode.
-4. **Eager simulation overhead is 1.84×** — from Python Hadamard rotation + codebook quantize-dequant.
-5. **FlashInfer source was NOT modified.** Kernel is standalone, uses FlashInfer headers for math/types only.
-6. **Rotated attention is mathematically equivalent** — Q·K = (RQ)·(RK) for orthogonal R. Output needs one inverse rotation.
+3. **Fused CUDA decode kernel works in vLLM** — dequant + attention in one kernel, cosine=1.0.
+4. **Standalone kernel is 7-42× slower than FlashAttention** — missing tensor cores, pipelining, warp specialization.
+5. **bdz=16 gives 6× speedup** but merge logic is buggy (not integrated into default).
+6. **Kernel is compute-bound** after thread optimization. Double-buffering won't help.
+7. **Python FWHT (203μs) is the dominant overhead** — more than the kernel itself (142μs).
+8. **Right path: modify FlashInfer's decode kernel** rather than optimizing our standalone kernel.
+9. **FlashInfer source was NOT modified.** Kernel is standalone, uses FlashInfer headers for math/types only.
 
 ### What IS and IS NOT done
 

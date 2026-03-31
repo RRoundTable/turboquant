@@ -72,30 +72,43 @@ Fused CUDA decode kernel running in vLLM. Qwen3-1.7B generates coherent text.
 - [ ] Benchmark: TPOT with fused kernel vs eager simulation
 - [ ] Max batch size: measure VRAM savings
 
-### Phase 6: Benchmarks and Comparison — NOW
+### Phase 6: Benchmarks and Optimization — DONE (partial)
 
-Comprehensive comparison between vanilla FlashInfer and TurboQuant across all key metrics.
+#### 6a. Kernel benchmark — DONE
 
-#### 6a. FlashInfer vs TurboQuant kernel benchmark
-- [ ] Standalone kernel benchmark: vanilla FlashInfer decode vs TurboQuant fused decode (same seq_lens, same hardware)
-- [ ] Measure: latency per token, memory bandwidth utilization, throughput (tokens/μs)
-- [ ] Sweep: seq_len = 64, 256, 1024, 4096
+Standalone kernel comparison (seq_len=1024, Qwen3 config):
 
-#### 6b. vLLM serving comparison
-- [ ] vLLM + FlashInfer backend (baseline): TTFT, TPOT on Qwen3-1.7B
-- [ ] vLLM + TurboQuant fused backend: TTFT, TPOT on same model/prompts
-- [ ] Compare: output quality (factual accuracy, cosine similarity)
-- [ ] Compare: memory footprint (GPU memory used at same batch size)
+| Kernel | Latency | vs SDPA |
+|--------|---------|---------|
+| FP16 SDPA (FlashAttention) | 20.5 μs | 1.0× |
+| TQ fused (bdz=1, 16 threads) | 856 μs | 41.6× slower |
+| TQ fused (bdz=16, 256 threads) | 142 μs | 6.9× slower |
 
-#### 6c. Compressed cache and memory savings
-- [ ] Eliminate duplicate storage (fp16 cache + quantized tensors → quantized only)
-- [ ] Measure: max batch size with compressed cache vs fp16 baseline
-- [ ] Calculate: actual VRAM reduction at various context lengths
+Memory: 3.76× compression confirmed (512 → 136 bytes/token/head).
 
-#### 6d. Perplexity evaluation
-- [ ] WikiText-2 perplexity: baseline vs TurboQuant 4-bit
-- [ ] LongBench accuracy
-- [ ] NIAH (Needle In A Haystack) at 100k+ tokens
+#### 6a-opt. Step-by-step optimization — DONE
+
+| Step | What | Result |
+|------|------|--------|
+| More threads (bdz sweep) | bdz 1→16 | 856→142 μs (**6× speedup**) |
+| Pipeline analysis | Kernel is compute-bound | Double-buffer won't help |
+| FWHT in kernel | Shuffle-based FWHT | Broken with multi-warp layout |
+| bdz>1 merge | Cross-tz softmax merge | Broken (tile index interaction with GQA) |
+
+**Conclusion: our standalone kernel proves correctness (cosine=1.0) but is 7-42× slower than FlashAttention. Closing this gap requires modifying FlashInfer's optimized decode kernel directly — replacing its `cast_load` KV path with a dequant path. This avoids reimplementing tensor cores, pipelining, and warp specialization from scratch.**
+
+#### 6b-6d. Not started
+
+Blocked on kernel performance. The fused kernel is too slow for meaningful serving benchmarks.
+
+### Phase 7: FlashInfer kernel modification — NEXT
+
+The right path forward: modify FlashInfer's `decode.cuh` to add a TurboQuant KV loading path. This gives us FlashInfer's existing optimizations (tensor cores, pipelining, warp specialization) with our 4-bit dequant fused into the KV load.
+
+- [ ] Fork FlashInfer `decode.cuh` → add `DTypeKV = turboquant_4bit` type dispatch
+- [ ] Replace `cp_async` KV load with: load 4-bit packed bytes → codebook lookup → write fp16 to smem
+- [ ] Keep all existing QK, softmax, V accumulation unchanged
+- [ ] Benchmark: FlashInfer+TurboQuant vs vanilla FlashInfer
 
 ## Next
 
