@@ -111,7 +111,8 @@ torch::Tensor flashinfer_turbo_decode(
 
     #define LAUNCH(BDY) do { \
         constexpr uint32_t tile_tokens = tile_size_per_bdx * BDY * bdz; \
-        constexpr uint32_t merge_entry_size = 2 + 4 * vec_size; /* m, d, o_acc */ \
+        constexpr uint32_t o_per_tx = 4 * vec_size; \
+        constexpr uint32_t merge_entry_size = 2 + bdx * o_per_tx; \
         uint32_t merge_bytes = bdz * BDY * merge_entry_size * sizeof(float); \
         uint32_t tile_bytes = 2 * tile_tokens * 64 * sizeof(__half); \
         uint32_t smem_size = max(tile_bytes, merge_bytes); \
@@ -225,7 +226,9 @@ def setup_data(seq_len):
                     deq[t, h, chunk * 64:chunk * 64 + 64] = c4[idx.long()] * norm
 
     gqa = NUM_QO_HEADS // NUM_KV_HEADS
-    rq = RQ.transpose(0, 1).unsqueeze(0)
+    # Use fp16-rounded Q to match what kernel receives
+    RQ_fp16 = RQ.half().float()
+    rq = RQ_fp16.transpose(0, 1).unsqueeze(0)
     rk = deq_RK.repeat_interleave(gqa, dim=1).transpose(0, 1).unsqueeze(0)
     rv = deq_RV.repeat_interleave(gqa, dim=1).transpose(0, 1).unsqueeze(0)
     ref = inv_rotate(torch.nn.functional.scaled_dot_product_attention(

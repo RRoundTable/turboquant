@@ -210,17 +210,31 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
     }
 
     // === Merge across bdz groups ===
+    // Each (tz, ty, tx) thread has its own (m_global, d_global, o_acc).
+    // m and d are the same across all tx in the same (tz, ty) — they're broadcast by shfl.
+    // o_acc differs per tx — each tx holds a different vec_size slice of the output.
+    //
+    // Strategy: store (m, d) once per (tz, ty) from tx=0.
+    // Store o_acc per (tz, ty, tx) — each tx writes its own slice.
+    // Merge: tz=0 reads all tz groups, scales and accumulates.
     if constexpr (bdz > 1) {
-        // Each tz has (m_global, d_global, o_acc). Store to smem, merge into tz=0.
-        constexpr uint32_t merge_entry_size = 2 + MAX_CHUNKS * vec_size;  // m, d, o values
         float* merge_smem = reinterpret_cast<float*>(smem);
-        uint32_t merge_idx = tz * bdy + ty;
+        uint32_t tz_ty_idx = tz * bdy + ty;
 
-        merge_smem[merge_idx * merge_entry_size + 0] = m_global;
-        merge_smem[merge_idx * merge_entry_size + 1] = d_global;
+        // Layout per (tz, ty): [m, d, o_per_tx[bdx][MAX_CHUNKS * vec_size]]
+        // Size per entry: 2 + bdx * MAX_CHUNKS * vec_size
+        constexpr uint32_t o_size_per_tx = MAX_CHUNKS * vec_size;
+        constexpr uint32_t merge_entry_size = 2 + bdx * o_size_per_tx;
+
+        // tx=0 writes m and d
+        if (tx == 0) {
+            merge_smem[tz_ty_idx * merge_entry_size + 0] = m_global;
+            merge_smem[tz_ty_idx * merge_entry_size + 1] = d_global;
+        }
+        // Each tx writes its own o_acc slice
         for (uint32_t c = 0; c < dim_chunks; c++)
             for (uint32_t i = 0; i < vec_size; i++)
-                merge_smem[merge_idx * merge_entry_size + 2 + c * vec_size + i] = o_acc[c][i];
+                merge_smem[tz_ty_idx * merge_entry_size + 2 + tx * o_size_per_tx + c * vec_size + i] = o_acc[c][i];
         block.sync();
 
         if (tz == 0) {
@@ -229,27 +243,25 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
                 float m_other = merge_smem[other * merge_entry_size + 0];
                 float d_other = merge_smem[other * merge_entry_size + 1];
 
-                // Skip if other tz had no valid tokens
                 if (m_other == -flashinfer::math::inf) continue;
-                // Skip if self had no valid tokens — take other's values
                 if (m_global == -flashinfer::math::inf) {
                     m_global = m_other;
                     d_global = d_other;
                     for (uint32_t c = 0; c < dim_chunks; c++)
                         for (uint32_t i = 0; i < vec_size; i++)
-                            o_acc[c][i] = merge_smem[other * merge_entry_size + 2 + c * vec_size + i];
+                            o_acc[c][i] = merge_smem[other * merge_entry_size + 2 + tx * o_size_per_tx + c * vec_size + i];
                     continue;
                 }
 
                 float m_new = max(m_global, m_other);
                 float s_self = flashinfer::math::ptx_exp2(m_global - m_new);
-                float s_other = flashinfer::math::ptx_exp2(m_other - m_new);
+                float s_other_scale = flashinfer::math::ptx_exp2(m_other - m_new);
 
-                d_global = d_global * s_self + d_other * s_other;
+                d_global = d_global * s_self + d_other * s_other_scale;
                 for (uint32_t c = 0; c < dim_chunks; c++)
                     for (uint32_t i = 0; i < vec_size; i++) {
-                        float o_other = merge_smem[other * merge_entry_size + 2 + c * vec_size + i];
-                        o_acc[c][i] = o_acc[c][i] * s_self + o_other * s_other;
+                        float o_other = merge_smem[other * merge_entry_size + 2 + tx * o_size_per_tx + c * vec_size + i];
+                        o_acc[c][i] = o_acc[c][i] * s_self + o_other * s_other_scale;
                     }
                 m_global = m_new;
             }
