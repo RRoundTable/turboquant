@@ -124,7 +124,7 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
             // Load K tile: dequant from quantized cache → fp16 smem
             dequant_load_kv_tile<tile_size_per_bdx, vec_size, bdx, bdy, bdz>(
                 k_smem, paged_kv, paged_kv.k_quant, paged_kv.k_norms,
-                kv_head_idx, CHUNK_DIMS,
+                kv_head_idx, chunk,
                 packed_page_iter_base + iter * tile_tokens,
                 chunk_size - iter * tile_tokens,
                 last_indptr, tx, ty, tz
@@ -177,7 +177,7 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
 
             dequant_load_kv_tile<tile_size_per_bdx, vec_size, bdx, bdy, bdz>(
                 v_smem, paged_kv, paged_kv.v_quant, paged_kv.v_norms,
-                kv_head_idx, CHUNK_DIMS,
+                kv_head_idx, chunk,
                 packed_page_iter_base + iter * tile_tokens,
                 chunk_size - iter * tile_tokens,
                 last_indptr, tx, ty, tz

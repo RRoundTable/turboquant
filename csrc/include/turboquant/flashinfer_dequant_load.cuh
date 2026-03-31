@@ -52,48 +52,44 @@ __device__ __forceinline__ void dequant_load_to_smem(
 template <uint32_t tile_size_per_bdx, uint32_t vec_size, uint32_t bdx,
           uint32_t bdy, uint32_t bdz, typename IdType>
 __device__ __forceinline__ void dequant_load_kv_tile(
-    __half* smem,
+    __half* smem,                       // [tile_tokens, CHUNK_DIMS] fp16 — one 64-dim chunk
     const paged_kv_turbo_t<IdType>& paged_kv,
-    const uint8_t* kv_data,    // k_quant or v_quant
-    const __half* kv_norms,    // k_norms or v_norms
+    const uint8_t* kv_data,
+    const __half* kv_norms,
     uint32_t kv_head_idx,
-    uint32_t head_dim,
+    uint32_t chunk_idx,                 // which 64-dim chunk to load
     uint32_t packed_page_iter_base,
-    uint32_t chunk_size,       // total tokens in this chunk
+    uint32_t chunk_size,
     IdType last_indptr,
     uint32_t tx, uint32_t ty, uint32_t tz
 ) {
     float codebook_scale = rsqrtf(static_cast<float>(paged_kv.padded_dim));
     constexpr uint32_t CHUNK_DIMS = 64;
-    constexpr uint32_t QUANT_BYTES = 32;
 
     #pragma unroll
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
         uint32_t row_in_tile = (tz * bdy + ty) * tile_size_per_bdx + j;
         bool valid = row_in_tile < chunk_size;
 
-        // Page lookup
         uint32_t packed = packed_page_iter_base + row_in_tile;
         uint32_t page_iter, entry_idx;
         paged_kv.page_size.divmod(packed, page_iter, entry_idx);
 
         if (valid && page_iter >= last_indptr) valid = false;
 
-        // Get quantized data and norms for each 64-dim chunk
-        for (uint32_t chunk = 0; chunk < paged_kv.dim_chunks; chunk++) {
-            size_t q_off = valid ?
-                paged_kv.get_quant_offset(__ldg(paged_kv.indices + page_iter),
-                                           kv_head_idx, entry_idx, chunk) : 0;
-            size_t n_off = valid ?
-                paged_kv.get_norm_offset(__ldg(paged_kv.indices + page_iter),
-                                          kv_head_idx, entry_idx, chunk) : 0;
+        size_t q_off = valid ?
+            paged_kv.get_quant_offset(__ldg(paged_kv.indices + page_iter),
+                                       kv_head_idx, entry_idx, chunk_idx) : 0;
+        size_t n_off = valid ?
+            paged_kv.get_norm_offset(__ldg(paged_kv.indices + page_iter),
+                                      kv_head_idx, entry_idx, chunk_idx) : 0;
 
-            float norm = valid ? __half2float(kv_norms[n_off]) : 0.0f;
-            float ns = codebook_scale * norm;
+        float norm = valid ? __half2float(kv_norms[n_off]) : 0.0f;
+        float ns = codebook_scale * norm;
 
-            __half* dst = smem + row_in_tile * head_dim + chunk * CHUNK_DIMS + tx * vec_size;
-            dequant_load_to_smem<vec_size>(dst, kv_data + q_off, ns, tx, valid);
-        }
+        // Write to smem row: [row_in_tile, tx * vec_size .. +vec_size]
+        __half* dst = smem + row_in_tile * CHUNK_DIMS + tx * vec_size;
+        dequant_load_to_smem<vec_size>(dst, kv_data + q_off, ns, tx, valid);
     }
 }
 
