@@ -103,7 +103,7 @@ torch::Tensor flashinfer_turbo_decode(
 
     constexpr uint32_t vec_size = 8;
     constexpr uint32_t bdx = 64 / vec_size;  // 8
-    constexpr uint32_t bdz = 1;
+    constexpr uint32_t bdz = 16;
     constexpr uint32_t tile_size_per_bdx = 4;
     constexpr uint32_t num_stages_smem = 1;  // not used for dequant path, but template param
 
@@ -111,7 +111,10 @@ torch::Tensor flashinfer_turbo_decode(
 
     #define LAUNCH(BDY) do { \
         constexpr uint32_t tile_tokens = tile_size_per_bdx * BDY * bdz; \
-        uint32_t smem_size = 2 * tile_tokens * 64 * sizeof(__half); \
+        constexpr uint32_t merge_entry_size = 2 + 4 * vec_size; /* m, d, o_acc */ \
+        uint32_t merge_bytes = bdz * BDY * merge_entry_size * sizeof(float); \
+        uint32_t tile_bytes = 2 * tile_tokens * 64 * sizeof(__half); \
+        uint32_t smem_size = max(tile_bytes, merge_bytes); \
         dim3 grid(batch_size, num_kv_heads); \
         dim3 block(bdx, BDY, bdz); \
         auto kernel = FlashInferDecodeWithTurboQuantKV<vec_size, bdx, BDY, bdz, tile_size_per_bdx, num_stages_smem, int32_t>; \
