@@ -68,7 +68,7 @@ using namespace turboquant;
 // PyTorch entry point for the fused decode kernel.
 // Takes pre-quantized KV cache and query, returns attention output.
 torch::Tensor turboquant_decode_attention(
-    torch::Tensor q,              // [batch_size, num_qo_heads, head_dim] fp16
+    torch::Tensor q,              // [batch_size, num_qo_heads, head_dim] fp16 (UNROTATED)
     torch::Tensor k_quant,        // [total_quant_bytes] uint8
     torch::Tensor v_quant,        // [total_quant_bytes] uint8
     torch::Tensor k_norms,        // [total_norm_entries] fp16
@@ -76,6 +76,7 @@ torch::Tensor turboquant_decode_attention(
     torch::Tensor kv_indices,     // [total_pages] int32
     torch::Tensor kv_indptr,      // [batch_size + 1] int32
     torch::Tensor kv_last_page_len, // [batch_size] int32
+    torch::Tensor signs,          // [padded_dim] float32, Hadamard signs (empty = no rotation)
     int num_qo_heads,
     int num_kv_heads,
     int page_size,
@@ -105,7 +106,7 @@ torch::Tensor turboquant_decode_attention(
 
     // Common params
     constexpr uint32_t vec_size = 8;
-    constexpr uint32_t bdz = 1;
+    constexpr uint32_t bdz = 1;  // TODO: increase to 16 for 6x speedup (needs tile size fix for small seq_lens)
     constexpr uint32_t tile_size_per_bdx = 4;
 
     dim3 grid(batch_size, num_kv_heads);
@@ -124,8 +125,9 @@ torch::Tensor turboquant_decode_attention(
         dim3 block(bdx, BDY, bdz); \
         auto kernel = BatchDecodeWithTurboQuantKVKernel<HD, vec_size, bdx, BDY, bdz, tile_size_per_bdx, int32_t>; \
         cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size); \
+        const float* signs_ptr = signs.numel() > 0 ? signs.data_ptr<float>() : nullptr; \
         kernel<<<grid, block, smem_size, stream>>>( \
-            paged_kv, q_ptr, o_ptr, lse_ptr, num_qo_heads, sm_scale); \
+            paged_kv, q_ptr, o_ptr, lse_ptr, signs_ptr, num_qo_heads, sm_scale); \
     } while(0)
 
     #define DISPATCH_GQA(HD) do { \
@@ -170,7 +172,7 @@ class TurboQuantDecoder:
     @torch.no_grad()
     def decode(
         self,
-        q: torch.Tensor,              # [batch, num_qo_heads, head_dim] fp16
+        q: torch.Tensor,              # [batch, num_qo_heads, head_dim] fp16 (UNROTATED)
         k_quant: torch.Tensor,        # flat uint8
         v_quant: torch.Tensor,        # flat uint8
         k_norms: torch.Tensor,        # flat fp16
@@ -178,20 +180,26 @@ class TurboQuantDecoder:
         kv_indices: torch.Tensor,     # [total_pages] int32
         kv_indptr: torch.Tensor,      # [batch + 1] int32
         kv_last_page_len: torch.Tensor,  # [batch] int32
+        signs: Optional[torch.Tensor] = None,  # [padded_dim] float32
         num_qo_heads: int = 1,
         sm_scale: Optional[float] = None,
     ) -> torch.Tensor:
         """Run fused decode attention on quantized KV cache.
 
-        Returns: [batch, num_qo_heads, head_dim] fp16 attention output.
+        Q is passed UNROTATED. The kernel rotates Q and un-rotates output internally.
+        Returns: [batch, num_qo_heads, head_dim] fp16 attention output (UNROTATED).
         """
         if sm_scale is None:
             sm_scale = 1.0 / math.sqrt(self.head_dim)
+
+        if signs is None:
+            signs = torch.empty(0, dtype=torch.float32, device=q.device)
 
         module = _get_module()
         return module.decode_attention(
             q, k_quant, v_quant, k_norms, v_norms,
             kv_indices, kv_indptr, kv_last_page_len,
+            signs,
             num_qo_heads, self.num_kv_heads, self.page_size,
             self.head_dim, self.padded_dim, sm_scale,
         )

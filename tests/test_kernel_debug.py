@@ -119,17 +119,19 @@ def run_test(num_kv_heads, num_qo_heads, seq_len, page_size=16):
     lpl_val = seq_len - (num_pages - 1) * page_size if num_pages > 0 else 0
     kl = torch.tensor([lpl_val], dtype=torch.int32, device=DEVICE)
 
+    # Pass rotated Q, empty signs (kernel does not rotate internally yet)
+    empty_signs = torch.empty(0, dtype=torch.float32, device=DEVICE)
     fused = module.decode_attention(
-        RQ.half().unsqueeze(0),  # [1, num_qo_heads, hd] → need [batch=1, heads, hd]
+        RQ.half().unsqueeze(0),
         k_q.view(-1), v_q.view(-1),
         k_n.view(-1).view(torch.uint8).view(torch.float16),
         v_n.view(-1).view(torch.uint8).view(torch.float16),
         ki, kp, kl,
+        empty_signs,
         num_qo_heads, num_kv_heads, page_size,
         hd, pd, sm)
 
-    fused_unrot = inv_rotate(fused.float().squeeze(0))  # [num_qo_heads, hd]
-
+    fused_unrot = inv_rotate(fused.float().squeeze(0))
     cos = F.cosine_similarity(ref_out.flatten(), fused_unrot.flatten(), dim=0).item()
     return cos
 

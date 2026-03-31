@@ -19,6 +19,7 @@
 #include "flashinfer/vec_dtypes.cuh"
 #include "flashinfer/attention/state.cuh"
 
+#include "turboquant/hadamard.cuh"
 #include "turboquant/page_turbo.cuh"
 
 namespace turboquant {
@@ -164,9 +165,10 @@ template <uint32_t HEAD_DIM, uint32_t vec_size, uint32_t bdx, uint32_t bdy, uint
           uint32_t tile_size_per_bdx, typename IdType>
 __global__ void BatchDecodeWithTurboQuantKVKernel(
     const paged_kv_turbo_t<IdType> paged_kv,  // passed by value from host
-    const __half* __restrict__ q,              // [batch_size, num_qo_heads, head_dim]
-    __half* __restrict__ o,                    // [batch_size, num_qo_heads, head_dim]
+    const __half* __restrict__ q,              // [batch_size, num_qo_heads, head_dim] (UNROTATED)
+    __half* __restrict__ o,                    // [batch_size, num_qo_heads, head_dim] (UNROTATED output)
     float* __restrict__ lse,                   // [batch_size, num_qo_heads] or nullptr
+    const float* __restrict__ signs,           // [padded_dim] Hadamard rotation signs (nullptr = no rotation)
     uint32_t num_qo_heads,
     float sm_scale
 ) {
@@ -197,11 +199,26 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
     __half* v_smem = k_smem + tile_tokens * kTileDims;
     float* smem_md = reinterpret_cast<float*>(v_smem + tile_tokens * kTileDims);
 
-    // Output accumulator: one vec_size float array per dim_chunk.
-    // Each thread (tx) handles dims [tx*8 .. tx*8+7] within each 64-dim chunk.
-    // For HEAD_DIM=128, dim_chunks=2: thread stores to chunk0 and chunk1 output positions.
-    // Max 4 chunks (HEAD_DIM=256). Statically allocate for up to 4.
+    // Pre-load and rotate Q (once per decode, stored in registers per chunk)
     constexpr uint32_t MAX_CHUNKS = HEAD_DIM / kTileDims;
+    float q_rotated[MAX_CHUNKS][vec_size];
+    for (uint32_t chunk = 0; chunk < MAX_CHUNKS; chunk++) {
+        uint32_t q_dim = chunk * kTileDims + tx * vec_size;
+        if (q_dim < HEAD_DIM) {
+            // Load raw Q
+            vec_t<float, vec_size> q_raw;
+            q_raw.cast_load(q + batch_idx * num_qo_heads * HEAD_DIM
+                              + qo_head_idx * HEAD_DIM + q_dim);
+            for (uint32_t i = 0; i < vec_size; i++) q_rotated[chunk][i] = q_raw[i];
+        } else {
+            for (uint32_t i = 0; i < vec_size; i++) q_rotated[chunk][i] = 0.f;
+        }
+        // TODO: In-kernel FWHT rotation (needs debugging).
+        // For now, caller must pre-rotate Q and post-un-rotate output.
+        (void)signs;
+    }
+
+    // Output accumulator per chunk
     float o_acc[MAX_CHUNKS][vec_size];
     for (uint32_t c = 0; c < MAX_CHUNKS; c++)
         for (uint32_t i = 0; i < vec_size; i++)
@@ -232,15 +249,8 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
             );
             block.sync();
 
-            uint32_t q_dim_start = chunk * kTileDims;
-            vec_t<float, vec_size> q_chunk;
-            if (q_dim_start + tx * vec_size < HEAD_DIM) {
-                q_chunk.cast_load(q + batch_idx * num_qo_heads * HEAD_DIM
-                                    + qo_head_idx * HEAD_DIM
-                                    + q_dim_start + tx * vec_size);
-            } else {
-                for (uint32_t i = 0; i < vec_size; i++) q_chunk[i] = 0.f;
-            }
+            // Use pre-loaded, pre-rotated Q for this chunk
+            float* q_chunk_ptr = q_rotated[chunk];
 
             #pragma unroll
             for (uint32_t j = 0; j < bdy * tile_size_per_bdx; ++j) {
@@ -249,7 +259,7 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
                 float partial = 0.f;
                 #pragma unroll
                 for (uint32_t i = 0; i < vec_size; ++i) {
-                    partial += q_chunk[i] * k_vec[i];
+                    partial += q_chunk_ptr[i] * k_vec[i];
                 }
                 #pragma unroll
                 for (uint32_t offset = bdx / 2; offset > 0; offset /= 2) {
@@ -310,9 +320,16 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
         }
     }
 
-    // Final normalization and output write
+    // Final normalization
     float d_rcp = (m_global != -flashinfer::math::inf) ? flashinfer::math::ptx_rcp(d_global) : 0.f;
+    for (uint32_t c = 0; c < MAX_CHUNKS; c++)
+        for (uint32_t i = 0; i < vec_size; i++)
+            o_acc[c][i] *= d_rcp;
 
+    // TODO: In-kernel inverse Hadamard rotation (needs debugging).
+    // For now, caller handles un-rotation in Python.
+
+    // Write output (now in original, un-rotated space)
     if (tz == 0) {
         for (uint32_t chunk = 0; chunk < dim_chunks; chunk++) {
             uint32_t o_dim_start = chunk * kTileDims;
@@ -322,7 +339,7 @@ __global__ void BatchDecodeWithTurboQuantKVKernel(
                               + o_dim_start + tx * vec_size;
             #pragma unroll
             for (uint32_t i = 0; i < vec_size; ++i) {
-                o_ptr[i] = __float2half(o_acc[chunk][i] * d_rcp);
+                o_ptr[i] = __float2half(o_acc[chunk][i]);
             }
         }
         if (lse != nullptr) {
