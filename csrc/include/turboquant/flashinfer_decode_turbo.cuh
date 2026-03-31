@@ -31,63 +31,14 @@ using flashinfer::math::shfl_xor_sync;
 // These read fp16 from shared memory — identical to the FP16 path.
 // (They're in an anonymous namespace in decode.cuh, so we reference them via the header.)
 
-// Warp-safe FWHT for one 64-dim chunk using shared memory.
-// Only the bdx threads (within the same warp) participate.
-// Uses __syncwarp() instead of __syncthreads().
-// data: [64] floats in smem. bdx=8 threads, each owns 8 consecutive values.
-template <uint32_t vec_size, uint32_t bdx>
-__device__ __forceinline__ void warp_fwht_64(float* data, uint32_t tx, uint32_t warp_mask) {
-    constexpr uint32_t d = bdx * vec_size;
-
-    // Phase 1: intra-thread butterflies (h=1,2,4)
-    #pragma unroll
-    for (uint32_t h = 1; h < vec_size; h *= 2) {
-        #pragma unroll
-        for (uint32_t i = 0; i < vec_size; i++) {
-            uint32_t partner = i ^ h;
-            if (partner > i) {
-                float a = data[tx * vec_size + i];
-                float b = data[tx * vec_size + partner];
-                data[tx * vec_size + i] = a + b;
-                data[tx * vec_size + partner] = a - b;
-            }
-        }
-    }
-    __syncwarp(warp_mask);
-
-    // Phase 2: inter-thread butterflies (h=8,16,32)
-    for (uint32_t h = vec_size; h < d; h *= 2) {
-        #pragma unroll
-        for (uint32_t i = 0; i < vec_size; i++) {
-            uint32_t gidx = tx * vec_size + i;
-            uint32_t pidx = gidx ^ h;
-            float my_val = data[gidx];
-            float p_val = data[pidx];
-            __syncwarp(warp_mask);
-            if (gidx < pidx) {
-                data[gidx] = my_val + p_val;
-                data[pidx] = my_val - p_val;
-            }
-            __syncwarp(warp_mask);
-        }
-    }
-
-    float inv_sqrt = rsqrtf(static_cast<float>(d));
-    #pragma unroll
-    for (uint32_t i = 0; i < vec_size; i++)
-        data[tx * vec_size + i] *= inv_sqrt;
-    __syncwarp(warp_mask);
-}
-
 template <uint32_t vec_size, uint32_t bdx, uint32_t bdy, uint32_t bdz,
           uint32_t tile_size_per_bdx, uint32_t num_stages_smem,
           typename IdType>
 __global__ void FlashInferDecodeWithTurboQuantKV(
     // Query and output (same as FlashInfer)
-    const __half* __restrict__ q,     // [batch, num_qo_heads, head_dim] (UNROTATED if signs != nullptr)
-    __half* __restrict__ o,           // [batch, num_qo_heads, head_dim] (UNROTATED output)
+    const __half* __restrict__ q,     // [batch, num_qo_heads, head_dim]
+    __half* __restrict__ o,           // [batch, num_qo_heads, head_dim]
     float* __restrict__ lse,
-    const float* __restrict__ signs,  // [padded_dim] Hadamard rotation signs (nullptr = no rotation)
 
     // TurboQuant quantized KV (replaces paged_kv_t)
     const paged_kv_turbo_t<IdType> paged_kv,
@@ -137,51 +88,19 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
     __half* k_smem = (__half*)smem;
     __half* v_smem = (__half*)(smem + tile_tokens * CHUNK_DIMS * sizeof(__half));
 
-    // Load query and optionally apply Hadamard rotation in-kernel.
-    // Each ty is a different QO head — needs its own FWHT.
-    // Use smem scratch: bdy buffers of 64 floats each, parallel across ty.
-    constexpr uint32_t MAX_CHUNKS = 4;
+    // Load query (iterate over chunks for head_dim > 64)
+    constexpr uint32_t MAX_CHUNKS = 4;  // support up to head_dim=256
     float q_reg[MAX_CHUNKS][vec_size];
-    float* fwht_scratch = reinterpret_cast<float*>(smem);  // [bdy, 64] floats
-
     for (uint32_t c = 0; c < dim_chunks && c < MAX_CHUNKS; c++) {
         uint32_t q_dim = c * CHUNK_DIMS + tx * vec_size;
-
-        // tz=0 loads Q for each ty into its own scratch buffer
-        if (tz == 0) {
-            float* my_scratch = fwht_scratch + ty * CHUNK_DIMS;
-            if (q_dim < actual_head_dim) {
-                vec_t<float, vec_size> qv;
-                qv.cast_load(q + batch_idx * num_qo_heads * actual_head_dim
-                               + qo_head_idx * actual_head_dim + q_dim);
-                for (uint32_t i = 0; i < vec_size; i++)
-                    my_scratch[tx * vec_size + i] = qv[i];
-            } else {
-                for (uint32_t i = 0; i < vec_size; i++)
-                    my_scratch[tx * vec_size + i] = 0.f;
-            }
+        if (q_dim < actual_head_dim) {
+            vec_t<float, vec_size> qv;
+            qv.cast_load(q + batch_idx * num_qo_heads * actual_head_dim
+                           + qo_head_idx * actual_head_dim + q_dim);
+            for (uint32_t i = 0; i < vec_size; i++) q_reg[c][i] = qv[i];
+        } else {
+            for (uint32_t i = 0; i < vec_size; i++) q_reg[c][i] = 0.f;
         }
-        block.sync();
-
-        // Apply rotation per-ty using warp-safe FWHT (only bdx threads participate per warp)
-        if (signs != nullptr && tz == 0) {
-            float* my_scratch = fwht_scratch + ty * CHUNK_DIMS;
-            // signs * x
-            for (uint32_t i = 0; i < vec_size; i++)
-                my_scratch[tx * vec_size + i] *= signs[c * CHUNK_DIMS + tx * vec_size + i];
-            // Compute warp mask: only the bdx lanes for this ty in tz=0
-            // Lane ID = tx + ty * bdx + tz * bdx * bdy. For tz=0: lane = tx + ty*bdx.
-            // We want mask for lanes [ty*bdx .. ty*bdx+bdx-1]
-            uint32_t warp_mask = ((1u << bdx) - 1u) << (ty * bdx);
-            warp_fwht_64<vec_size, bdx>(my_scratch, tx, warp_mask);
-        }
-        block.sync();
-
-        // All threads read from their ty's scratch
-        float* my_scratch = fwht_scratch + ty * CHUNK_DIMS;
-        for (uint32_t i = 0; i < vec_size; i++)
-            q_reg[c][i] = my_scratch[tx * vec_size + i];
-        block.sync();
     }
 
     // Output accumulators (per chunk)
@@ -349,37 +268,9 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
         }
     }
 
-    // === Output normalization ===
+    // === Output normalization and write ===
     float d_rcp = (m_global != -flashinfer::math::inf) ? flashinfer::math::ptx_rcp(d_global) : 0.f;
-    for (uint32_t c = 0; c < dim_chunks; c++)
-        for (uint32_t i = 0; i < vec_size; i++)
-            o_acc[c][i] *= d_rcp;
 
-    // === Inverse Hadamard rotation on output (per chunk, in smem) ===
-    if (signs != nullptr && tz == 0) {
-        float* out_scratch = reinterpret_cast<float*>(smem) + ty * CHUNK_DIMS;
-        uint32_t warp_mask = ((1u << bdx) - 1u) << (ty * bdx);
-
-        for (uint32_t chunk = 0; chunk < dim_chunks; chunk++) {
-            // Write o_acc to smem
-            for (uint32_t i = 0; i < vec_size; i++)
-                out_scratch[tx * vec_size + i] = o_acc[chunk][i];
-            __syncwarp(warp_mask);
-
-            // Inverse: FWHT then signs
-            warp_fwht_64<vec_size, bdx>(out_scratch, tx, warp_mask);
-            for (uint32_t i = 0; i < vec_size; i++)
-                out_scratch[tx * vec_size + i] *= signs[chunk * CHUNK_DIMS + tx * vec_size + i];
-            __syncwarp(warp_mask);
-
-            // Read back
-            for (uint32_t i = 0; i < vec_size; i++)
-                o_acc[chunk][i] = out_scratch[tx * vec_size + i];
-            __syncwarp(warp_mask);
-        }
-    }
-
-    // === Write output ===
     if (tz == 0) {
         for (uint32_t chunk = 0; chunk < dim_chunks; chunk++) {
             uint32_t o_dim = chunk * CHUNK_DIMS + tx * vec_size;
@@ -388,7 +279,7 @@ __global__ void FlashInferDecodeWithTurboQuantKV(
             __half* o_ptr = o + (blockIdx.x * num_qo_heads + qo_head_idx) * actual_head_dim + o_dim;
             #pragma unroll
             for (uint32_t i = 0; i < vec_size; ++i) {
-                o_ptr[i] = __float2half(o_acc[chunk][i]);
+                o_ptr[i] = __float2half(o_acc[chunk][i] * d_rcp);
             }
         }
         if (lse != nullptr) {
