@@ -170,8 +170,10 @@ The entire tile load → sync → compute → sync pattern is serial.
   | 1024 | 60μs | 415μs | 296μs | 0.71× |
   | 2048 | 67μs | 755μs | 503μs | 0.67× |
 
-  Still 3-7× slower than SDPA. Remaining gap: page table overhead (divmod per token)
-  and low warp occupancy (64 threads = 2 warps per block).
+  Still 3-7× slower than SDPA at bdz=4. Remaining gap: occupancy + page table overhead.
+- [x] **7h.** Increase bdz to 16 — **3.3× speedup** (HYP-008 confirmed)
+  v4 at bdz=16: 89μs at seq=1024 (was 296μs at bdz=4). 256 threads = 8 warps.
+  Correctness: cos=1.0, 6/6 configs. Faster than SDPA at short sequences.
 
 ## Next
 

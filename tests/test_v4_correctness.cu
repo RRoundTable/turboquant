@@ -98,8 +98,16 @@ torch::Tensor decode_v4(
         TurboQuantPagedDecodeKernelV4<PosEncodingMode::kNone,t,8,BDX,BDY,BDZ,V,P> \
             <<<dim3(bs,num_kv_heads),dim3(BDX,BDY,BDZ),sm,stream>>>(p); \
     } while(0)
-    if (head_dim<=64) { if(bdy<=1) L4(64,8,1,4); else if(bdy<=2) L4(64,8,2,4); else L4(64,8,4,4); }
-    else { if(bdy<=1) L4(128,16,1,4); else if(bdy<=2) L4(128,16,2,4); else L4(128,16,4,4); }
+    // Maximize bdz for occupancy: bdx * bdy * bdz <= 1024
+    if (head_dim<=64) {
+        if(bdy<=1) L4(64,8,1,16);       // 128 threads
+        else if(bdy<=2) L4(64,8,2,8);   // 128 threads
+        else L4(64,8,4,4);              // 128 threads
+    } else {
+        if(bdy<=1) L4(128,16,1,16);     // 256 threads
+        else if(bdy<=2) L4(128,16,2,8); // 256 threads
+        else L4(128,16,4,4);            // 256 threads
+    }
     #undef L4
     return o;
 }
