@@ -106,6 +106,51 @@ Read `docs/ARCHITECTURE.md` for module boundaries and import rules.
 - ADRs are stored as git commits with `adr/*` tags
 - Spec records are stored as git commits with `spec/*` tags
 
+## Experiment-Driven Development
+
+All kernel optimization work follows a hypothesis → experiment → record cycle.
+
+### Workflow
+
+1. **Hypothesize**: Before writing code, write a hypothesis doc at `docs/hypotheses/HYP-NNN-short-name.md`:
+   ```markdown
+   # HYP-NNN: Short descriptive title
+
+   ## Hypothesis
+   What you believe will happen and why.
+
+   ## Prediction
+   Specific, measurable outcome (e.g., "v4 will be 2-3× faster than v2 at seq=1024").
+
+   ## Method
+   What code changes, what benchmark, what configs.
+
+   ## Status: pending | confirmed | rejected
+   ```
+
+2. **Experiment**: Run the experiment in a git worktree (`isolation: worktree`) or Forge notebook. Keep the main branch clean — experimental code lives in the worktree until results are in.
+
+3. **Record**: Update the hypothesis doc with actual results, then set status:
+   - **confirmed** — prediction matched. Merge the code to main, commit the hypothesis doc.
+   - **rejected** — prediction did not match. Do NOT merge code. Commit the hypothesis doc with the negative result and analysis of why.
+   Both outcomes are valuable. Never delete a rejected hypothesis — it prevents re-trying the same idea.
+
+4. **Review history**: Before proposing a new optimization, read ALL existing hypotheses in `docs/hypotheses/`. Check if the idea (or a similar one) was already tried. If so, explain what's different this time.
+
+5. **Search literature**: When stuck or proposing a new direction, search papers related to:
+   - KV cache quantization (KIVI, GEAR, KVQuant, QuIP, SqueezeLLM)
+   - GPU kernel optimization (FlashAttention, FlashDecoding, PagedAttention)
+   - Dequantization on GPU (mixed-precision matmul, lookup table quantization)
+   - Tensor core utilization with non-standard data formats
+
+### Rules
+
+- Never skip the hypothesis doc — even for "obvious" improvements
+- Every experiment must have a predicted outcome BEFORE running
+- Rejected experiments are as important as confirmed ones
+- Check `docs/hypotheses/` before proposing any new optimization
+- Include paper references when the idea comes from literature
+
 ## Code Standards
 
 - No `TODO`, `FIXME`, `HACK`, `XXX`, or `WORKAROUND` in committed code
