@@ -5,6 +5,7 @@
 
 #include <torch/extension.h>
 #include <c10/cuda/CUDAStream.h>
+#include "flashinfer_decode_turboquant_v2.cuh"  // for TurboQuantBatchDecodeParams
 #include "flashinfer_decode_turboquant_v4.cuh"
 
 using namespace flashinfer;
@@ -117,9 +118,11 @@ torch::Tensor turboquant_decode_v4(
     constexpr int VEC = 8;
 
     // Compute optimal bdz: maximize within 1024 threads, cap at 64
+    // Cap at 768 threads to avoid register pressure (v4 uses ~64 regs/thread,
+    // A100 has 65536 regs/SM, 768*64=49152 leaves headroom)
     auto compute_bdz = [](int bdx, int bdy) -> int {
-        int max_bdz = 1024 / (bdx * bdy);
-        return (max_bdz > 64) ? 64 : max_bdz;
+        int max_bdz = 768 / (bdx * bdy);
+        return (max_bdz > 64) ? 64 : (max_bdz < 1 ? 1 : max_bdz);
     };
 
     // Dispatch on padded_dim → bdx, then bdy, then bdz

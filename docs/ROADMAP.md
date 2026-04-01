@@ -186,7 +186,9 @@ Tensor cores help only for GQA≥4 (HYP-007a). Dequant is FREE (HYP-008).
 - [x] **8a.** Perplexity evaluation — **0.01% degradation** (14.91 → 14.91 PPL on WikiText-2)
 - [x] **8b.** Memory savings — **3.76× compression**, 3.8× more concurrent requests
 - [ ] **8c.** vLLM E2E with v4 kernel — wire bdz=16 kernel into vLLM backend
-- [ ] **8d.** Multi-model validation — Llama-3-8B, Mistral-7B (GQA=4:1, tensor core benefit)
+- [x] **8d.** Multi-model validation — **6/6 models pass** on A100
+  Qwen3-1.7B (GQA=2:1): 104μs, Llama-3-8B (4:1): 179μs, Mistral-7B (4:1): 173μs,
+  Llama-2-7B (MHA): 72μs, Llama-3-70B (8:1): 305μs, Qwen3-0.6B (2:1,hd=64): 54μs
 - [x] **8e.** Max batch size — **3.8× more requests** (71→268 at seq=4K on A100-40GB)
 
 ## Next
