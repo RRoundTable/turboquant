@@ -93,39 +93,30 @@ flowchart LR
 
 ### Prefill VRAM Layout Comparison
 
+Per page (16 tokens, head_dim=128):
+
 ```mermaid
-block-beta
-    columns 2
-
-    block:fp16header:2
-        A["VRAM Layout Comparison (per page, 16 tokens, head_dim=128)"]
+flowchart LR
+    subgraph FP16["FlashInfer FP16 — 8192 B/page/head"]
+        direction TB
+        K1["K data<br/>16 x 128 x 2B<br/><b>4096 B</b>"]
+        V1["V data<br/>16 x 128 x 2B<br/><b>4096 B</b>"]
     end
 
-    block:fp16:1
-        B["<b>FlashInfer FP16</b>"]
-        space
-        C["K data: 16 x 128 x 2B = 4096 B"]
-        D["V data: 16 x 128 x 2B = 4096 B"]
-        space
-        E["Total: 8192 bytes/page/head"]
+    subgraph TQ["TurboQuant 4-bit — 2112 B/page/head"]
+        direction TB
+        K2["K quant<br/>16 x 64B<br/><b>1024 B</b>"]
+        KN["K norms<br/>16 x 2B<br/><b>32 B</b>"]
+        V2["V quant<br/>16 x 64B<br/><b>1024 B</b>"]
+        VN["V norms<br/>16 x 2B<br/><b>32 B</b>"]
     end
 
-    block:tq:1
-        F["<b>TurboQuant 4-bit</b>"]
-        space
-        G["K quant: 16 x 64B = 1024 B"]
-        H["K norms: 16 x 2B = 32 B"]
-        I["V quant: 16 x 64B = 1024 B"]
-        J["V norms: 16 x 2B = 32 B"]
-        K["Total: 2112 bytes/page/head"]
-    end
-
-    style C fill:#f9d0d0
-    style D fill:#f9d0d0
-    style G fill:#d0f9d0
-    style H fill:#d0f9d0
-    style I fill:#d0f9d0
-    style J fill:#d0f9d0
+    style K1 fill:#f9d0d0
+    style V1 fill:#f9d0d0
+    style K2 fill:#d0f9d0
+    style KN fill:#d0f9d0
+    style V2 fill:#d0f9d0
+    style VN fill:#d0f9d0
 ```
 
 ## Decode Phase
