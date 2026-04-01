@@ -131,10 +131,31 @@ Working tree: `~/workdir/flashinfer` on DGX Spark.
   - Uses FlashInfer's compute_qk, update_local_state, sync_state directly
   - head_dim={64,128}, GQA={1:1,2:1,4:1}, batch={1,2}, seq_len={16..256}
   - Tested on Forge A100-SXM4-40GB
-- [ ] **7e.** Benchmark v2 kernel latency vs SDPA on A100
+- [x] **7e.** Benchmark v2 kernel vs SDPA on A100
 
-Current: 373 μs standalone kernel + 203 μs Python FWHT = 576 μs total decode.
-v2 kernel uses FlashInfer's optimized compute path — benchmark pending.
+v2 benchmark results (Qwen3 config: 12 heads, head_dim=128, batch=1):
+
+| seq_len | SDPA (μs) | TQ v2 (μs) | Ratio |
+|---------|-----------|------------|-------|
+| 128     | 22        | 59         | 2.7×  |
+| 256     | 31        | 101        | 3.3×  |
+| 512     | 30        | 185        | 6.2×  |
+| 1024    | 31        | 351        | 11.4× |
+| 2048    | 30        | 635        | 21.1× |
+| 4096    | 34        | 1352       | 39.8× |
+
+**Analysis:** SDPA uses cp_async pipelining (load/compute overlap). Our v2 kernel has
+zero pipelining — dequant is synchronous, each tile blocks until load completes. The
+compute path (compute_qk/update_local_state) is FlashInfer's optimized code, but the
+load path kills performance because it serializes memory and compute.
+
+**Root cause:** `cp_async` is a HW DMA that overlaps with compute. Our dequant-load
+requires ALU work (codebook lookup) during the load, so it can't use `cp_async`.
+The entire tile load → sync → compute → sync pattern is serial.
+
+**Next step:** Software pipelining — load tile N+1 while computing on tile N. This
+requires double-buffering in smem (2× smem per stage) and careful warp scheduling.
+This is the only path to closing the gap.
 
 ## Next
 
