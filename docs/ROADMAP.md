@@ -153,9 +153,12 @@ load path kills performance because it serializes memory and compute.
 requires ALU work (codebook lookup) during the load, so it can't use `cp_async`.
 The entire tile load → sync → compute → sync pattern is serial.
 
-**Next step:** Software pipelining — load tile N+1 while computing on tile N. This
-requires double-buffering in smem (2× smem per stage) and careful warp scheduling.
-This is the only path to closing the gap.
+#### Software pipelining (closing the gap with SDPA):
+- [x] **7f.** cp_async staged pipeline — **net negative** (18% slower than v2).
+  cp_async packed bytes to smem staging, dequant from staging to fp16. Correct (cos=1.0)
+  but extra syncs + staging overhead > overlap benefit. Root cause: compute phases are
+  too short (0.5μs) to hide VRAM load (1.5μs). cp_async only helps when compute ≈ load.
+- [ ] **7g.** Fused cp_async + inline dequant — eliminate fp16 smem buffer entirely, dequant inline during QK/V compute from packed smem. Requires rewriting compute loop (no FlashInfer function reuse). Target: match or beat SDPA at long sequences.
 
 ## Next
 
