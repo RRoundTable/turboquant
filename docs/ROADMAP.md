@@ -127,10 +127,14 @@ Working tree: `~/workdir/flashinfer` on DGX Spark.
 - [x] **7a.** Fix bdz>1 merge → 373 μs (4.7× speedup, 18× vs SDPA)
 - [x] **7b.** Precompute page offsets → skipped (net negative from smem pressure)
 - [ ] **7c.** In-kernel FWHT → eliminate 203 μs Python overhead
-- [ ] **7d.** Modify FlashInfer source directly → ~25-30 μs (production path)
+- [x] **7d.** Inject dequant into FlashInfer decode — cosine=1.0, 9/9 configs pass (A100)
+  - Uses FlashInfer's compute_qk, update_local_state, sync_state directly
+  - head_dim={64,128}, GQA={1:1,2:1,4:1}, batch={1,2}, seq_len={16..256}
+  - Tested on Forge A100-SXM4-40GB
+- [ ] **7e.** Benchmark v2 kernel latency vs SDPA on A100
 
-Current: 373 μs kernel + 203 μs Python FWHT = 576 μs total decode.
-Theoretical lower bound: ~18 μs (faster than SDPA for memory-bound decode).
+Current: 373 μs standalone kernel + 203 μs Python FWHT = 576 μs total decode.
+v2 kernel uses FlashInfer's optimized compute path — benchmark pending.
 
 ## Next
 
