@@ -140,18 +140,28 @@ ncu --section SourceCounters --kernel-name "TurboQuant" -o source.ncu-rep python
 
 ### Remote profiling (Forge notebook)
 
-```bash
-# Run ncu in notebook, get CSV output (no GUI needed)
-forge notebook exec <id> -c "ncu --kernel-name 'TurboQuant' \
-    --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,\
-dram__throughput.avg.pct_of_peak_sustained_elapsed,\
-sm__warps_active.avg.pct_of_peak_sustained_active \
-    python bench.py"
+**Forge containers lack GPU perf counter permissions (`ERR_NVGPUCTRPERM`).**
+ncu and CUPTI profiler metrics are blocked. Available alternatives:
 
-# Or save .ncu-rep and download for GUI analysis
-forge notebook exec <id> -c "ncu --set full --kernel-name 'TurboQuant' \
-    -o /workspace/profile.ncu-rep python bench.py"
+```bash
+# nsys WORKS — kernel timeline, durations, CUDA API calls
+NSYS=/opt/nvidia/nsight-compute/2024.3.2/host/target-linux-x64/nsys
+$NSYS profile --stats=true -t cuda,nvtx -o /tmp/trace python bench.py
+
+# cuobjdump WORKS — SASS instruction disassembly (no GPU needed)
+cuobjdump --dump-sass /path/to/compiled.so
+
+# clock64() instrumentation WORKS — per-phase cycle counts inside kernel
+
+# torch.profiler WORKS (timing only, NOT CUPTI metrics)
+# CUPTI metrics silently return no data on Forge
+
+# nvidia-smi dmon WORKS — coarse SM utilization at 1s granularity
+nvidia-smi dmon -s u -d 1
 ```
+
+For full ncu profiling, use DGX Spark or request Forge admin to set
+`RmProfilingAdminOnly=0` on cluster nodes.
 
 ### Compile flags for profiling
 
