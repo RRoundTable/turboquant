@@ -92,6 +92,105 @@ forge job cancel <id>
 ssh -q mlsys-dgx-spark "cd ~/workdir/turboquant && uv run pytest tests/ -v"
 ```
 
+## Project Goal
+
+Match FlashInfer's decode latency with TurboQuant's 3.76× memory efficiency.
+The kernel must be **as fast as FlashInfer** and **as memory-efficient as TurboQuant**.
+Use profiling data to guide every optimization decision — never guess.
+
+## GPU Profiling
+
+Profile before optimizing. Every kernel change must be justified by profiling data.
+
+### Tool hierarchy (use in order)
+
+1. **nsys** (system-level) — is the kernel the bottleneck, or Python/launch overhead?
+2. **ncu** (kernel-level) — why is the kernel slow? Compute, memory, or latency-bound?
+3. **ncu warp stalls** — what are warps waiting on? This directly tells you what to fix.
+
+### Key commands
+
+```bash
+# Step 1: System timeline — confirm kernel is the bottleneck
+nsys profile -o trace python bench.py
+nsys stats trace.nsys-rep
+
+# Step 2: SpeedOfLight — classify as compute/memory/latency bound
+ncu --section SpeedOfLight --section Occupancy --kernel-name "TurboQuant" \
+    -o profile.ncu-rep python bench.py
+
+# Step 3: Warp stall reasons — find dominant bottleneck
+ncu --section WarpStateStatistics --kernel-name "TurboQuant" python bench.py
+# Key stall metrics:
+#   long_scoreboard  → waiting for HBM load (need more ILP or prefetch)
+#   short_scoreboard → smem bank conflicts (add padding)
+#   math_pipe_throttle → compute-bound (use tensor cores)
+#   wait             → __syncthreads() imbalance (reduce barriers)
+
+# Step 4: Memory analysis — L2 hit rate, coalescing, bandwidth
+ncu --section MemoryWorkloadAnalysis --kernel-name "TurboQuant" python bench.py
+
+# Step 5: Roofline chart — visualize headroom
+ncu --section SpeedOfLight_RooflineChart --kernel-name "TurboQuant" \
+    -o roofline.ncu-rep python bench.py
+
+# Step 6: Source-level hotspot (compile with -lineinfo)
+ncu --section SourceCounters --kernel-name "TurboQuant" -o source.ncu-rep python bench.py
+```
+
+### Remote profiling (Forge notebook)
+
+```bash
+# Run ncu in notebook, get CSV output (no GUI needed)
+forge notebook exec <id> -c "ncu --kernel-name 'TurboQuant' \
+    --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,\
+dram__throughput.avg.pct_of_peak_sustained_elapsed,\
+sm__warps_active.avg.pct_of_peak_sustained_active \
+    python bench.py"
+
+# Or save .ncu-rep and download for GUI analysis
+forge notebook exec <id> -c "ncu --set full --kernel-name 'TurboQuant' \
+    -o /workspace/profile.ncu-rep python bench.py"
+```
+
+### Compile flags for profiling
+
+```bash
+# Always include for ncu source-level analysis
+extra_cuda_cflags=[..., "--generate-line-info"]
+
+# Register/spill check at compile time
+extra_cuda_cflags=[..., "-Xptxas", "-v"]
+# Look for: "0 bytes spill stores, 0 bytes spill loads" (good)
+# Any spill > 0 is a critical performance bug
+```
+
+### Profiling decision tree
+
+```
+Is the kernel the bottleneck? (nsys)
+  No  → fix Python/launch overhead first
+  Yes → What does SpeedOfLight say? (ncu)
+    High compute%, low memory% → compute-bound → use tensor cores
+    Low compute%, high memory% → memory-bound → improve coalescing/L2
+    Both low                   → latency-bound → check warp stalls:
+      long_scoreboard dominant → HBM latency → increase occupancy/ILP
+      wait dominant            → sync overhead → reduce __syncthreads()
+      short_scoreboard dominant → smem conflicts → fix bank conflicts
+```
+
+### FlashInfer comparison profiling
+
+When comparing TQ kernel vs FlashInfer, profile BOTH with the same ncu metrics.
+The delta in warp stall distribution tells you exactly where FlashInfer wins.
+
+```bash
+# Profile both kernels in same run
+ncu --section SpeedOfLight --section WarpStateStatistics \
+    --kernel-name regex:"TurboQuant|BatchDecode" \
+    -o compare.ncu-rep python bench_both.py
+```
+
 ## Architecture
 
 Read `docs/ARCHITECTURE.md` for module boundaries and import rules.
