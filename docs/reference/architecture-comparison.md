@@ -214,13 +214,29 @@ flowchart LR
 Decode is memory-bound: it reads the entire KV cache but only computes 1 output token.
 TurboQuant's 3.76x compression directly reduces the bandwidth bottleneck.
 
-```mermaid
-xychart-beta
-    title "VRAM Read per Decode Step (MB) — 12 KV heads, head_dim=128"
-    x-axis "Sequence Length" ["1K", "4K", "16K", "64K"]
-    y-axis "VRAM Read (MB)" 0 --> 400
-    bar "FP16" [6, 24, 96, 384]
-    bar "TurboQuant 4-bit" [1.6, 6.4, 25.5, 102]
+```
+  VRAM Read per Decode Step (MB) — 12 KV heads, head_dim=128
+
+  400 ┤
+      │                                          ████
+  350 ┤                                          ████
+      │                                          ████
+  300 ┤                                          ████
+      │                                          ████
+  250 ┤                                          ████
+      │                                          ████
+  200 ┤                                          ████
+      │                                          ████
+  150 ┤                                          ████
+      │                              ████        ████ ░░░░
+  100 ┤                              ████        ████ ░░░░
+      │                              ████        ████ ░░░░
+   50 ┤                 ████         ████ ░░░░   ████ ░░░░
+      │     ████        ████ ░░░░    ████ ░░░░   ████ ░░░░
+    0 ┼─────████─░░░░───████─░░░░────████─░░░░───████─░░░░──
+          1K          4K           16K          64K
+
+        ████ FP16    ░░░░ TurboQuant 4-bit
 ```
 
 | Sequence Length | FP16 Read | TurboQuant Read | Savings |
