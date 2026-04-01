@@ -175,8 +175,24 @@ The entire tile load → sync → compute → sync pattern is serial.
   v4 at bdz=16: 89μs at seq=1024 (was 296μs at bdz=4). 256 threads = 8 warps.
   Correctness: cos=1.0, 6/6 configs. Faster than SDPA at short sequences.
 
+#### Current best: v4 bdz=16 — 89μs at seq=1024 (A100)
+
+Remaining 32μs gap to contiguous (57μs) is **irreducible paging overhead**: per-token
+divmod + __ldg(indices) regardless of page size (HYP-011) or tile size (HYP-010).
+Tensor cores help only for GQA≥4 (HYP-007a). Dequant is FREE (HYP-008).
+
+### Phase 8: Evaluation and Integration — NOW
+
+- [ ] **8a.** Perplexity evaluation — WikiText-2 PPL, LongBench, NIAH
+- [ ] **8b.** Memory savings measurement — actual VRAM reduction vs fp16 baseline
+- [ ] **8c.** vLLM E2E with v4 kernel — wire bdz=16 kernel into vLLM backend
+- [ ] **8d.** Multi-model validation — Llama-3-8B, Mistral-7B (GQA=4:1, tensor core benefit)
+- [ ] **8e.** Max batch size — measure throughput gain from 3.76× smaller KV cache
+
 ## Next
 
+- [ ] Contiguous KV layout — eliminate 32μs paging overhead (alternative to PagedAttention)
+- [ ] Tensor core path for GQA≥4 models (HYP-007 Phase 2) — BitDecoding-style dequant pipeline
 - [ ] Outlier calibration pipeline — automatic outlier channel detection
 - [ ] Multi-model support — validate across Llama, Mistral, Qwen architectures
 
