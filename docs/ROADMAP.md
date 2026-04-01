@@ -158,7 +158,20 @@ The entire tile load → sync → compute → sync pattern is serial.
   cp_async packed bytes to smem staging, dequant from staging to fp16. Correct (cos=1.0)
   but extra syncs + staging overhead > overlap benefit. Root cause: compute phases are
   too short (0.5μs) to hide VRAM load (1.5μs). cp_async only helps when compute ≈ load.
-- [ ] **7g.** Fused cp_async + inline dequant — eliminate fp16 smem buffer entirely, dequant inline during QK/V compute from packed smem. Requires rewriting compute loop (no FlashInfer function reuse). Target: match or beat SDPA at long sequences.
+- [x] **7g.** Fused inline dequant (v4) — **22-33% faster than v2**
+  Eliminated fp16 smem buffer, dequant inline during QK/V compute.
+  cp_async packed bytes → staging, precompute norms → smem, inline dequant to float.
+  No FlashInfer function reuse (custom QK/V loops). ~7× less smem than v2.
+  Results (12 heads, hd=128, batch=1):
+
+  | seq | SDPA | v2 | v4 | v4/v2 |
+  |-----|------|----|----|-------|
+  | 512 | 53μs | 206μs | 159μs | 0.78× |
+  | 1024 | 60μs | 415μs | 296μs | 0.71× |
+  | 2048 | 67μs | 755μs | 503μs | 0.67× |
+
+  Still 3-7× slower than SDPA. Remaining gap: page table overhead (divmod per token)
+  and low warp occupancy (64 threads = 2 warps per block).
 
 ## Next
 
