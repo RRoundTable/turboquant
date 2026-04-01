@@ -53,4 +53,35 @@ reach 73μs — a meaningful improvement.
 vLLM default page_size=16 tokens. FlashInfer supports arbitrary page sizes.
 Larger pages may conflict with vLLM's memory allocator assumptions.
 
-## Status: pending
+## Results
+
+Correctness: **all page sizes produce identical output** (cos=1.0 vs ps=16).
+
+| seq | ps=16 | ps=32 | ps=64 | ps=128 | ps=64/ps=16 |
+|-----|-------|-------|-------|--------|-------------|
+| 256 | 36.0 | 36.0 | 35.8 | 36.0 | 0.99× |
+| 512 | 52.6 | 52.4 | 52.1 | 52.3 | 0.99× |
+| 1024 | 86.2 | 85.8 | 85.3 | 85.4 | 0.99× |
+| 2048 | 150.5 | 159.4 | 152.2 | 152.3 | 1.01× |
+
+**Page size has NO measurable effect** — all within 1% noise.
+
+## Analysis
+
+The 32μs paging overhead (from HYP-008: 89μs paged vs 57μs contiguous at seq=1024)
+is NOT from page boundary crossings or page size. It's from the page table indirection
+itself: every token requires divmod + __ldg(indices[page_iter]) regardless of page size.
+
+With page_size=128 and seq=1024: only 8 pages, but still 1024 divmod operations
+(one per token per tile iteration). The divmod cost is per-token, not per-page.
+
+The paging overhead is fundamentally from:
+1. **divmod per token** (~4 cycles via uint_fastdiv, but serialized per thread)
+2. **__ldg(indices) per token** (~200 cycle latency, partially hidden by warp scheduling)
+3. **Scattered global memory access** (different pages at different VRAM addresses)
+
+None of these improve with larger page size.
+
+## Status: rejected
+Page size has zero effect on performance. The paging overhead is per-token
+(divmod + indirect load), not per-page-boundary.

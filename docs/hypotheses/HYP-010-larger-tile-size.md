@@ -48,4 +48,38 @@ Each sync costs ~0.5μs. Halving syncs from 64→32 saves ~16μs (89→73μs pre
 2. Benchmark seq ∈ {128, 512, 1024, 2048} for each
 3. Check for register spilling with -Xptxas -v
 
-## Status: pending
+## Results
+
+Register usage (no spilling at any tile size):
+- t=4:  64 regs, 0 spill
+- t=8:  56 regs, 0 spill
+- t=16: 72 regs, 0 spill
+
+Correctness: **t=8 and t=16 produce WRONG output** (cos=0.019, cos=-0.013 vs t=4).
+The v4 kernel likely has a hardcoded assumption about tile_size_per_bdx=4 somewhere
+(possibly in cp_async_packed_tile's flat thread mapping or precompute_norms).
+
+Performance (despite wrong output):
+| seq | t=4 | t=8 | t=16 | t8/t4 | t16/t4 |
+|-----|-----|-----|------|-------|--------|
+| 128 | 35 | 35 | 35 | 0.99× | 0.99× |
+| 512 | 54 | 82 | 55 | 1.53× | 1.03× |
+| 1024 | 90 | 147 | 93 | 1.63× | 1.03× |
+
+**t=8 is 1.5-1.7× SLOWER** (wrong and slow — likely launch config mismatch).
+**t=16 is ~same speed** (3% slower, within noise).
+
+## Analysis
+
+The tile size has minimal impact on performance at bdz=16 because:
+1. The number of syncs is already amortized over 256 threads
+2. The per-iteration overhead is dominated by memory access, not sync
+3. Larger tiles don't improve memory coalescing (paged access is already scattered)
+
+The correctness failure needs investigation — likely cp_async_packed_tile assumes
+tile_tokens = tile_size_per_bdx × bdy × bdz maps to exactly bdx × bdy × bdz threads
+for the flat_tid mapping, which breaks when tile_size_per_bdx changes the total count.
+
+## Status: rejected
+No speedup. Correctness broken at t≠4. The flat thread mapping in cp_async_packed_tile
+is tied to tile_size_per_bdx=4.
