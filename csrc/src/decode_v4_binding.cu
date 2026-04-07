@@ -7,6 +7,7 @@
 #include <c10/cuda/CUDAStream.h>
 #include "flashinfer_decode_turboquant_v2.cuh"  // for TurboQuantBatchDecodeParams
 #include "flashinfer_decode_turboquant_v4.cuh"
+#include "flashinfer_decode_turboquant_combine.cuh"
 
 using namespace flashinfer;
 using namespace turboquant;
@@ -167,7 +168,143 @@ torch::Tensor turboquant_decode_v4(
     return o;
 }
 
+// ─── Split-KV decode (FlashDecoding pattern) ───────────────────────
+torch::Tensor turboquant_decode_v4_splitkv(
+    torch::Tensor q, torch::Tensor k_quant, torch::Tensor v_quant,
+    torch::Tensor k_norms, torch::Tensor v_norms,
+    torch::Tensor indices, torch::Tensor indptr, torch::Tensor last_page_len,
+    int num_kv_heads, int page_size, int head_dim, int padded_dim,
+    float sm_scale, int num_splits
+) {
+    int batch_size = q.size(0);
+    int num_qo_heads = q.size(1);
+    int bdy = num_qo_heads / num_kv_heads;
+
+    // Compute kv_len per request for chunk sizing
+    // For simplicity, assume uniform seq_len (all requests same length)
+    // seq_len = (indptr[1] - indptr[0] - 1) * page_size + last_page_len[0]
+    int total_pages_r0 = indptr[1].item<int32_t>() - indptr[0].item<int32_t>();
+    int seq_len = (total_pages_r0 > 0) ?
+        (total_pages_r0 - 1) * page_size + last_page_len[0].item<int32_t>() : 0;
+    int kv_chunk_size = (seq_len + num_splits - 1) / num_splits;
+    int actual_splits = (seq_len + kv_chunk_size - 1) / kv_chunk_size;
+
+    int padded_batch = batch_size * actual_splits;
+
+    // Build request_indices and kv_tile_indices for split-KV
+    auto request_indices_t = torch::empty(padded_batch, torch::dtype(torch::kInt32).device(q.device()));
+    auto kv_tile_indices_t = torch::empty(padded_batch, torch::dtype(torch::kInt32).device(q.device()));
+    auto block_valid_mask_t = torch::ones(padded_batch, torch::dtype(torch::kBool).device(q.device()));
+    auto kv_chunk_size_t = torch::full({1}, kv_chunk_size, torch::dtype(torch::kInt32).device(q.device()));
+    auto split_indptr_t = torch::empty(batch_size + 1, torch::dtype(torch::kInt32).device(q.device()));
+
+    // Fill on CPU, copy to GPU
+    {
+        auto ri = request_indices_t.cpu();
+        auto kti = kv_tile_indices_t.cpu();
+        auto bvm = block_valid_mask_t.cpu();
+        auto si = split_indptr_t.cpu();
+        int idx = 0;
+        for (int b = 0; b < batch_size; b++) {
+            si.data_ptr<int32_t>()[b] = idx;
+            for (int s = 0; s < actual_splits; s++) {
+                ri.data_ptr<int32_t>()[idx] = b;
+                kti.data_ptr<int32_t>()[idx] = s;
+                bvm.data_ptr<bool>()[idx] = (s * kv_chunk_size < seq_len);
+                idx++;
+            }
+        }
+        si.data_ptr<int32_t>()[batch_size] = idx;
+        request_indices_t.copy_(ri);
+        kv_tile_indices_t.copy_(kti);
+        block_valid_mask_t.copy_(bvm);
+        split_indptr_t.copy_(si);
+    }
+
+    // Temp output: [padded_batch, num_qo_heads, head_dim] float32
+    auto tmp_o = torch::zeros({padded_batch, num_qo_heads, (int64_t)padded_dim},
+                              torch::dtype(torch::kFloat32).device(q.device()));
+    auto tmp_lse = torch::full({padded_batch, num_qo_heads}, -1e30f,
+                               torch::dtype(torch::kFloat32).device(q.device()));
+
+    // Build params with partition_kv=true
+    auto tq_kv = turboquant::paged_kv_turbo_t<int32_t>(
+        num_kv_heads, page_size, head_dim, padded_dim, batch_size,
+        k_quant.data_ptr<uint8_t>(), v_quant.data_ptr<uint8_t>(),
+        (__half*)k_norms.data_ptr<at::Half>(), (__half*)v_norms.data_ptr<at::Half>(),
+        indices.data_ptr<int32_t>(), indptr.data_ptr<int32_t>(),
+        last_page_len.data_ptr<int32_t>(), nullptr);
+
+    using P = TurboQuantBatchDecodeParams<__half, __half, int32_t>;
+    using V = DefaultAttention<false, false, false, false>;
+    P params;
+    params.q = (__half*)q.data_ptr<at::Half>();
+    params.tq_kv = tq_kv;
+    params.o = reinterpret_cast<__half*>(tmp_o.data_ptr<float>());  // HACK: reinterpret for now
+    params.lse = tmp_lse.data_ptr<float>();
+    params.maybe_alibi_slopes = nullptr;
+    params.padded_batch_size = padded_batch;
+    params.num_qo_heads = num_qo_heads;
+    params.q_stride_n = num_qo_heads * padded_dim;
+    params.q_stride_h = padded_dim;
+    params.window_left = -1;
+    params.logits_soft_cap = 0;
+    params.sm_scale = sm_scale;
+    params.rope_rcp_scale = 0;
+    params.rope_rcp_theta = 0;
+    params.partition_kv = true;
+    params.request_indices = request_indices_t.data_ptr<int32_t>();
+    params.kv_tile_indices = kv_tile_indices_t.data_ptr<int32_t>();
+    params.kv_chunk_size_ptr = kv_chunk_size_t.data_ptr<int32_t>();
+    params.block_valid_mask = block_valid_mask_t.data_ptr<bool>();
+    params.o_indptr = nullptr;
+
+    auto stream = c10::cuda::getCurrentCUDAStream();
+    constexpr int VEC = 8;
+
+    // v4 kernel writes DTypeO (half). We need float for combine.
+    // Use half tmp, then convert to float.
+    auto tmp_o_half = torch::zeros({padded_batch, num_qo_heads, (int64_t)padded_dim},
+                                   torch::dtype(torch::kFloat16).device(q.device()));
+    params.o = (__half*)tmp_o_half.data_ptr<at::Half>();
+
+    // Launch v4 kernel with partition_kv=true, bdz=4 (more blocks, less work each)
+    if (padded_dim <= 128) {
+        constexpr int BDX = 128 / VEC;
+        switch (bdy) {
+            case 1: launch_v4<128, BDX, 1, 4>(params, padded_batch, num_kv_heads, stream); break;
+            case 2: launch_v4<128, BDX, 2, 4>(params, padded_batch, num_kv_heads, stream); break;
+            case 4: launch_v4<128, BDX, 4, 4>(params, padded_batch, num_kv_heads, stream); break;
+            case 8: launch_v4<128, BDX, 8, 2>(params, padded_batch, num_kv_heads, stream); break;
+            default: TORCH_CHECK(false, "Unsupported GQA ratio for split-KV");
+        }
+    } else {
+        TORCH_CHECK(false, "Split-KV only supports head_dim<=128 for now");
+    }
+
+    // Convert half partial results to float for combine kernel
+    auto tmp_o_float = tmp_o_half.to(torch::kFloat32);
+
+    // Launch combine kernel
+    auto o = torch::zeros({batch_size, num_qo_heads, (int64_t)padded_dim},
+                          torch::dtype(torch::kFloat16).device(q.device()));
+
+    SplitKVCombineKernel<__half><<<dim3(batch_size, num_qo_heads), padded_dim, 0, stream>>>(
+        tmp_o_float.data_ptr<float>(),
+        tmp_lse.data_ptr<float>(),
+        (__half*)o.data_ptr<at::Half>(),
+        nullptr,  // no LSE output needed
+        split_indptr_t.data_ptr<int32_t>(),
+        num_qo_heads,
+        padded_dim
+    );
+
+    return o;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("decode_v4", &turboquant_decode_v4,
           "TurboQuant v4 fused decode with inline dequant (generalized dispatch)");
+    m.def("decode_v4_splitkv", &turboquant_decode_v4_splitkv,
+          "TurboQuant v4 decode with split-KV parallelism (FlashDecoding)");
 }
