@@ -90,7 +90,7 @@ def _turboquant_decode_kernel(
     actual_seq_len = (total_pages - 1) * page_size + last_len
 
     dim_chunks: tl.constexpr = padded_dim // 64
-    codebook_scale = 1.0 / tl.sqrt(padded_dim.to(tl.float32))
+    codebook_scale = 1.0 / tl.sqrt(float(padded_dim))
 
     # Process each QO head that maps to this KV head
     for qo_offset in range(GQA_RATIO):
