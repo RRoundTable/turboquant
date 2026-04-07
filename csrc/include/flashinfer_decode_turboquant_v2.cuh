@@ -50,6 +50,10 @@ struct TurboQuantBatchDecodeParams {
     bool* block_valid_mask;
     bool partition_kv;
 
+    // Split-KV: float output for partial results (avoids half→float copy)
+    float* partition_o;   // [padded_batch, num_qo_heads, head_dim] float32
+    float* partition_lse; // [padded_batch, num_qo_heads] float32
+
     __device__ __host__ TurboQuantBatchDecodeParams() {}
 
     __host__ __device__ __forceinline__ int32_t get_qo_len(int32_t batch_idx) const { return 1; }

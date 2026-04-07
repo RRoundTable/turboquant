@@ -168,7 +168,27 @@ torch::Tensor turboquant_decode_v4(
     return o;
 }
 
-// ─── Split-KV decode (FlashDecoding pattern) ───────────────────────
+// ─── Split-KV setup kernel (fill indices on GPU, no CPU→GPU copy) ──
+__global__ void fill_split_indices(
+    int32_t* request_indices, int32_t* kv_tile_indices,
+    int32_t* split_indptr,
+    int batch_size, int actual_splits
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch_size * actual_splits;
+    if (idx < total) {
+        int b = idx / actual_splits;
+        int s = idx % actual_splits;
+        request_indices[idx] = b;
+        kv_tile_indices[idx] = s;
+    }
+    // Fill split_indptr (one thread per batch entry)
+    if (idx <= batch_size) {
+        split_indptr[idx] = idx * actual_splits;
+    }
+}
+
+// ─── Split-KV decode (FlashDecoding pattern) — optimized ───────────
 torch::Tensor turboquant_decode_v4_splitkv(
     torch::Tensor q, torch::Tensor k_quant, torch::Tensor v_quant,
     torch::Tensor k_norms, torch::Tensor v_norms,
@@ -179,55 +199,38 @@ torch::Tensor turboquant_decode_v4_splitkv(
     int batch_size = q.size(0);
     int num_qo_heads = q.size(1);
     int bdy = num_qo_heads / num_kv_heads;
+    auto stream = c10::cuda::getCurrentCUDAStream();
+    auto dev = q.device();
 
-    // Compute kv_len per request for chunk sizing
-    // For simplicity, assume uniform seq_len (all requests same length)
-    // seq_len = (indptr[1] - indptr[0] - 1) * page_size + last_page_len[0]
+    // Compute seq_len (assume uniform)
     int total_pages_r0 = indptr[1].item<int32_t>() - indptr[0].item<int32_t>();
     int seq_len = (total_pages_r0 > 0) ?
         (total_pages_r0 - 1) * page_size + last_page_len[0].item<int32_t>() : 0;
     int kv_chunk_size = (seq_len + num_splits - 1) / num_splits;
     int actual_splits = (seq_len + kv_chunk_size - 1) / kv_chunk_size;
-
     int padded_batch = batch_size * actual_splits;
 
-    // Build request_indices and kv_tile_indices for split-KV
-    auto request_indices_t = torch::empty(padded_batch, torch::dtype(torch::kInt32).device(q.device()));
-    auto kv_tile_indices_t = torch::empty(padded_batch, torch::dtype(torch::kInt32).device(q.device()));
-    auto block_valid_mask_t = torch::ones(padded_batch, torch::dtype(torch::kBool).device(q.device()));
-    auto kv_chunk_size_t = torch::full({1}, kv_chunk_size, torch::dtype(torch::kInt32).device(q.device()));
-    auto split_indptr_t = torch::empty(batch_size + 1, torch::dtype(torch::kInt32).device(q.device()));
+    // Allocate all GPU tensors at once (no CPU→GPU copies)
+    auto request_indices_t = torch::empty(padded_batch, torch::dtype(torch::kInt32).device(dev));
+    auto kv_tile_indices_t = torch::empty(padded_batch, torch::dtype(torch::kInt32).device(dev));
+    auto kv_chunk_size_t = torch::full({1}, kv_chunk_size, torch::dtype(torch::kInt32).device(dev));
+    auto split_indptr_t = torch::empty(batch_size + 1, torch::dtype(torch::kInt32).device(dev));
 
-    // Fill on CPU, copy to GPU
-    {
-        auto ri = request_indices_t.cpu();
-        auto kti = kv_tile_indices_t.cpu();
-        auto bvm = block_valid_mask_t.cpu();
-        auto si = split_indptr_t.cpu();
-        int idx = 0;
-        for (int b = 0; b < batch_size; b++) {
-            si.data_ptr<int32_t>()[b] = idx;
-            for (int s = 0; s < actual_splits; s++) {
-                ri.data_ptr<int32_t>()[idx] = b;
-                kti.data_ptr<int32_t>()[idx] = s;
-                bvm.data_ptr<bool>()[idx] = (s * kv_chunk_size < seq_len);
-                idx++;
-            }
-        }
-        si.data_ptr<int32_t>()[batch_size] = idx;
-        request_indices_t.copy_(ri);
-        kv_tile_indices_t.copy_(kti);
-        block_valid_mask_t.copy_(bvm);
-        split_indptr_t.copy_(si);
-    }
+    // Fill indices on GPU (no CPU tensors, no copies)
+    int fill_threads = max(padded_batch, batch_size + 1);
+    fill_split_indices<<<(fill_threads + 255) / 256, 256, 0, stream>>>(
+        request_indices_t.data_ptr<int32_t>(),
+        kv_tile_indices_t.data_ptr<int32_t>(),
+        split_indptr_t.data_ptr<int32_t>(),
+        batch_size, actual_splits);
 
-    // Temp output: [padded_batch, num_qo_heads, head_dim] float32
+    // Float output buffers (kernel writes float directly via partition_o)
     auto tmp_o = torch::zeros({padded_batch, num_qo_heads, (int64_t)padded_dim},
-                              torch::dtype(torch::kFloat32).device(q.device()));
+                              torch::dtype(torch::kFloat32).device(dev));
     auto tmp_lse = torch::full({padded_batch, num_qo_heads}, -1e30f,
-                               torch::dtype(torch::kFloat32).device(q.device()));
+                               torch::dtype(torch::kFloat32).device(dev));
 
-    // Build params with partition_kv=true
+    // Build params
     auto tq_kv = turboquant::paged_kv_turbo_t<int32_t>(
         num_kv_heads, page_size, head_dim, padded_dim, batch_size,
         k_quant.data_ptr<uint8_t>(), v_quant.data_ptr<uint8_t>(),
@@ -240,8 +243,8 @@ torch::Tensor turboquant_decode_v4_splitkv(
     P params;
     params.q = (__half*)q.data_ptr<at::Half>();
     params.tq_kv = tq_kv;
-    params.o = reinterpret_cast<__half*>(tmp_o.data_ptr<float>());  // HACK: reinterpret for now
-    params.lse = tmp_lse.data_ptr<float>();
+    params.o = nullptr;  // not used in partition mode
+    params.lse = nullptr;
     params.maybe_alibi_slopes = nullptr;
     params.padded_batch_size = padded_batch;
     params.num_qo_heads = num_qo_heads;
@@ -256,24 +259,19 @@ torch::Tensor turboquant_decode_v4_splitkv(
     params.request_indices = request_indices_t.data_ptr<int32_t>();
     params.kv_tile_indices = kv_tile_indices_t.data_ptr<int32_t>();
     params.kv_chunk_size_ptr = kv_chunk_size_t.data_ptr<int32_t>();
-    params.block_valid_mask = block_valid_mask_t.data_ptr<bool>();
+    params.block_valid_mask = nullptr;  // all valid
     params.o_indptr = nullptr;
+    params.partition_o = tmp_o.data_ptr<float>();
+    params.partition_lse = tmp_lse.data_ptr<float>();
 
-    auto stream = c10::cuda::getCurrentCUDAStream();
     constexpr int VEC = 8;
 
-    // v4 kernel writes DTypeO (half). We need float for combine.
-    // Use half tmp, then convert to float.
-    auto tmp_o_half = torch::zeros({padded_batch, num_qo_heads, (int64_t)padded_dim},
-                                   torch::dtype(torch::kFloat16).device(q.device()));
-    params.o = (__half*)tmp_o_half.data_ptr<at::Half>();
-
-    // Launch v4 kernel with partition_kv=true, bdz=4 (more blocks, less work each)
+    // Launch v4 kernel — keep bdz=16 for internal parallelism
     if (padded_dim <= 128) {
         constexpr int BDX = 128 / VEC;
         switch (bdy) {
-            case 1: launch_v4<128, BDX, 1, 4>(params, padded_batch, num_kv_heads, stream); break;
-            case 2: launch_v4<128, BDX, 2, 4>(params, padded_batch, num_kv_heads, stream); break;
+            case 1: launch_v4<128, BDX, 1, 16>(params, padded_batch, num_kv_heads, stream); break;
+            case 2: launch_v4<128, BDX, 2, 16>(params, padded_batch, num_kv_heads, stream); break;
             case 4: launch_v4<128, BDX, 4, 4>(params, padded_batch, num_kv_heads, stream); break;
             case 8: launch_v4<128, BDX, 8, 2>(params, padded_batch, num_kv_heads, stream); break;
             default: TORCH_CHECK(false, "Unsupported GQA ratio for split-KV");
@@ -282,18 +280,15 @@ torch::Tensor turboquant_decode_v4_splitkv(
         TORCH_CHECK(false, "Split-KV only supports head_dim<=128 for now");
     }
 
-    // Convert half partial results to float for combine kernel
-    auto tmp_o_float = tmp_o_half.to(torch::kFloat32);
-
-    // Launch combine kernel
+    // Combine: merge partial float results → final half output
     auto o = torch::zeros({batch_size, num_qo_heads, (int64_t)padded_dim},
-                          torch::dtype(torch::kFloat16).device(q.device()));
+                          torch::dtype(torch::kFloat16).device(dev));
 
     SplitKVCombineKernel<__half><<<dim3(batch_size, num_qo_heads), padded_dim, 0, stream>>>(
-        tmp_o_float.data_ptr<float>(),
+        tmp_o.data_ptr<float>(),
         tmp_lse.data_ptr<float>(),
         (__half*)o.data_ptr<at::Half>(),
-        nullptr,  // no LSE output needed
+        nullptr,
         split_indptr_t.data_ptr<int32_t>(),
         num_qo_heads,
         padded_dim

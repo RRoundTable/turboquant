@@ -135,5 +135,32 @@ At longer sequences where per-block work >> overhead:
 2. **Fuse tensor setup in C++**: avoid Python tensor creation overhead
 3. **Adaptive split count**: only split when seq_len > threshold (~4K)
 
-## Status: rejected (at seq≤2K)
-Overhead (155μs) exceeds SM utilization benefit. Needs optimization for long contexts.
+## Optimized v2 Results
+
+After fixing: float output path, GPU-side index fill, bdz=16 kept.
+
+| seq=1024 | splits | latency | vs nosplit |
+|----------|--------|---------|-----------|
+| | none | 106 μs | 1.0× |
+| | 4 | 111 μs | 1.05× |
+| | **8** | **104 μs** | **0.98×** |
+| | 16 | 120 μs | 1.13× |
+
+| seq=2048 | splits | latency | vs nosplit |
+|----------|--------|---------|-----------|
+| | none | 189 μs | 1.0× |
+| | 4 | 136 μs | **0.72×** |
+| | **8** | **113 μs** | **0.60×** |
+| | 16 | 120 μs | 0.63× |
+
+Overhead cut from 155μs → ~10μs by:
+1. Float output path: kernel writes float directly (no half→float copy)
+2. GPU-side index fill: no CPU tensor creation or CPU→GPU copy
+3. bdz=16 maintained: full internal parallelism per split block
+
+**At seq=2048 with 8 splits: 1.7× faster than non-split.**
+At seq=1024: break-even (8 splits ≈ non-split).
+Optimal split count: 8 for this config (64 blocks = ~60% SM utilization).
+
+## Status: confirmed (at seq≥2K after optimization)
+Split-KV works when overhead is minimized. 1.7× at seq=2048. Break-even at seq=1024.

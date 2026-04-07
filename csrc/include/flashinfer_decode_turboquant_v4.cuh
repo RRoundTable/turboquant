@@ -309,9 +309,22 @@ __device__ __inline__ void TurboQuantPagedDecodeDeviceV4(
     }
 
     if (tz == 0) {
-        st.o.cast_store(params.o + (bx * num_qo_heads + qo_head_idx) * head_dim + tx * vec_size);
-        if (params.lse != nullptr) {
-            params.lse[bx * num_qo_heads + qo_head_idx] = st.get_lse();
+        if (params.partition_kv && params.partition_o != nullptr) {
+            // Split-KV: write float directly (no half conversion)
+            float* out = params.partition_o + (bx * num_qo_heads + qo_head_idx) * head_dim + tx * vec_size;
+            #pragma unroll
+            for (size_t i = 0; i < vec_size; ++i) {
+                out[i] = st.o[i];
+            }
+            if (params.partition_lse != nullptr) {
+                params.partition_lse[bx * num_qo_heads + qo_head_idx] = st.get_lse();
+            }
+        } else {
+            // Normal: write half
+            st.o.cast_store(params.o + (bx * num_qo_heads + qo_head_idx) * head_dim + tx * vec_size);
+            if (params.lse != nullptr) {
+                params.lse[bx * num_qo_heads + qo_head_idx] = st.get_lse();
+            }
         }
     }
 }
