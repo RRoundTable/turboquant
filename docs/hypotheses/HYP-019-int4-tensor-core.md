@@ -32,4 +32,28 @@ Lloyd-Max to uniform quantization (slightly higher MSE).
 4. Benchmark vs scalar FMA and vs SDPA
 5. Measure quality impact (PPL with uniform vs Lloyd-Max)
 
-## Status: pending
+## Results (A100, Triton INT8 TC, seq=1024)
+
+| Approach | Time | Speedup | Cosine |
+|----------|------|---------|--------|
+| Scalar FMA (reference) | 20 μs | 1.0× | 1.000 |
+| INT8 elementwise (Triton) | 245 μs | 0.08× | 0.984 |
+| INT8 tl.dot (tensor core) | 290 μs | 0.07× | 0.984 |
+| FP16 dequant (Triton) | 87 μs | 0.22× | 1.000 |
+
+**INT8 tensor cores are 15× SLOWER than scalar FMA.**
+
+Root cause: decode attention is a rank-1 matmul (1 query × N keys).
+Tensor cores are optimized for large matrix-matrix products (M≥16, N≥16, K≥32).
+At rank-1, the 16×8 output tile is mostly wasted (15/16 rows unused).
+Triton's tl.dot launch overhead + INT8 expansion dominate.
+
+This confirms HYP-007a's finding: tensor cores only help at bdy≥4 (GQA ratio ≥ 4:1).
+For Qwen3-1.7B (bdy=2), tensor cores are counterproductive.
+
+Cosine=0.984 shows Lloyd-Max codebook index arithmetic loses ~1.6% accuracy.
+Would need uniform quantization for exact math, but with worse MSE.
+
+## Status: rejected
+Tensor cores don't help for rank-1 decode attention at bdy≤2.
+The 15× overhead from MMA tile underutilization exceeds any compute gain.
