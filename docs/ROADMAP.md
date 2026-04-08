@@ -205,15 +205,76 @@ See `docs/hypotheses/` for all experiment records.
 - [x] **8e.** Max batch — **3.8× more requests** (71→268 at seq=4K on A100-40GB)
 - [x] **8f.** Throughput — **TQ beats SDPA at batch≥64** (1.1-1.2× higher tok/s)
 
+### Architecture gap: TurboQuant vs FlashInfer (baseline)
+
+**Current: 1.6× at seq=1024 (48μs vs 30μs). Origin of the gap:**
+
+```
+FlashInfer FP16 decode pipeline:
+  VRAM [fp16] ──cp_async──► SMEM [fp16] ──cast_load──► Regs [float]
+       └── pipelined: load N+1 overlaps compute N (2-3 stages) ──┘
+  Compute: tensor core mma.sync (312 TFLOPS)
+  Grid: batch × kv_heads × num_splits (fills all SMs)
+
+TurboQuant v4 contiguous+split pipeline:
+  VRAM [4-bit] ──cp_async──► SMEM staging [uint8] ──dequant──► Regs [float]
+       └── NO overlap: dequant is ALU, can't pipeline with compute ──┘
+  Compute: scalar FMA + warp shuffle (20 TFLOPS)
+  Grid: batch × kv_heads × num_splits (same structure)
+```
+
+| Aspect | FlashInfer | TurboQuant | Gap factor |
+|--------|-----------|------------|-----------|
+| QK/V compute | Tensor core (312 TFLOPS) | Scalar FMA (20 TFLOPS) | **~1.5× on QK phase** |
+| Pipelining | 2-3 stages overlap | Single-stage serial | **~1.2× (4 syncs vs 2)** |
+| Data per token | 512 bytes (fp16) | 136 bytes (4-bit) | **0.27× (TQ wins)** |
+| Grid parallelism | Same split-KV | Same split-KV | 1.0× |
+| Smem per block | ~32 KB | ~7 KB | **0.22× (TQ wins)** |
+
+**The 1.6× gap decomposition:**
+- 40%: scalar FMA vs tensor cores (irreducible without INT4 TC or BitDecoding)
+- 30%: rank-2 QK underutilizes M16 MMA dimension at bdy=2
+- 15%: sequential dequant ALU (codebook lookup per element)
+- 10%: SM fill (64 blocks / 108 SMs at batch=1)
+- 5%: extra syncs + instruction overhead
+
+### Phase 9: Closing the gap — kernel architecture improvements
+
+#### 9a. INT4 tensor core matmul (BitDecoding pattern)
+Feed packed 4-bit data directly to `mma.sync.m16n8k64.s32.s4.s4.s32`.
+No dequant step — apply codebook scaling post-matmul.
+Requires: uniform quantization (not Lloyd-Max), Q quantized to INT4.
+**Expected: 2-3× on QK/V compute → close to FlashInfer at seq≥512.**
+Ref: BitDecoding (HPCA 2026), SageAttention2 (ICML 2025).
+
+#### 9b. Dequant-to-fp16 + tensor core (Marlin pattern)
+Dequant 4-bit → fp16 in registers via bitwise LUT, feed to fp16 tensor cores.
+Compatible with Lloyd-Max codebook (non-uniform). Pipeline: dequant on CUDA cores
+while tensor cores compute previous tile.
+**Expected: 1.5-2× on compute, keeps codebook quality.**
+Ref: Marlin (arXiv:2408.11743), BitDecoding warp-layout-aware dequant.
+
+#### 9c. Persistent kernel with warp specialization
+Dedicate warp groups: load warps (dequant + cp_async) vs compute warps (QK/V).
+Eliminates block.sync() between load and compute phases.
+Requires named barriers (SM80+) for producer-consumer handoff.
+**Expected: 1.2× from reduced sync overhead.**
+
+#### 9d. Batch-level SM saturation
+At batch≥4, grid = 4 × 8 × 8 = 256 blocks → all SMs busy.
+Single-request latency can't improve, but throughput scales.
+Already measured (8f): TQ beats SDPA at batch≥64 (1.1-1.2× higher tok/s).
+
 ## Next
 
-- [ ] vLLM E2E integration with contiguous+split-KV kernel
-- [ ] Tensor core path for GQA≥4 models (HYP-007) — BitDecoding-style pipeline
+- [ ] **9a.** INT4 tensor cores — biggest single improvement opportunity
+- [ ] **8c.** vLLM E2E integration with contiguous+split-KV kernel
+- [ ] **9b.** Dequant-to-fp16 tensor core pipeline (if 9a requires uniform quant)
 - [ ] Paged split-KV overhead reduction (for PagedAttention compatibility)
-- [ ] Outlier calibration pipeline
 
 ## Later
 
+- [ ] 9c. Persistent kernel with warp specialization
 - [ ] Upstream contribution to vLLM
 - [ ] Speculative decoding compatibility
 - [ ] Multi-node tensor parallelism
