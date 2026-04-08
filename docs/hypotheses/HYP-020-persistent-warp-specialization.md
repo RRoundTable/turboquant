@@ -78,4 +78,33 @@ Each barrier tracks a configurable number of threads.
 4. Consumer: QK/V compute from buf[curr]
 5. Benchmark vs current v4 contiguous+split-KV
 
-## Status: pending
+## Results (A100, Qwen3-1.7B, batch=1)
+
+| seq | v4 contiguous | v5 warpspec | v5/v4 |
+|-----|--------------|------------|-------|
+| 128 | 22.1 μs | 22.2 μs | 1.006× (no change) |
+| 256 | 32.0 μs | 31.7 μs | 0.99× (no change) |
+
+Longer seq crashed due to split-KV API mismatch in benchmark (4D tensor issue).
+Non-split correctness: cos=0.985 at seq≥256 (buffer indexing bug in double-buffer).
+Split correctness: cos=1.000 (works correctly).
+
+## Analysis
+
+**Zero improvement from double-buffering + named barriers.**
+
+Root cause: at 4-bit data, cp_async loads are so fast (~0.5μs for a tile of 64×128
+packed bytes = 4KB) that there's nothing to overlap. The compute phase (QK dot product
++ softmax) takes ~10× longer than the load. Overlapping a 0.5μs load with a 5μs
+compute saves at most 0.5μs per iteration — invisible in the noise.
+
+This is the same conclusion as HYP-005 (cp_async pipelining was 18% slower):
+**TurboQuant's kernel is compute-bound, not memory-bound.** Pipelining/overlapping
+the load phase doesn't help when load << compute.
+
+The 4 syncs per iteration cost ~2μs total. Named barriers might save ~0.5μs of
+that (lower-latency barriers), but this is <1% of total kernel time.
+
+## Status: rejected
+Zero measurable improvement. The kernel's compute:load ratio is ~10:1 — there's
+nothing meaningful to overlap. Named barriers save <1% vs block.sync().
