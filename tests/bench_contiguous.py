@@ -1,12 +1,14 @@
-"""Benchmark: contiguous v4 vs paged v4 vs SDPA.
+"""Benchmark: contiguous v4 vs paged v4 vs SDPA vs split-KV.
 
-Measures the paging overhead by comparing:
+Measures the paging overhead and split-KV benefit by comparing:
   1. SDPA (fp16, contiguous KV) -- baseline
   2. TQ v4 paged (4-bit, page table addressing)
   3. TQ v4 contiguous (4-bit, direct addressing, no paging)
+  4. TQ v4 contiguous+split (4-bit, direct addressing, split-KV parallelism)
 
 HYP-008 showed 32us paging overhead at seq=1024 (89us paged vs 57us contiguous).
-This benchmark validates that the contiguous kernel eliminates that overhead.
+This benchmark validates that the contiguous kernel eliminates that overhead
+and that split-KV provides additional speedup at longer sequences.
 
 Config: Qwen3-1.7B (16 QO heads, 8 KV heads, head_dim=128)
 """
@@ -230,7 +232,7 @@ def bench_v4_paged(data, module, warmup=10, iters=100):
 
     def run():
         return module.decode_v4_paged(
-            data["Q_rotated"].unsqueeze(0),
+            data["Q_rotated"],
             data["k_quant_p"].reshape(-1).contiguous(),
             data["v_quant_p"].reshape(-1).contiguous(),
             data["k_norms_p"].reshape(-1).contiguous().view(torch.uint8).view(torch.float16),
@@ -260,7 +262,7 @@ def bench_v4_contiguous(data, module, seq_len, warmup=10, iters=100):
 
     def run():
         return module.decode_v4_contiguous(
-            data["Q_rotated"].unsqueeze(0),
+            data["Q_rotated"],
             data["k_quant_c"],
             data["v_quant_c"],
             data["k_norms_c"],
@@ -282,9 +284,52 @@ def bench_v4_contiguous(data, module, seq_len, warmup=10, iters=100):
     return start.elapsed_time(end) / iters * 1000  # us
 
 
+def _choose_splits(seq_len):
+    """Choose optimal num_splits for split-KV based on seq_len."""
+    if seq_len <= 256:
+        return 1
+    elif seq_len <= 512:
+        return 4
+    elif seq_len <= 1024:
+        return 8
+    else:
+        return 16
+
+
+def bench_v4_contiguous_splitkv(data, module, seq_len, warmup=10, iters=100):
+    """TQ v4 contiguous kernel with split-KV."""
+    sm = 1.0 / math.sqrt(HEAD_DIM)
+    pd = _next_pow2(HEAD_DIM)
+    num_splits = _choose_splits(seq_len)
+
+    def run():
+        return module.decode_v4_contiguous_splitkv(
+            data["Q_rotated"],
+            data["k_quant_c"],
+            data["v_quant_c"],
+            data["k_norms_c"],
+            data["v_norms_c"],
+            seq_len, NUM_KV_HEADS, HEAD_DIM, pd, sm,
+            num_splits,
+        )
+
+    for _ in range(warmup):
+        run()
+    torch.cuda.synchronize()
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(iters):
+        run()
+    end.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(end) / iters * 1000  # us
+
+
 def main():
     print("=" * 80)
-    print("Contiguous vs Paged v4 Benchmark")
+    print("Contiguous vs Paged vs Split-KV Benchmark")
     print(f"Config: Qwen3-1.7B (qo={NUM_QO_HEADS}, kv={NUM_KV_HEADS}, "
           f"hd={HEAD_DIM}, page_size={PAGE_SIZE})")
     print("=" * 80)
@@ -295,25 +340,27 @@ def main():
 
     seq_lens = [128, 256, 512, 1024, 2048]
 
-    print(f"{'seq_len':>8} | {'SDPA (us)':>10} | {'v4 paged (us)':>14} | "
-          f"{'v4 contig (us)':>15} | {'paged/SDPA':>11} | {'contig/SDPA':>12} | "
-          f"{'paging OH (us)':>15}")
-    print("-" * 100)
+    print(f"{'seq_len':>8} | {'splits':>6} | {'SDPA (us)':>10} | {'v4 paged':>10} | "
+          f"{'v4 contig':>10} | {'contig+split':>12} | "
+          f"{'paged/SDPA':>10} | {'contig/SDPA':>11} | {'split/SDPA':>10}")
+    print("-" * 115)
 
     for seq_len in seq_lens:
         data = setup_data(seq_len)
+        num_splits = _choose_splits(seq_len)
 
         sdpa_us = bench_sdpa(data)
         paged_us = bench_v4_paged(data, module)
         contig_us = bench_v4_contiguous(data, module, seq_len)
+        split_us = bench_v4_contiguous_splitkv(data, module, seq_len)
 
-        paging_oh = paged_us - contig_us
         paged_ratio = paged_us / sdpa_us
         contig_ratio = contig_us / sdpa_us
+        split_ratio = split_us / sdpa_us
 
-        print(f"{seq_len:>8} | {sdpa_us:>10.1f} | {paged_us:>14.1f} | "
-              f"{contig_us:>15.1f} | {paged_ratio:>10.2f}x | {contig_ratio:>11.2f}x | "
-              f"{paging_oh:>15.1f}")
+        print(f"{seq_len:>8} | {num_splits:>6} | {sdpa_us:>10.1f} | {paged_us:>10.1f} | "
+              f"{contig_us:>10.1f} | {split_us:>12.1f} | "
+              f"{paged_ratio:>9.2f}x | {contig_ratio:>10.2f}x | {split_ratio:>9.2f}x")
 
     # Summary
     print()
@@ -321,7 +368,8 @@ def main():
     print("  - SDPA uses fp16 KV (2x memory, tensor core eligible)")
     print("  - v4 paged uses 4-bit KV with page table (divmod + indirect load)")
     print("  - v4 contiguous uses 4-bit KV with direct addressing (no paging)")
-    print("  - 'paging OH' = paged_us - contig_us (overhead from page table lookups)")
+    print("  - contig+split uses split-KV (FlashDecoding) to parallelize across SMs")
+    print("  - Split schedule: seq<=256: 1, seq=512: 4, seq>=1024: 8, seq>=2048: 16")
     print("  - All kernels use bdz=16 (256 threads for hd=128, bdy=2)")
 
     # Memory comparison

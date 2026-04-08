@@ -75,6 +75,15 @@ struct ContiguousTurboQuantDecodeParams {
     // Batch dispatch
     uint32_t batch_size;
 
+    // Split-KV fields (same as paged v4)
+    IdType*  request_indices;
+    IdType*  kv_tile_indices;
+    IdType*  kv_chunk_size_ptr;
+    bool*    block_valid_mask;
+    bool     partition_kv;
+    float*   partition_o;    // [padded_batch, num_qo_heads, head_dim] float32
+    float*   partition_lse;  // [padded_batch, num_qo_heads] float32
+
     __host__ __device__ ContiguousTurboQuantDecodeParams() {}
 
     __host__ __device__ __forceinline__ int32_t get_qo_len(int32_t batch_idx) const { return 1; }
@@ -94,7 +103,10 @@ struct ContiguousTurboQuantDecodeParams {
         batch_size(batch_size), num_kv_heads(num_kv_heads),
         seq_len(seq_len), head_dim(head_dim), padded_dim(padded_dim),
         q(q), o(o), lse(lse), sm_scale(sm_scale), num_qo_heads(num_qo_heads),
-        maybe_alibi_slopes(nullptr), logits_soft_cap(0), window_left(-1)
+        maybe_alibi_slopes(nullptr), logits_soft_cap(0), window_left(-1),
+        request_indices(nullptr), kv_tile_indices(nullptr),
+        kv_chunk_size_ptr(nullptr), block_valid_mask(nullptr),
+        partition_kv(false), partition_o(nullptr), partition_lse(nullptr)
     {
         dim_chunks = padded_dim / 64;
         uint32_t bytes_per_token = dim_chunks * 32;
@@ -228,10 +240,19 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV4(
     constexpr uint32_t tile_size = bdy * tile_size_per_bdx;
 
     const uint32_t num_qo_heads = params.num_qo_heads;
-    const uint32_t batch_idx = bx;
+    const uint32_t batch_idx = params.partition_kv ? params.request_indices[bx] : bx;
+    const uint32_t kv_tile_idx = params.partition_kv ? params.kv_tile_indices[bx] : 0;
     const uint32_t kv_head_idx = by;
     const uint32_t qo_head_idx = kv_head_idx * bdy + ty;
     const uint32_t seq_len = params.seq_len;
+
+    if (params.block_valid_mask && !params.block_valid_mask[bx]) return;
+
+    const uint32_t kv_chunk_size_val = params.partition_kv ? *(params.kv_chunk_size_ptr) : seq_len;
+    const uint32_t chunk_start = params.partition_kv ? kv_tile_idx * kv_chunk_size_val : 0;
+    const uint32_t chunk_end = params.partition_kv ?
+        min((kv_tile_idx + 1) * kv_chunk_size_val, seq_len) : seq_len;
+    const uint32_t chunk_size = chunk_end - chunk_start;
 
     float codebook_scale = rsqrtf(static_cast<float>(params.padded_dim));
 
@@ -267,15 +288,15 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV4(
     state_t<vec_size> st;
     float s[tile_size];
 
-    const uint32_t num_iters = ceil_div(seq_len, tile_tokens);
+    const uint32_t num_iters = ceil_div(chunk_size, tile_tokens);
 
     uint32_t chunk_idx = tx / 8;
     uint32_t inner_tx = tx % 8;
 
     // Main loop
     for (uint32_t iter = 0; iter < num_iters; ++iter) {
-        uint32_t token_start = iter * tile_tokens;
-        uint32_t remaining = seq_len - token_start;
+        uint32_t token_start = chunk_start + iter * tile_tokens;
+        uint32_t remaining = chunk_size - iter * tile_tokens;
 
         // --- Phase 1: cp_async packed K bytes + precompute K norms ---
         cp_async_contiguous_tile<head_dim, tile_size_per_bdx, bdx, bdy, bdz, IdType>(
@@ -321,7 +342,7 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV4(
                 }
 
                 // LogitsTransform + softmax scaling
-                const uint32_t pos = iter * tile_tokens + tz * tile_size + j;
+                const uint32_t pos = chunk_start + iter * tile_tokens + tz * tile_size + j;
                 s[j] = variant.LogitsTransform(params, s[j], batch_idx, 0, pos,
                                                 qo_head_idx, kv_head_idx);
                 if constexpr (AttentionVariant::use_softmax) {
@@ -330,7 +351,7 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV4(
 
                 bool mask = variant.LogitsMask(params, batch_idx, 0, pos,
                                                 qo_head_idx, kv_head_idx);
-                s[j] = (iter * tile_tokens + tz * tile_size + j < seq_len && mask)
+                s[j] = (iter * tile_tokens + tz * tile_size + j < chunk_size && mask)
                        ? s[j] : -math::inf;
                 st.m = max(st.m, s[j]);
             }
@@ -402,9 +423,21 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV4(
     }
 
     if (tz == 0) {
-        st.o.cast_store(params.o + (batch_idx * num_qo_heads + qo_head_idx) * head_dim + tx * vec_size);
-        if (params.lse != nullptr) {
-            params.lse[batch_idx * num_qo_heads + qo_head_idx] = st.get_lse();
+        if (params.partition_kv && params.partition_o != nullptr) {
+            // Split-KV: write float directly (no half conversion)
+            float* out = params.partition_o + (bx * num_qo_heads + qo_head_idx) * head_dim + tx * vec_size;
+            #pragma unroll
+            for (size_t i = 0; i < vec_size; ++i) {
+                out[i] = st.o[i];
+            }
+            if (params.partition_lse != nullptr) {
+                params.partition_lse[bx * num_qo_heads + qo_head_idx] = st.get_lse();
+            }
+        } else {
+            st.o.cast_store(params.o + (batch_idx * num_qo_heads + qo_head_idx) * head_dim + tx * vec_size);
+            if (params.lse != nullptr) {
+                params.lse[batch_idx * num_qo_heads + qo_head_idx] = st.get_lse();
+            }
         }
     }
 }
