@@ -232,7 +232,7 @@ def bench_v4_paged(data, module, warmup=10, iters=100):
 
     def run():
         return module.decode_v4_paged(
-            data["Q_rotated"].unsqueeze(0),
+            data["Q_rotated"],
             data["k_quant_p"].reshape(-1).contiguous(),
             data["v_quant_p"].reshape(-1).contiguous(),
             data["k_norms_p"].reshape(-1).contiguous().view(torch.uint8).view(torch.float16),
@@ -262,7 +262,7 @@ def bench_v4_contiguous(data, module, seq_len, warmup=10, iters=100):
 
     def run():
         return module.decode_v4_contiguous(
-            data["Q_rotated"].unsqueeze(0),
+            data["Q_rotated"],
             data["k_quant_c"],
             data["v_quant_c"],
             data["k_norms_c"],
@@ -304,7 +304,7 @@ def bench_v4_contiguous_splitkv(data, module, seq_len, warmup=10, iters=100):
 
     def run():
         return module.decode_v4_contiguous_splitkv(
-            data["Q_rotated"].unsqueeze(0),
+            data["Q_rotated"],
             data["k_quant_c"],
             data["v_quant_c"],
             data["k_norms_c"],
