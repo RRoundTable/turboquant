@@ -200,7 +200,7 @@ See `docs/hypotheses/` for all experiment records.
 
 - [x] **8a.** Perplexity — **0.01% degradation** (14.91 → 14.91 PPL on WikiText-2)
 - [x] **8b.** Memory — **3.76× compression**, 3.8× more concurrent requests
-- [ ] **8c.** vLLM E2E with v4 kernel — wire optimized kernel into vLLM backend
+- [x] **8c.** vLLM E2E with v4 contiguous+split-KV kernel — backend updated
 - [x] **8d.** Multi-model — **6/6 models pass** on A100
 - [x] **8e.** Max batch — **3.8× more requests** (71→268 at seq=4K on A100-40GB)
 - [x] **8f.** Throughput — **TQ beats SDPA at batch≥64** (1.1-1.2× higher tok/s)
