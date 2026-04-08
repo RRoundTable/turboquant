@@ -49,6 +49,12 @@ bench-decode: build/bench_decode_turboquant
 build/bench_decode_turboquant: $(OBJ) tests/bench_decode_turboquant.cu | build
 	$(NVCC) $(NVFLAGS) -I$(FLASHINFER_INC) -o $@ $(OBJ) tests/bench_decode_turboquant.cu -lcudart
 
+bench-int4-tc: build/bench_int4_tc
+	./build/bench_int4_tc
+
+build/bench_int4_tc: ../tests/bench_int4_tc.cu | build
+	$(NVCC) -std=c++17 -O2 -arch=sm_80 --generate-line-info -o $@ ../tests/bench_int4_tc.cu -lcudart
+
 clean:
 	rm -f $(OBJ) $(TEST_OBJ) build/turboquant_tests build/test_write_kernel
 	rmdir build 2>/dev/null || true
