@@ -175,28 +175,42 @@ The entire tile load → sync → compute → sync pattern is serial.
   v4 at bdz=16: 89μs at seq=1024 (was 296μs at bdz=4). 256 threads = 8 warps.
   Correctness: cos=1.0, 6/6 configs. Faster than SDPA at short sequences.
 
-#### Current best: v4 bdz=16 — 89μs at seq=1024 (A100)
+#### Contiguous + split-KV optimization:
+- [x] **7i.** Contiguous KV layout (HYP-017) — **beats SDPA at seq≤256**
+  No paging overhead: 16μs at seq=128 (vs SDPA 22μs), 24μs at seq=256 (vs SDPA 30μs)
+- [x] **7j.** Contiguous + split-KV combined (HYP-018) — **flat 48μs at seq=128-1024**
+  Adaptive: nosplit at seq≤256 (22-32μs), split at seq≥512 (48-59μs)
 
-Remaining 32μs gap to contiguous (57μs) is **irreducible paging overhead**: per-token
-divmod + __ldg(indices) regardless of page size (HYP-011) or tile size (HYP-010).
-Tensor cores help only for GQA≥4 (HYP-007a). Dequant is FREE (HYP-008).
+#### Current best (A100, Qwen3-1.7B, batch=1):
+
+| seq | Best TQ | Config | vs SDPA | Memory |
+|-----|---------|--------|---------|--------|
+| 128 | **22 μs** | contiguous nosplit | **1.0× (matches SDPA)** | 3.8× less |
+| 256 | **32 μs** | contiguous nosplit | 1.05× | 3.8× less |
+| 512 | **48 μs** | contiguous split-4 | 1.6× | 3.8× less |
+| 1024 | **48 μs** | contiguous split-8 | 1.6× | 3.8× less |
+| 2048 | **59 μs** | contiguous split-16 | 2.0× | 3.8× less |
+
+Kernel evolution: 856μs → 48μs = **17.8× total speedup** (18 hypotheses tested).
+
+#### Hypothesis record (18 total, 7 confirmed, 11 rejected):
+See `docs/hypotheses/` for all experiment records.
 
 ### Phase 8: Evaluation and Integration — NOW
 
-- [x] **8a.** Perplexity evaluation — **0.01% degradation** (14.91 → 14.91 PPL on WikiText-2)
-- [x] **8b.** Memory savings — **3.76× compression**, 3.8× more concurrent requests
-- [ ] **8c.** vLLM E2E with v4 kernel — wire bdz=16 kernel into vLLM backend
-- [x] **8d.** Multi-model validation — **6/6 models pass** on A100
-  Qwen3-1.7B (GQA=2:1): 104μs, Llama-3-8B (4:1): 179μs, Mistral-7B (4:1): 173μs,
-  Llama-2-7B (MHA): 72μs, Llama-3-70B (8:1): 305μs, Qwen3-0.6B (2:1,hd=64): 54μs
-- [x] **8e.** Max batch size — **3.8× more requests** (71→268 at seq=4K on A100-40GB)
+- [x] **8a.** Perplexity — **0.01% degradation** (14.91 → 14.91 PPL on WikiText-2)
+- [x] **8b.** Memory — **3.76× compression**, 3.8× more concurrent requests
+- [ ] **8c.** vLLM E2E with v4 kernel — wire optimized kernel into vLLM backend
+- [x] **8d.** Multi-model — **6/6 models pass** on A100
+- [x] **8e.** Max batch — **3.8× more requests** (71→268 at seq=4K on A100-40GB)
+- [x] **8f.** Throughput — **TQ beats SDPA at batch≥64** (1.1-1.2× higher tok/s)
 
 ## Next
 
-- [ ] Contiguous KV layout — eliminate 32μs paging overhead (alternative to PagedAttention)
-- [ ] Tensor core path for GQA≥4 models (HYP-007 Phase 2) — BitDecoding-style dequant pipeline
-- [ ] Outlier calibration pipeline — automatic outlier channel detection
-- [ ] Multi-model support — validate across Llama, Mistral, Qwen architectures
+- [ ] vLLM E2E integration with contiguous+split-KV kernel
+- [ ] Tensor core path for GQA≥4 models (HYP-007) — BitDecoding-style pipeline
+- [ ] Paged split-KV overhead reduction (for PagedAttention compatibility)
+- [ ] Outlier calibration pipeline
 
 ## Later
 
