@@ -54,6 +54,11 @@ struct TurboQuantBatchDecodeParams {
     float* partition_o;   // [padded_batch, num_qo_heads, head_dim] float32
     float* partition_lse; // [padded_batch, num_qo_heads] float32
 
+    // Fused Hadamard rotation: if signs != nullptr, kernel rotates Q and un-rotates output.
+    // signs: [padded_dim] float32, hadamard_scale: rsqrt(padded_dim)
+    const float* hadamard_signs;
+    float hadamard_scale;
+
     __device__ __host__ TurboQuantBatchDecodeParams() {}
 
     __host__ __device__ __forceinline__ int32_t get_qo_len(int32_t batch_idx) const { return 1; }

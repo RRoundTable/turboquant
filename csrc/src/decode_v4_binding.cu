@@ -74,7 +74,8 @@ torch::Tensor turboquant_decode_v4(
     int page_size,
     int head_dim,
     int padded_dim,
-    float sm_scale
+    float sm_scale,
+    torch::Tensor hadamard_signs  // [padded_dim] float32, or empty for no rotation
 ) {
     int batch_size = q.size(0);
     int num_qo_heads = q.size(1);
@@ -104,6 +105,9 @@ torch::Tensor turboquant_decode_v4(
     params.rope_rcp_scale = 0;
     params.rope_rcp_theta = 0;
     params.partition_kv = false;
+    params.hadamard_signs = hadamard_signs.numel() > 0 ?
+        hadamard_signs.data_ptr<float>() : nullptr;
+    params.hadamard_scale = rsqrtf(static_cast<float>(padded_dim));
 
     auto ri = torch::arange(batch_size, torch::dtype(torch::kInt32).device(q.device()));
     auto kti = torch::zeros(batch_size, torch::dtype(torch::kInt32).device(q.device()));
@@ -263,6 +267,8 @@ torch::Tensor turboquant_decode_v4_splitkv(
     params.o_indptr = nullptr;
     params.partition_o = tmp_o.data_ptr<float>();
     params.partition_lse = tmp_lse.data_ptr<float>();
+    params.hadamard_signs = nullptr;  // split-KV: rotation handled by caller
+    params.hadamard_scale = 0;
 
     constexpr int VEC = 8;
 

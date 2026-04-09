@@ -275,14 +275,15 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             mask = page_offsets.unsqueeze(0) < num_pages_per_req.unsqueeze(1)
             kv_indices = block_table[mask].to(torch.int32)
 
-            # Rotate Q (kernel operates on rotated KV)
-            q_rotated = self._hadamard_rotate(q.float()).to(torch.float16)
+            # Pad Q to padded_dim if needed (kernel expects padded_dim)
+            q_fp16 = q.to(torch.float16)
+            if self.head_size < self._pd:
+                q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # v4 binding: decode_v4(q, k_quant, v_quant, k_norms, v_norms,
-            #   indices, indptr, last_page_len, num_kv_heads, page_size,
-            #   head_dim, padded_dim, sm_scale)
+            # v4 kernel with fused Hadamard: rotates Q, computes attention,
+            # un-rotates output — all inside the kernel via warp shuffles.
             result = module.decode_v4(
-                q_rotated,
+                q_fp16,
                 self._k_quant.view(-1),
                 self._v_quant.view(-1),
                 self._k_norms.view(-1),
@@ -290,11 +291,14 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 kv_indices, kv_indptr, kv_last_page_len,
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
+                self._signs,
             )
 
-            # Un-rotate output
-            result_unrot = self._hadamard_inverse(result.float())
-            output[:num_actual] = result_unrot[:num_actual].to(query.dtype)
+            # Output is already un-rotated by the kernel
+            if self.head_size < self._pd:
+                output[:num_actual] = result[:num_actual, :, :self.head_size]
+            else:
+                output[:num_actual] = result[:num_actual]
 
         except Exception as e:
             import sys

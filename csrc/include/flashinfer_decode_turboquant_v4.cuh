@@ -23,6 +23,55 @@
 
 namespace flashinfer {
 
+// ─── In-register Walsh-Hadamard Transform (FWHT) via warp shuffles ──
+//
+// Each thread holds vec_size floats. The full vector (bdx * vec_size elements)
+// is distributed across bdx threads in a single warp.
+// Local stages (h=1,2,...,vec_size/2) use only register ops.
+// Cross-thread stages (h=vec_size,...) use __shfl_xor_sync.
+//
+// After FWHT, multiply by scale = rsqrt(padded_dim).
+
+template <uint32_t vec_size, uint32_t bdx>
+__device__ __forceinline__ void fwht_in_registers(
+    float* v,           // [vec_size] in registers
+    uint32_t tx,        // threadIdx.x
+    float scale         // rsqrt(padded_dim)
+) {
+    // Local stages: h = 1, 2, ..., vec_size/2
+    #pragma unroll
+    for (uint32_t h = 1; h < vec_size; h <<= 1) {
+        #pragma unroll
+        for (uint32_t i = 0; i < vec_size; i += 2 * h) {
+            #pragma unroll
+            for (uint32_t k = 0; k < h; k++) {
+                float a = v[i + k], b = v[i + k + h];
+                v[i + k] = a + b;
+                v[i + k + h] = a - b;
+            }
+        }
+    }
+
+    // Cross-thread stages via warp shuffle
+    #pragma unroll
+    for (uint32_t delta = 1; delta < bdx; delta <<= 1) {
+        #pragma unroll
+        for (uint32_t j = 0; j < vec_size; j++) {
+            float partner = __shfl_xor_sync(0xFFFFFFFF, v[j], delta);
+            if (tx & delta)
+                v[j] = partner - v[j];
+            else
+                v[j] = v[j] + partner;
+        }
+    }
+
+    // Apply normalization scale
+    #pragma unroll
+    for (uint32_t j = 0; j < vec_size; j++) {
+        v[j] *= scale;
+    }
+}
+
 // ─── Inline dequant: read packed bytes from smem, return float ──────
 
 // Read 8 float values from packed staging smem for one thread's slice.
@@ -154,12 +203,25 @@ __device__ __inline__ void TurboQuantPagedDecodeDeviceV4(
     size_t* smem_qoffsets = (size_t*)((uint8_t*)smem_norms + norms_bytes);
     float* smem_md = (float*)(smem + md_offset);
 
-    // ═══ Load Q ═══
+    // ═══ Load Q (+ optional fused Hadamard rotation) ═══
     vec_t<float, vec_size> q_vec;
     vec_t<float, vec_size> freq;
     if constexpr (POS_ENCODING_MODE == PosEncodingMode::kNone) {
         q_vec.cast_load(params.q + batch_idx * params.q_stride_n +
                         qo_head_idx * params.q_stride_h + tx * vec_size);
+    }
+    // Fused forward Hadamard: signs multiply + FWHT
+    if (params.hadamard_signs != nullptr) {
+        float q_arr[vec_size];
+        #pragma unroll
+        for (uint32_t j = 0; j < vec_size; j++) {
+            q_arr[j] = q_vec[j] * params.hadamard_signs[tx * vec_size + j];
+        }
+        fwht_in_registers<vec_size, bdx>(q_arr, tx, params.hadamard_scale);
+        #pragma unroll
+        for (uint32_t j = 0; j < vec_size; j++) {
+            q_vec[j] = q_arr[j];
+        }
     }
     block.sync();
 
@@ -309,8 +371,21 @@ __device__ __inline__ void TurboQuantPagedDecodeDeviceV4(
     }
 
     if (tz == 0) {
+        // Fused inverse Hadamard: FWHT + signs multiply (un-rotates output)
+        if (params.hadamard_signs != nullptr) {
+            float o_arr[vec_size];
+            #pragma unroll
+            for (uint32_t j = 0; j < vec_size; j++) {
+                o_arr[j] = st.o[j];
+            }
+            fwht_in_registers<vec_size, bdx>(o_arr, tx, params.hadamard_scale);
+            #pragma unroll
+            for (uint32_t j = 0; j < vec_size; j++) {
+                st.o[j] = o_arr[j] * params.hadamard_signs[tx * vec_size + j];
+            }
+        }
+
         if (params.partition_kv && params.partition_o != nullptr) {
-            // Split-KV: write float directly (no half conversion)
             float* out = params.partition_o + (bx * num_qo_heads + qo_head_idx) * head_dim + tx * vec_size;
             #pragma unroll
             for (size_t i = 0; i < vec_size; ++i) {
@@ -320,7 +395,6 @@ __device__ __inline__ void TurboQuantPagedDecodeDeviceV4(
                 params.partition_lse[bx * num_qo_heads + qo_head_idx] = st.get_lse();
             }
         } else {
-            // Normal: write half
             st.o.cast_store(params.o + (bx * num_qo_heads + qo_head_idx) * head_dim + tx * vec_size);
             if (params.lse != nullptr) {
                 params.lse[bx * num_qo_heads + qo_head_idx] = st.get_lse();
