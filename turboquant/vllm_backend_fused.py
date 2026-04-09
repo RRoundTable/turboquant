@@ -96,16 +96,26 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         signs = torch.sign(torch.randn(self._pd, generator=gen))
         signs[signs == 0] = 1.0
         self._signs = signs.to(dev)
+        # Pre-compute dense Hadamard matrix for fast matmul rotation.
+        # H is symmetric and orthogonal: H @ H = I (when normalized).
+        d = self._pd
+        H = torch.eye(d, device='cpu', dtype=torch.float32)
+        h = 1
+        while h < d:
+            H = H.view(d, d // (2 * h), 2, h)
+            a = H[..., 0, :].clone(); b = H[..., 1, :].clone()
+            H[..., 0, :] = a + b; H[..., 1, :] = a - b
+            H = H.view(d, d)
+            h *= 2
+        self._H = (H * (1.0 / math.sqrt(d))).to(dev)
 
     def _ensure_quant_storage(self, kv_cache):
         """Allocate separate quantized tensors matching cache dimensions."""
         if self._k_quant is not None:
             return
-        # kv_cache: [2, num_blocks, block_size, num_kv_heads, head_size]
         num_blocks = kv_cache.shape[1]
         block_size = kv_cache.shape[2]
         dev = kv_cache.device
-        # HND layout: [num_pages, num_kv_heads, page_size, bytes]
         self._k_quant = torch.zeros(num_blocks, self.num_kv_heads, block_size,
                                      self._quant_bytes_per_head, dtype=torch.uint8, device=dev)
         self._v_quant = torch.zeros_like(self._k_quant)
@@ -113,39 +123,17 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                                      self._dc, dtype=torch.float16, device=dev)
         self._v_norms = torch.zeros_like(self._k_norms)
 
-    def _fwht(self, x):
-        d = x.shape[-1]; x = x.clone(); shape = x.shape; h = 1
-        while h < d:
-            x = x.view(*shape[:-1], d // (2 * h), 2, h)
-            a = x[..., 0, :].clone(); b = x[..., 1, :].clone()
-            x[..., 0, :] = a + b; x[..., 1, :] = a - b
-            x = x.view(shape); h *= 2
-        return x * (1.0 / math.sqrt(d))
-
     def _hadamard_rotate(self, x):
         d = x.shape[-1]
         if d < self._pd:
             x = F.pad(x, (0, self._pd - d))
-        return self._fwht(x * self._signs)
+        return torch.matmul(x * self._signs, self._H)
 
     def _hadamard_inverse(self, y):
-        x = self._fwht(y) * self._signs
+        x = torch.matmul(y, self._H) * self._signs
         if self.head_size < self._pd:
             x = x[..., :self.head_size]
         return x
-
-    def _quantize_dequantize(self, x):
-        """Quantize-dequant simulation (for prefill write path + FA read)."""
-        self._ensure(x.device)
-        xf = x.float()
-        norms = xf.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-        normalized = xf / norms
-        norms = norms.to(torch.float16).float()
-        rotated = self._hadamard_rotate(normalized)
-        indices = torch.bucketize(rotated.contiguous(), self._hi_b)
-        quantized = self._hi_c[indices]
-        reconstructed = self._hadamard_inverse(quantized)
-        return (reconstructed * norms).to(x.dtype)
 
     @torch.no_grad()
     def _quantize_and_store(self, key_or_value, slot_mapping, is_key=True):
@@ -275,20 +263,17 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             module = self._get_fused_module()
             num_reqs = seq_lens.shape[0]
 
-            page_indices_list = []
-            indptr = [0]
-            last_page_lens = []
-            for req in range(num_reqs):
-                sl = seq_lens[req].item()
-                num_pages = (sl + block_size - 1) // block_size
-                for p in range(num_pages):
-                    page_indices_list.append(block_table[req, p].item())
-                indptr.append(indptr[-1] + num_pages)
-                last_page_lens.append(sl - (num_pages - 1) * block_size if num_pages > 0 else 0)
+            # Build page table on GPU (no Python loops, no CPU→GPU copies)
+            num_pages_per_req = (seq_lens + block_size - 1) // block_size
+            total_pages = num_pages_per_req.sum().item()
+            kv_indptr = torch.zeros(num_reqs + 1, dtype=torch.int32, device=q.device)
+            torch.cumsum(num_pages_per_req, dim=0, out=kv_indptr[1:])
+            kv_last_page_len = (seq_lens - (num_pages_per_req - 1) * block_size).to(torch.int32)
 
-            kv_indices = torch.tensor(page_indices_list, dtype=torch.int32, device=q.device)
-            kv_indptr = torch.tensor(indptr, dtype=torch.int32, device=q.device)
-            kv_last_page_len = torch.tensor(last_page_lens, dtype=torch.int32, device=q.device)
+            # Gather page indices from block_table (GPU tensor op)
+            page_offsets = torch.arange(block_table.shape[1], device=q.device)
+            mask = page_offsets.unsqueeze(0) < num_pages_per_req.unsqueeze(1)
+            kv_indices = block_table[mask].to(torch.int32)
 
             # Rotate Q (kernel operates on rotated KV)
             q_rotated = self._hadamard_rotate(q.float()).to(torch.float16)
