@@ -17,7 +17,7 @@ COPY . /opt/turboquant
 WORKDIR /opt/turboquant
 
 # Install TurboQuant as plugin (registers entry_points with vLLM)
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir .
 
 # Pre-compile CUDA kernels to avoid cold-start JIT latency
 # This compiles for the build GPU — will recompile at runtime if target GPU differs
