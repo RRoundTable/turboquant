@@ -235,12 +235,12 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         self._quantize_and_store(key, slot_mapping, is_key=True)
         self._quantize_and_store(value, slot_mapping, is_key=False)
 
-        # Also store quantize-dequanted fp16 in vLLM cache (for prefill FA)
-        key_qd = self._quantize_dequantize(key[:num_tokens])
-        value_qd = self._quantize_dequantize(value[:num_tokens])
+        # Store ORIGINAL fp16 K,V in vLLM cache (for prefill FlashAttention).
+        # No quantize-dequant: prefill uses exact values, decode uses quantized.
         key_cache, value_cache = kv_cache.unbind(0)
         reshape_and_cache_flash(
-            key_qd, value_qd, key_cache, value_cache, slot_mapping,
+            key[:num_tokens], value[:num_tokens],
+            key_cache, value_cache, slot_mapping,
             self.kv_cache_dtype, layer._k_scale, layer._v_scale,
         )
 
