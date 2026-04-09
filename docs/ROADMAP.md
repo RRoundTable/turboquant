@@ -191,9 +191,9 @@ The entire tile load → sync → compute → sync pattern is serial.
 | 1024 | **48 μs** | contiguous split-8 | 1.6× | 3.8× less |
 | 2048 | **59 μs** | contiguous split-16 | 2.0× | 3.8× less |
 
-Kernel evolution: 856μs → 46μs = **18.6× total speedup** (22 hypotheses tested).
+Kernel evolution: 856μs → 37μs (CUDA graph) = **23× total speedup** (23 hypotheses tested).
 
-#### Hypothesis record (22 total, 9 confirmed, 13 rejected):
+#### Hypothesis record (23 total, 10 confirmed, 13 rejected):
 See `docs/hypotheses/` for all experiment records.
 
 ### Phase 8: Evaluation and Integration — DONE
@@ -207,17 +207,20 @@ See `docs/hypotheses/` for all experiment records.
 - [x] **8g.** Correctness — **100% exact token match** (12/12 prompts, Qwen3-1.7B + 8B)
 - [x] **8h.** FlashInfer comparison — **TQ beats FlashInfer at seq≤256** (0.68× faster)
 - [x] **8i.** CUDA write kernel (HYP-021) — **prefill TTFT overhead: 3.7%** (was 44%)
-- [x] **8j.** Corrected E2E analysis — CUDA graphs: 23% decode overhead, 3.0× throughput
+- [x] **8j.** CUDA graph capture (HYP-023) — **decode overhead: 2.5%** (was 23% eager)
+- [x] **8k.** Fused combine (HYP-022) — rejected (7-8% slower, __threadfence overhead)
 
 #### Complete E2E Performance (A100, Qwen3-1.7B, CUDA graphs, batch=1)
 
 | Phase | FP16 baseline | TQ 4-bit | Overhead |
 |-------|--------------|----------|----------|
 | Prefill write (2K tok) | 1.2 ms (memcpy) | 3.1 ms (CUDA quantize) | **+3.7% of TTFT** |
-| Decode TPOT (seq≤256) | 1.2 ms | **0.81 ms** | **33% faster** |
-| Decode TPOT (seq=1024) | 1.2 ms | 1.48 ms | 23% slower |
+| Decode TPOT (seq≤256) | 1.2 ms | **0.81 ms (eager)** | **33% faster** |
+| Decode TPOT (seq=1024) | 1.2 ms | **1.23 ms (CUDA graph)** | **2.5% slower** |
 | Memory | 1.0× | **0.27×** | **3.76× less** |
-| **Max batch throughput** | 1.0× | **~3.0×** | **3× gain** |
+| **Max batch throughput** | 1.0× | **~3.6×** | **3.6× gain** |
+
+Adaptive dispatch: eager at seq≤256 (TQ faster), CUDA graph at seq≥512 (26% kernel speedup).
 
 #### Correctness
 
@@ -291,6 +294,8 @@ Already measured (8f): TQ beats SDPA at batch≥64 (1.1-1.2× higher tok/s).
 ### Phase 9 results:
 - [x] **9a.** INT4 tensor cores (HYP-019) — **rejected** (15× slower at rank-1 decode)
 - [x] **9c.** Warp specialization (HYP-020) — **rejected** (0% improvement, compute:load=10:1)
+- [x] **9e.** Fused combine (HYP-022) — **rejected** (7-8% slower, __threadfence overhead)
+- [x] **9f.** CUDA graph capture (HYP-023) — **confirmed** (26% kernel speedup at seq=1024)
 
 ## Next
 
