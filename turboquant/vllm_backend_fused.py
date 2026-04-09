@@ -179,16 +179,11 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 norm_store[bid, :, boff, chunk] = norms_fp16[t]
 
     def _get_fused_module(self):
-        """JIT-compile the fused decode kernel."""
+        """JIT-compile the v4 fused decode kernel."""
         if self._fused_module is not None:
             return self._fused_module
 
-        csrc = Path(__file__).parent.parent / "turboquant" / "csrc"
-        if not csrc.exists():
-            csrc = Path(os.environ.get("TURBOQUANT_CSRC",
-                        os.path.expanduser("~/workdir/turboquant/csrc")))
-
-        from turboquant.decode_kernel import _get_module
+        from turboquant.decode_kernel_v4 import _get_module
         self._fused_module = _get_module()
         return self._fused_module
 
@@ -260,15 +255,17 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             # Rotate Q (kernel operates on rotated KV)
             q_rotated = self._hadamard_rotate(q.float()).to(torch.float16)
 
-            # Already HND layout — no transpose needed
-            result = module.decode_attention(
+            # v4 binding: decode_v4(q, k_quant, v_quant, k_norms, v_norms,
+            #   indices, indptr, last_page_len, num_kv_heads, page_size,
+            #   head_dim, padded_dim, sm_scale)
+            result = module.decode_v4(
                 q_rotated,
                 self._k_quant.view(-1),
                 self._v_quant.view(-1),
-                self._k_norms.view(-1).view(torch.uint8).view(torch.float16),
-                self._v_norms.view(-1).view(torch.uint8).view(torch.float16),
+                self._k_norms.view(-1),
+                self._v_norms.view(-1),
                 kv_indices, kv_indptr, kv_last_page_len,
-                self.num_heads, self.num_kv_heads, block_size,
+                self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
             )
 
