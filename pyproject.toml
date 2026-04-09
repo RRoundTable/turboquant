@@ -17,5 +17,8 @@ vllm = ["vllm>=0.6.0"]
 sglang = ["sglang>=0.4.0"]
 dev = ["pytest>=7.0", "numpy"]
 
+[project.entry-points."vllm.general_plugins"]
+turboquant = "turboquant.vllm_plugin:register"
+
 [tool.setuptools.packages.find]
 include = ["turboquant*"]

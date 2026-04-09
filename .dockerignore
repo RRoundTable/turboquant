@@ -1,0 +1,13 @@
+.git
+.claude
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.env
+docs/hypotheses
+docs/reference
+tests/bench_*.py
+*.nsys-rep
+*.ncu-rep
+*.swp
