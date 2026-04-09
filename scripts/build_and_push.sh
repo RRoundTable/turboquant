@@ -7,9 +7,9 @@
 
 set -euo pipefail
 
-ECR_URI="${ECR_URI:?Set ECR_URI env var (e.g., 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/turboquant)}"
+ECR_URI="${ECR_URI:-847366387031.dkr.ecr.us-east-1.amazonaws.com/vllm-turboquant}"
 TAG="${TAG:-latest}"
-AWS_REGION="${AWS_REGION:-ap-northeast-2}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 
 echo "=== Building turboquant-vllm:${TAG} ==="
 docker build -t turboquant-vllm:"${TAG}" .
