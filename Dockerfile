@@ -19,16 +19,9 @@ WORKDIR /opt/turboquant
 # Install TurboQuant as plugin (registers entry_points with vLLM)
 RUN pip install --no-cache-dir .
 
-# Pre-compile CUDA kernels to avoid cold-start JIT latency
-# This compiles for the build GPU — will recompile at runtime if target GPU differs
-RUN python -c "\
-try:\
-    from turboquant.decode_kernel_v4 import _get_module;\
-    _get_module();\
-    print('Decode kernel compiled');\
-except Exception as e:\
-    print(f'Decode kernel JIT skipped (no GPU during build): {e}');\
-"
+# Note: CUDA kernel JIT compilation happens at first inference request.
+# Cannot pre-compile during docker build (no GPU available).
+# First request will take ~30s extra for JIT compilation.
 
 EXPOSE 8000
 
