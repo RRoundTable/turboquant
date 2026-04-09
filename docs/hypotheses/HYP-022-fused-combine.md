@@ -22,4 +22,19 @@ cooperative groups `grid.sync()`. But cooperative launch has restrictions.
 
 Approach A (atomic counter) is simpler and works without cooperative launch.
 
-## Status: pending
+## Results
+
+Correctness: perfect (cos=1.0, max_diff=0.0). But **slower**:
+
+| seq | Separate | Fused | Delta |
+|-----|---------|-------|-------|
+| 512 | 49.7 μs | 53.3 μs | -3.6 μs (7% slower) |
+| 1024 | 49.0 μs | 53.0 μs | -4.0 μs (8% slower) |
+| 2048 | 57.8 μs | 62.4 μs | -4.5 μs (8% slower) |
+
+__threadfence() blocks ALL warps in the block (~3-4μs), which exceeds the
+~3μs kernel launch overhead it was supposed to save. The atomic counter
+approach adds overhead that the separate combine kernel doesn't have.
+
+## Status: rejected
+Fused combine is 7-8% slower due to __threadfence + atomic overhead.
