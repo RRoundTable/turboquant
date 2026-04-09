@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir vllm flashinfer-python
 COPY . /opt/turboquant
 WORKDIR /opt/turboquant
 
+# Ensure build tools are up to date
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
 # Install TurboQuant as plugin (registers entry_points with vLLM)
 RUN pip install --no-cache-dir .
 
