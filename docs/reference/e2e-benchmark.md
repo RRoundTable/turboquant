@@ -48,3 +48,24 @@ At serving time, the memory savings enable 3.76× more concurrent requests:
 | **Throughput gain** | | | **~3.6×** |
 
 The 3.76× batch capacity × 0.98× per-request speed = **~3.6× total throughput gain**.
+
+## With CUDA Graphs (vLLM 0.19.0, A100)
+
+| Mode | TPOT | Tok/s | Speedup |
+|------|------|-------|---------|
+| FP16 Eager | 4.6 ms | 220 | 1.0× |
+| **FP16 + CUDA Graphs** | **1.2 ms** | **803** | **3.65×** |
+
+CUDA graphs eliminate kernel launch overhead, giving 3.65× speedup.
+
+**TQ projection with CUDA graphs:**
+
+| Metric | FP16 + CG | TQ + CG |
+|--------|-----------|---------|
+| TPOT (batch=1) | 1.2 ms | ~1.22 ms (+2%) |
+| Max batch (seq=2K) | 72 | ~270 (3.76×) |
+| **Throughput at max batch** | **~57K tok/s** | **~215K tok/s (3.7×)** |
+
+The 4-bit attention kernel adds ~0.6ms/step across 28 layers, which is <2%
+of the 30ms eager or <50% of the 1.2ms CUDA-graphed TPOT. At max batch,
+the 3.76× memory savings dominate: **3.7× total throughput gain**.
