@@ -149,34 +149,53 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
 
     @torch.no_grad()
     def _quantize_and_store(self, key_or_value, slot_mapping, is_key=True):
-        """Quantize and store in HND layout: [pages, heads, entries, bytes]."""
+        """Quantize and store in HND layout: [pages, heads, entries, bytes].
+
+        Uses CUDA write kernel when available, falls back to Python.
+        """
         self._ensure(key_or_value.device)
         num_tokens = slot_mapping.shape[0]
         x = key_or_value[:num_tokens].float()
-        block_size = self._k_quant.shape[2]  # HND: [pages, heads, entries, bytes]
+        block_size = self._k_quant.shape[2]
 
+        # Normalize and rotate
         norms = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         normalized = x / norms
-        norms_fp16 = norms.squeeze(-1).to(torch.float16)
         rotated = self._hadamard_rotate(normalized)
+
+        # Prepare input for CUDA kernel: rotated * norm (kernel re-normalizes)
+        kv_ready = (rotated * norms).to(torch.float16)
 
         quant_store = self._k_quant if is_key else self._v_quant
         norm_store = self._k_norms if is_key else self._v_norms
 
-        for chunk in range(self._dc):
-            ds = chunk * TILE_DIMS
-            cd = rotated[..., ds:ds + TILE_DIMS]
-            indices = torch.bucketize(cd.contiguous(), self._hi_b).to(torch.uint8)
-            packed = _pack_4bit(indices)
+        try:
+            write_mod = self._get_write_module()
+            # CUDA kernel: normalize + quantize + pack → [tokens, heads, bytes]
+            quant_out, norms_out = write_mod.quantize_write(
+                kv_ready, self.head_size, self._pd)
 
-            byte_off = chunk * QUANT_BYTES_PER_CHUNK
-            for t in range(num_tokens):
-                slot = slot_mapping[t].item()
-                bid = slot // block_size
-                boff = slot % block_size
-                # HND: [page, head, entry, bytes]
-                quant_store[bid, :, boff, byte_off:byte_off + QUANT_BYTES_PER_CHUNK] = packed[t]
-                norm_store[bid, :, boff, chunk] = norms_fp16[t]
+            # Scatter to paged HND layout using slot_mapping
+            bids = slot_mapping // block_size
+            boffs = slot_mapping % block_size
+            quant_store[bids, :, boffs, :] = quant_out
+            norm_store[bids, :, boffs, :] = norms_out
+        except Exception:
+            # Fallback: Python quantize path
+            norms_fp16 = norms.squeeze(-1).to(torch.float16)
+            for chunk in range(self._dc):
+                ds = chunk * TILE_DIMS
+                cd = rotated[..., ds:ds + TILE_DIMS]
+                indices = torch.bucketize(cd.contiguous(), self._hi_b).to(torch.uint8)
+                packed = _pack_4bit(indices)
+
+                byte_off = chunk * QUANT_BYTES_PER_CHUNK
+                for t in range(num_tokens):
+                    slot = slot_mapping[t].item()
+                    bid = slot // block_size
+                    boff = slot % block_size
+                    quant_store[bid, :, boff, byte_off:byte_off + QUANT_BYTES_PER_CHUNK] = packed[t]
+                    norm_store[bid, :, boff, chunk] = norms_fp16[t]
 
     def _get_fused_module(self):
         """JIT-compile the v4 fused decode kernel."""
@@ -186,6 +205,36 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         from turboquant.decode_kernel_v4 import _get_module
         self._fused_module = _get_module()
         return self._fused_module
+
+    def _get_write_module(self):
+        """JIT-compile the CUDA quantize-write kernel."""
+        if not hasattr(self, '_write_module') or self._write_module is None:
+            from turboquant.decode_kernel_v4 import _find_flashinfer_include
+            csrc_dir = Path(__file__).parent.parent / "csrc"
+            if not (csrc_dir / "src" / "quantize_write_binding.cu").exists():
+                csrc_dir = Path(os.environ.get("TURBOQUANT_CSRC",
+                    os.path.expanduser("~/workdir/turboquant/csrc")))
+            # Try installed data_files location
+            import sys
+            for p in sys.path:
+                candidate = Path(p) / "csrc" / "src" / "quantize_write_binding.cu"
+                if candidate.exists():
+                    csrc_dir = Path(p) / "csrc"
+                    break
+
+            from torch.utils.cpp_extension import load
+            self._write_module = load(
+                name="turboquant_write",
+                sources=[str(csrc_dir / "src" / "quantize_write_binding.cu")],
+                extra_include_paths=[str(csrc_dir / "include")],
+                extra_cuda_cflags=[
+                    "-std=c++17", "-O3", "--expt-relaxed-constexpr",
+                    "-U__CUDA_NO_HALF_OPERATORS__",
+                    "-U__CUDA_NO_HALF_CONVERSIONS__",
+                ],
+                verbose=False,
+            )
+        return self._write_module
 
     @torch.no_grad()
     def do_kv_cache_update(self, layer, key, value, kv_cache, slot_mapping):
