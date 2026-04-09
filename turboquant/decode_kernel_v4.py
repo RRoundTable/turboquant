@@ -23,7 +23,20 @@ import torch
 
 from .kernel_config import ModelConfig, KernelConfig, compute_kernel_config
 
-_CSRC_DIR = Path(__file__).parent.parent / "csrc"
+def _find_csrc_dir() -> Path:
+    """Find the csrc directory with CUDA source files."""
+    candidates = [
+        Path(__file__).parent.parent / "csrc",                    # dev: repo root
+        Path(os.environ.get("TURBOQUANT_CSRC", "")) if os.environ.get("TURBOQUANT_CSRC") else None,
+        Path(sys.prefix) / "csrc",                                # pip data_files
+    ]
+    for c in candidates:
+        if c and (c / "src" / "decode_v4_binding.cu").exists():
+            return c
+    raise FileNotFoundError("TurboQuant csrc/ not found. Set TURBOQUANT_CSRC env var.")
+
+import sys
+_CSRC_DIR = _find_csrc_dir()
 _INCLUDE_DIR = _CSRC_DIR / "include"
 
 

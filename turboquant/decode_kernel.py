@@ -13,7 +13,17 @@ from typing import Optional, Tuple
 import torch
 
 # Path to our CUDA sources
-_CSRC_DIR = Path(__file__).parent.parent / "csrc"
+import sys as _sys
+
+def _find_csrc():
+    for c in [Path(__file__).parent.parent / "csrc",
+              Path(os.environ.get("TURBOQUANT_CSRC", "")) if os.environ.get("TURBOQUANT_CSRC") else None,
+              Path(_sys.prefix) / "csrc"]:
+        if c and (c / "src").is_dir() and (c / "include").is_dir():
+            return c
+    return Path(__file__).parent.parent / "csrc"  # fallback
+
+_CSRC_DIR = _find_csrc()
 _INCLUDE_DIR = _CSRC_DIR / "include"
 
 # FlashInfer include path (for math.cuh, vec_dtypes.cuh, etc.)

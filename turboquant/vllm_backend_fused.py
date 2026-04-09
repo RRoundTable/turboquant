@@ -209,24 +209,13 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
     def _get_write_module(self):
         """JIT-compile the CUDA quantize-write kernel."""
         if not hasattr(self, '_write_module') or self._write_module is None:
-            from turboquant.decode_kernel_v4 import _find_flashinfer_include
-            csrc_dir = Path(__file__).parent.parent / "csrc"
-            if not (csrc_dir / "src" / "quantize_write_binding.cu").exists():
-                csrc_dir = Path(os.environ.get("TURBOQUANT_CSRC",
-                    os.path.expanduser("~/workdir/turboquant/csrc")))
-            # Try installed data_files location
-            import sys
-            for p in sys.path:
-                candidate = Path(p) / "csrc" / "src" / "quantize_write_binding.cu"
-                if candidate.exists():
-                    csrc_dir = Path(p) / "csrc"
-                    break
+            from turboquant.decode_kernel_v4 import _CSRC_DIR
 
             from torch.utils.cpp_extension import load
             self._write_module = load(
                 name="turboquant_write",
-                sources=[str(csrc_dir / "src" / "quantize_write_binding.cu")],
-                extra_include_paths=[str(csrc_dir / "include")],
+                sources=[str(_CSRC_DIR / "src" / "quantize_write_binding.cu")],
+                extra_include_paths=[str(_CSRC_DIR / "include")],
                 extra_cuda_cflags=[
                     "-std=c++17", "-O3", "--expt-relaxed-constexpr",
                     "-U__CUDA_NO_HALF_OPERATORS__",
