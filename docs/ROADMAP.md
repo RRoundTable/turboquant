@@ -297,17 +297,58 @@ Already measured (8f): TQ beats SDPA at batch≥64 (1.1-1.2× higher tok/s).
 - [x] **9e.** Fused combine (HYP-022) — **rejected** (7-8% slower, __threadfence overhead)
 - [x] **9f.** CUDA graph capture (HYP-023) — **confirmed** (26% kernel speedup at seq=1024)
 
+### Phase 10: Deployment — IN PROGRESS
+
+- [x] **10a.** vLLM plugin system — entry_points registration (`turboquant/vllm_plugin.py`)
+- [x] **10b.** Dockerfile — nvidia/cuda + vLLM + FlashInfer + TurboQuant
+- [x] **10c.** ECR setup — `847366387031.dkr.ecr.us-east-1.amazonaws.com/vllm-turboquant`
+- [ ] **10d.** Forge image build — building (`forge image build --context .`)
+- [ ] **10e.** Tensor parallel support — validate kernel at TP=2,4,8
+- [ ] **10f.** E2E serving test — vLLM serve with `--kv-cache-dtype turboquant`
+
+### Phase 11: Tensor Parallelism — NOW
+
+TP splits KV heads across GPUs. Each GPU runs TurboQuant on its local head subset.
+
+```
+Example: Qwen3-8B (32QO/8KV) at TP=4
+  GPU0: 8QO/2KV heads → bdy=4, grid=1×2×splits
+  GPU1: 8QO/2KV heads → same
+  GPU2: 8QO/2KV heads → same
+  GPU3: 8QO/2KV heads → same
+```
+
+**Key issues to validate:**
+- [ ] **11a.** Kernel correctness at low KV head counts (1-2 heads per GPU)
+  - At TP=8, each GPU has 1 KV head → grid=1×1×splits (very few blocks)
+  - Split-KV becomes critical for SM utilization
+  - Test configs: num_kv_heads ∈ {1, 2, 4} with various GQA ratios
+
+- [ ] **11b.** TP-aware KV cache allocation in vLLM backend
+  - vLLM passes `num_kv_heads // tp_size` to each GPU's backend
+  - Contiguous layout: `[batch, local_kv_heads, max_seq, bytes]`
+  - Verify `kernel_config.py` dispatch handles local head counts
+
+- [ ] **11c.** Multi-GPU benchmark
+  - Compare TP=1 vs TP=2 vs TP=4 on Qwen3-8B / Mistral-7B
+  - Measure: TPOT per TP config, throughput scaling
+  - Verify: KV compression ratio stays 3.76× per GPU
+
+- [ ] **11d.** Split-KV tuning for TP
+  - At TP=4 with 2 KV heads: grid=2 blocks without split
+  - Need aggressive splitting to fill SMs
+  - Optimal: num_splits = max(SM_count / (batch × local_kv_heads), 1)
+
 ## Next
 
-- [ ] **3-bit quantization** — GOAL.md target: ≥5× compression with <1% PPL (currently 3.76× at 4-bit)
+- [ ] **3-bit quantization** — GOAL.md target: ≥5× compression with <1% PPL
 - [ ] **FWHT in write kernel** — fuse Hadamard rotation into CUDA quantize kernel
 - [ ] **LongBench / NIAH** — quality evaluation at long contexts (4K-32K)
-- [ ] **Paged split-KV optimization** — reduce combine overhead for PagedAttention compatibility
 - [ ] **Tensor cores for GQA≥4** — WMMA gives 1.9× at bdy=4 (Llama-3, Mistral)
 
 ## Later
 
 - [ ] Upstream contribution to vLLM
 - [ ] Speculative decoding compatibility
-- [ ] Multi-node tensor parallelism
-- [ ] Package release (pip installable)
+- [ ] Multi-node distributed (TP across nodes via NCCL)
+- [ ] Continuous batching with dynamic KV cache growth
