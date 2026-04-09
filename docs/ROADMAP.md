@@ -191,12 +191,12 @@ The entire tile load → sync → compute → sync pattern is serial.
 | 1024 | **48 μs** | contiguous split-8 | 1.6× | 3.8× less |
 | 2048 | **59 μs** | contiguous split-16 | 2.0× | 3.8× less |
 
-Kernel evolution: 856μs → 48μs = **17.8× total speedup** (18 hypotheses tested).
+Kernel evolution: 856μs → 46μs = **18.6× total speedup** (22 hypotheses tested).
 
-#### Hypothesis record (18 total, 7 confirmed, 11 rejected):
+#### Hypothesis record (22 total, 9 confirmed, 13 rejected):
 See `docs/hypotheses/` for all experiment records.
 
-### Phase 8: Evaluation and Integration — NOW
+### Phase 8: Evaluation and Integration — DONE
 
 - [x] **8a.** Perplexity — **0.01% degradation** (14.91 → 14.91 PPL on WikiText-2)
 - [x] **8b.** Memory — **3.76× compression**, 3.8× more concurrent requests
@@ -204,6 +204,29 @@ See `docs/hypotheses/` for all experiment records.
 - [x] **8d.** Multi-model — **6/6 models pass** on A100
 - [x] **8e.** Max batch — **3.8× more requests** (71→268 at seq=4K on A100-40GB)
 - [x] **8f.** Throughput — **TQ beats SDPA at batch≥64** (1.1-1.2× higher tok/s)
+- [x] **8g.** Correctness — **100% exact token match** (12/12 prompts, Qwen3-1.7B + 8B)
+- [x] **8h.** FlashInfer comparison — **TQ beats FlashInfer at seq≤256** (0.68× faster)
+- [x] **8i.** CUDA write kernel (HYP-021) — **prefill TTFT overhead: 3.7%** (was 44%)
+- [x] **8j.** Corrected E2E analysis — CUDA graphs: 23% decode overhead, 3.0× throughput
+
+#### Complete E2E Performance (A100, Qwen3-1.7B, CUDA graphs, batch=1)
+
+| Phase | FP16 baseline | TQ 4-bit | Overhead |
+|-------|--------------|----------|----------|
+| Prefill write (2K tok) | 1.2 ms (memcpy) | 3.1 ms (CUDA quantize) | **+3.7% of TTFT** |
+| Decode TPOT (seq≤256) | 1.2 ms | **0.81 ms** | **33% faster** |
+| Decode TPOT (seq=1024) | 1.2 ms | 1.48 ms | 23% slower |
+| Memory | 1.0× | **0.27×** | **3.76× less** |
+| **Max batch throughput** | 1.0× | **~3.0×** | **3× gain** |
+
+#### Correctness
+
+| Test | Result |
+|------|--------|
+| Kernel cosine (all configs) | 1.000000 |
+| WikiText-2 PPL | 14.91 → 14.91 (0.01% loss) |
+| Exact token match (12 prompts) | 100% on Qwen3-1.7B and 8B |
+| Factual accuracy | FP16 = TQ on every prompt |
 
 ### Architecture gap: TurboQuant vs FlashInfer (baseline)
 
@@ -265,16 +288,21 @@ At batch≥4, grid = 4 × 8 × 8 = 256 blocks → all SMs busy.
 Single-request latency can't improve, but throughput scales.
 Already measured (8f): TQ beats SDPA at batch≥64 (1.1-1.2× higher tok/s).
 
+### Phase 9 results:
+- [x] **9a.** INT4 tensor cores (HYP-019) — **rejected** (15× slower at rank-1 decode)
+- [x] **9c.** Warp specialization (HYP-020) — **rejected** (0% improvement, compute:load=10:1)
+
 ## Next
 
-- [ ] **9a.** INT4 tensor cores — biggest single improvement opportunity
-- [ ] **8c.** vLLM E2E integration with contiguous+split-KV kernel
-- [ ] **9b.** Dequant-to-fp16 tensor core pipeline (if 9a requires uniform quant)
-- [ ] Paged split-KV overhead reduction (for PagedAttention compatibility)
+- [ ] **3-bit quantization** — GOAL.md target: ≥5× compression with <1% PPL (currently 3.76× at 4-bit)
+- [ ] **FWHT in write kernel** — fuse Hadamard rotation into CUDA quantize kernel
+- [ ] **LongBench / NIAH** — quality evaluation at long contexts (4K-32K)
+- [ ] **Paged split-KV optimization** — reduce combine overhead for PagedAttention compatibility
+- [ ] **Tensor cores for GQA≥4** — WMMA gives 1.9× at bdy=4 (Llama-3, Mistral)
 
 ## Later
 
-- [ ] 9c. Persistent kernel with warp specialization
 - [ ] Upstream contribution to vLLM
 - [ ] Speculative decoding compatibility
 - [ ] Multi-node tensor parallelism
+- [ ] Package release (pip installable)
