@@ -44,7 +44,7 @@ class TurboQuantBackend(FlashAttentionBackend):
 
     @staticmethod
     def get_name():
-        return "TURBOQUANT"
+        return "CUSTOM"
 
     @staticmethod
     def get_impl_cls():

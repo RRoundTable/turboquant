@@ -22,3 +22,4 @@ turboquant = "turboquant.vllm_plugin:register"
 
 [tool.setuptools.packages.find]
 include = ["turboquant*"]
+

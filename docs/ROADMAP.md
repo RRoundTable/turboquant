@@ -318,26 +318,39 @@ Example: Qwen3-8B (32QO/8KV) at TP=4
   GPU3: 8QO/2KV heads → same
 ```
 
-**Key issues to validate:**
-- [ ] **11a.** Kernel correctness at low KV head counts (1-2 heads per GPU)
-  - At TP=8, each GPU has 1 KV head → grid=1×1×splits (very few blocks)
-  - Split-KV becomes critical for SM utilization
-  - Test configs: num_kv_heads ∈ {1, 2, 4} with various GQA ratios
+#### Results:
 
-- [ ] **11b.** TP-aware KV cache allocation in vLLM backend
-  - vLLM passes `num_kv_heads // tp_size` to each GPU's backend
-  - Contiguous layout: `[batch, local_kv_heads, max_seq, bytes]`
-  - Verify `kernel_config.py` dispatch handles local head counts
+**FP16 baseline (vLLM TP, Qwen3-1.7B, A100×8, eager mode):**
 
-- [ ] **11c.** Multi-GPU benchmark
-  - Compare TP=1 vs TP=2 vs TP=4 on Qwen3-8B / Mistral-7B
-  - Measure: TPOT per TP config, throughput scaling
-  - Verify: KV compression ratio stays 3.76× per GPU
+| TP | TPOT (ms) | Tok/s | Output quality |
+|----|-----------|-------|----------------|
+| 1  | 13.3      | 75.0  | Paris, 100°C, 2 |
+| 2  | 14.5      | 68.9  | Paris, 100°C, 2 |
+| 4  | 15.1      | 66.4  | Rome, 100°C, 2 |
 
-- [ ] **11d.** Split-KV tuning for TP
-  - At TP=4 with 2 KV heads: grid=2 blocks without split
-  - Need aggressive splitting to fill SMs
-  - Optimal: num_splits = max(SM_count / (batch × local_kv_heads), 1)
+**TurboQuant backend (attention_backend=CUSTOM, fused kernel fallback to FA):**
+
+| TP | TPOT (ms) | Tok/s | Notes |
+|----|-----------|-------|-------|
+| 4  | 121.9     | 8.2   | Python quantize-dequant overhead (~8×) |
+
+- [x] **11a.** Plugin registration — fixed `register_backend()` to use qualname string
+- [x] **11b.** `get_name()` — must return `"CUSTOM"` (not `"TURBOQUANT"`) to match enum
+- [x] **11c.** FP16 baseline TP=1,2,4 — validated, correct outputs
+- [x] **11d.** TQ backend under TP — loads correctly, selects CUSTOM backend
+- [ ] **11e.** Fused CUDA kernel under TP — argument mismatch, falls back to FA
+- [ ] **11f.** csrc/ package inclusion — CUDA sources not in pip install, need data_files
+
+**Blocking issues for fused kernel under TP:**
+1. `decode_attention()` binding expects different args than `vllm_backend_fused.py` passes
+2. `csrc/include/` not included in pip install → JIT fails on deployed containers
+3. Python `do_kv_cache_update` adds ~8× overhead without fused kernel
+
+**Key fixes committed:**
+- `vllm_plugin.py`: `register_backend(CUSTOM, "turboquant.vllm_backend_fused.TurboQuantBackend")`
+- `vllm_backend_fused.py`: `get_name()` returns `"CUSTOM"`
+- `decode_kernel.py`: auto-detect FlashInfer include from pip package
+- `setup.py`: include `csrc/` files via `data_files`
 
 ## Next
 

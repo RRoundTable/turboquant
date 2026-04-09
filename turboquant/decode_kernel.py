@@ -17,10 +17,21 @@ _CSRC_DIR = Path(__file__).parent.parent / "csrc"
 _INCLUDE_DIR = _CSRC_DIR / "include"
 
 # FlashInfer include path (for math.cuh, vec_dtypes.cuh, etc.)
-_FLASHINFER_INCLUDE = Path(os.environ.get(
-    "FLASHINFER_INCLUDE_DIR",
-    os.path.expanduser("~/workdir/flashinfer/include"),
-))
+def _find_flashinfer_include():
+    if "FLASHINFER_INCLUDE_DIR" in os.environ:
+        return Path(os.environ["FLASHINFER_INCLUDE_DIR"])
+    try:
+        import flashinfer
+        pkg_dir = Path(flashinfer.__file__).parent
+        for candidate in [pkg_dir / "data" / "include", pkg_dir / "include",
+                          pkg_dir.parent / "include"]:
+            if (candidate / "flashinfer").is_dir():
+                return candidate
+    except ImportError:
+        pass
+    return Path(os.path.expanduser("~/workdir/flashinfer/include"))
+
+_FLASHINFER_INCLUDE = _find_flashinfer_include()
 
 
 @functools.cache

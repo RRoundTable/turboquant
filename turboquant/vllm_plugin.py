@@ -1,7 +1,8 @@
 """TurboQuant vLLM plugin — auto-registers attention backend via entry_points.
 
 When turboquant is pip-installed, vLLM discovers this plugin at startup
-and registers the TurboQuantBackend for --kv-cache-dtype turboquant.
+and registers the TurboQuantBackend as CUSTOM attention backend.
+Use with: LLM(..., attention_backend="CUSTOM")
 """
 
 _registered = False
@@ -19,9 +20,11 @@ def register():
             AttentionBackendEnum,
             register_backend,
         )
-        from turboquant.vllm_backend_fused import TurboQuantBackend
 
-        register_backend(AttentionBackendEnum.CUSTOM, TurboQuantBackend)
+        register_backend(
+            AttentionBackendEnum.CUSTOM,
+            "turboquant.vllm_backend_fused.TurboQuantBackend",
+        )
     except ImportError:
         # vLLM not installed or incompatible version — skip silently
         pass
