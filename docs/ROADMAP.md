@@ -328,29 +328,27 @@ Example: Qwen3-8B (32QO/8KV) at TP=4
 | 2  | 14.5      | 68.9  | Paris, 100°C, 2 |
 | 4  | 15.1      | 66.4  | Rome, 100°C, 2 |
 
-**TurboQuant backend (attention_backend=CUSTOM, fused kernel fallback to FA):**
+**TurboQuant v4 kernel (attention_backend=CUSTOM, fused decode):**
 
-| TP | TPOT (ms) | Tok/s | Notes |
-|----|-----------|-------|-------|
-| 4  | 121.9     | 8.2   | Python quantize-dequant overhead (~8×) |
+| TP | TPOT (ms) | Tok/s | vs FP16 | Output quality |
+|----|-----------|-------|---------|----------------|
+| 1  | 68.6      | 14.6  | 5.2×    | 2/3 correct, 1 degraded |
+| 2  | 71.0      | 14.1  | 4.9×    | 2/3 correct, 1 degraded |
 
-- [x] **11a.** Plugin registration — fixed `register_backend()` to use qualname string
-- [x] **11b.** `get_name()` — must return `"CUSTOM"` (not `"TURBOQUANT"`) to match enum
+Overhead is dominated by Python `do_kv_cache_update` (write path), not the CUDA decode kernel.
+v4 fused kernel runs with no FA fallback. Quality needs investigation on some prompts.
+
+- [x] **11a.** Plugin registration — `register_backend()` with qualname string
+- [x] **11b.** `get_name()` returns `"CUSTOM"` to match AttentionBackendEnum
 - [x] **11c.** FP16 baseline TP=1,2,4 — validated, correct outputs
 - [x] **11d.** TQ backend under TP — loads correctly, selects CUSTOM backend
-- [ ] **11e.** Fused CUDA kernel under TP — argument mismatch, falls back to FA
-- [ ] **11f.** csrc/ package inclusion — CUDA sources not in pip install, need data_files
+- [x] **11e.** Fused CUDA v4 kernel under TP — fixed arg mismatch, runs at TP=1,2
+- [x] **11f.** csrc/ package inclusion — `setup.py` data_files + FlashInfer auto-detect
 
-**Blocking issues for fused kernel under TP:**
-1. `decode_attention()` binding expects different args than `vllm_backend_fused.py` passes
-2. `csrc/include/` not included in pip install → JIT fails on deployed containers
-3. Python `do_kv_cache_update` adds ~8× overhead without fused kernel
-
-**Key fixes committed:**
-- `vllm_plugin.py`: `register_backend(CUSTOM, "turboquant.vllm_backend_fused.TurboQuantBackend")`
-- `vllm_backend_fused.py`: `get_name()` returns `"CUSTOM"`
-- `decode_kernel.py`: auto-detect FlashInfer include from pip package
-- `setup.py`: include `csrc/` files via `data_files`
+**Remaining:**
+- [ ] Quality investigation — some prompts produce degraded output
+- [ ] Replace Python `do_kv_cache_update` with CUDA write kernel (major perf win)
+- [ ] TP=4,8 validation with fused kernel
 
 ## Next
 
