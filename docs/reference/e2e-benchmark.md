@@ -69,3 +69,19 @@ CUDA graphs eliminate kernel launch overhead, giving 3.65× speedup.
 The 4-bit attention kernel adds ~0.6ms/step across 28 layers, which is <2%
 of the 30ms eager or <50% of the 1.2ms CUDA-graphed TPOT. At max batch,
 the 3.76× memory savings dominate: **3.7× total throughput gain**.
+
+## Multi-Model Results (A100, transformers eager, batch=1)
+
+| Model | Layers | QO/KV Heads | GQA | FP16 TPOT | TQ TPOT | Overhead | KV Compress |
+|-------|--------|-------------|-----|-----------|---------|----------|------------|
+| Qwen3-1.7B | 28 | 16/8 | 2:1 | 29.9 ms | 30.5 ms | **1.02×** | 3.76× |
+| Qwen3-4B | 36 | 32/8 | 4:1 | 39.1 ms | 39.6 ms | **1.01×** | 3.8× |
+| Qwen3-8B | 36 | 32/8 | 4:1 | 39.2 ms | 39.6 ms | **1.01×** | 3.8× |
+
+**Consistent 1-2% TPOT overhead across all model sizes.**
+Output quality: identical text for all prompts across all models.
+
+Projected throughput gain at max batch:
+- Qwen3-1.7B: ~3.6× (270 vs 72 concurrent requests)
+- Qwen3-4B:   ~3.8× (more KV heads benefit more from compression)
+- Qwen3-8B:   ~3.7× (17.5GB model weight leaves less for KV cache → bigger relative gain)
