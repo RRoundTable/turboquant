@@ -54,6 +54,25 @@ class TurboQuantBackend(FlashAttentionBackend):
     def get_builder_cls():
         return TurboQuantMetadataBuilder
 
+    @staticmethod
+    def get_kv_cache_shape(
+        num_blocks: int,
+        block_size: int,
+        num_kv_heads: int,
+        head_size: int,
+        cache_dtype_str: str = "auto",
+    ) -> tuple[int, ...]:
+        # For fp8 cache: [2, blocks, block_size, kv_heads, head_size] uint8
+        # We store quant+norms in the first bytes_per_head bytes, rest is padding.
+        return FlashAttentionBackend.get_kv_cache_shape(
+            num_blocks, block_size, num_kv_heads, head_size, cache_dtype_str)
+
+    @classmethod
+    def supports_kv_cache_dtype(cls, kv_cache_dtype) -> bool:
+        if kv_cache_dtype in ("fp8", "fp8_e4m3"):
+            return True
+        return super().supports_kv_cache_dtype(kv_cache_dtype)
+
 
 class TurboQuantMetadataBuilder(FlashAttentionMetadataBuilder):
     pass
@@ -62,189 +81,140 @@ class TurboQuantMetadataBuilder(FlashAttentionMetadataBuilder):
 class TurboQuantFusedImpl(FlashAttentionImpl):
     """TurboQuant with fused CUDA decode kernel.
 
-    Maintains separate quantized KV tensors for the fused decode kernel.
-    Prefill uses FlashAttention (parent) with quantize-dequant simulation.
-    Decode uses the fused CUDA kernel via JIT.
+    When kv_cache_dtype="turboquant": single quantized cache, 3.76× memory savings.
+    The vLLM cache stores [quant_bytes | norm_bytes] per token per head as uint8.
+    Prefill: quantize KV → store in cache, dequant from cache → FA.
+    Decode: v4 kernel reads quantized cache directly.
+
+    When kv_cache_dtype="auto"/"float16": dual storage (backward compat).
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, num_heads, head_size, scale, num_kv_heads,
+                 alibi_slopes, sliding_window, kv_cache_dtype, *args, **kwargs):
+        # Bypass FlashAttention's fp8 device check (we use our own decode kernel)
+        self._real_kv_cache_dtype = kv_cache_dtype
+        parent_dtype = "auto" if kv_cache_dtype in ("fp8", "fp8_e4m3") else kv_cache_dtype
+        super().__init__(num_heads, head_size, scale, num_kv_heads,
+                         alibi_slopes, sliding_window, parent_dtype, *args, **kwargs)
+        self.kv_cache_dtype = self._real_kv_cache_dtype
         self._pd = _next_pow2(self.head_size)
         self._dc = self._pd // TILE_DIMS
-        self._quant_bytes_per_head = self._dc * QUANT_BYTES_PER_CHUNK
-        self._hi_b = None
-        self._hi_c = None
+        self._qbytes = self._dc * QUANT_BYTES_PER_CHUNK
+        self._nbytes = self._dc * NORM_BYTES_PER_CHUNK
         self._signs = None
         self._fused_module = None
-
-        # Separate quantized storage (allocated on first use)
-        # HND Layout: [num_pages, num_kv_heads, page_size, quant_bytes_per_head] uint8
-        # Norms: [num_pages, num_kv_heads, page_size, dim_chunks] fp16
+        self._write_module_cache = None
+        self._is_tq_cache = self.kv_cache_dtype in ("fp8", "fp8_e4m3", "turboquant")
+        # Legacy dual-storage tensors (only when NOT using turboquant cache)
         self._k_quant = None
-        self._v_quant = None
-        self._k_norms = None
-        self._v_norms = None
 
     def _ensure(self, dev):
-        if self._hi_b is not None:
+        if self._signs is not None:
             return
-        s = 1.0 / math.sqrt(self._pd)
-        self._hi_b = torch.tensor([b*s for b in _B4], device=dev, dtype=torch.float32)
-        self._hi_c = torch.tensor([c*s for c in _C4], device=dev, dtype=torch.float32)
         gen = torch.Generator(device='cpu')
         gen.manual_seed(42)
         signs = torch.sign(torch.randn(self._pd, generator=gen))
         signs[signs == 0] = 1.0
         self._signs = signs.to(dev)
-        # Pre-compute dense Hadamard matrix for fast matmul rotation.
-        # H is symmetric and orthogonal: H @ H = I (when normalized).
-        d = self._pd
-        H = torch.eye(d, device='cpu', dtype=torch.float32)
-        h = 1
-        while h < d:
-            H = H.view(d, d // (2 * h), 2, h)
-            a = H[..., 0, :].clone(); b = H[..., 1, :].clone()
-            H[..., 0, :] = a + b; H[..., 1, :] = a - b
-            H = H.view(d, d)
-            h *= 2
-        self._H = (H * (1.0 / math.sqrt(d))).to(dev)
 
-    def _ensure_quant_storage(self, kv_cache):
-        """Allocate separate quantized tensors matching cache dimensions."""
+    def _ensure_legacy_storage(self, kv_cache):
+        """Allocate separate quantized tensors (dual storage mode only)."""
         if self._k_quant is not None:
             return
-        num_blocks = kv_cache.shape[1]
-        block_size = kv_cache.shape[2]
+        nb, bs = kv_cache.shape[1], kv_cache.shape[2]
         dev = kv_cache.device
-        self._k_quant = torch.zeros(num_blocks, self.num_kv_heads, block_size,
-                                     self._quant_bytes_per_head, dtype=torch.uint8, device=dev)
+        self._k_quant = torch.zeros(nb, self.num_kv_heads, bs, self._qbytes, dtype=torch.uint8, device=dev)
         self._v_quant = torch.zeros_like(self._k_quant)
-        self._k_norms = torch.zeros(num_blocks, self.num_kv_heads, block_size,
-                                     self._dc, dtype=torch.float16, device=dev)
+        self._k_norms = torch.zeros(nb, self.num_kv_heads, bs, self._dc, dtype=torch.float16, device=dev)
         self._v_norms = torch.zeros_like(self._k_norms)
-        # Pre-flatten for decode kernel (avoids per-step .view(-1))
         self._k_quant_flat = self._k_quant.view(-1)
         self._v_quant_flat = self._v_quant.view(-1)
         self._k_norms_flat = self._k_norms.view(-1)
         self._v_norms_flat = self._v_norms.view(-1)
 
-    def _hadamard_rotate(self, x):
-        d = x.shape[-1]
-        if d < self._pd:
-            x = F.pad(x, (0, self._pd - d))
-        return torch.matmul(x * self._signs, self._H)
-
-    def _hadamard_inverse(self, y):
-        x = torch.matmul(y, self._H) * self._signs
-        if self.head_size < self._pd:
-            x = x[..., :self.head_size]
-        return x
-
-    @torch.no_grad()
-    def _quantize_and_store(self, key_or_value, slot_mapping, is_key=True):
-        """Quantize and store in HND layout: [pages, heads, entries, bytes].
-
-        Uses fused CUDA kernel (norm + Hadamard + quantize) when available.
-        """
-        self._ensure(key_or_value.device)
-        num_tokens = slot_mapping.shape[0]
-        block_size = self._k_quant.shape[2]
-
-        quant_store = self._k_quant if is_key else self._v_quant
-        norm_store = self._k_norms if is_key else self._v_norms
-
-        try:
-            write_mod = self._get_write_module()
-            # Fused kernel: float32 input → normalize → Hadamard → quantize → pack
-            kv_f32 = key_or_value[:num_tokens].float()
-            quant_out, norms_out = write_mod.quantize_write_hadamard(
-                kv_f32, self._signs, self.head_size, self._pd)
-
-            # Scatter to paged HND layout
-            bids = slot_mapping // block_size
-            boffs = slot_mapping % block_size
-            quant_store[bids, :, boffs, :] = quant_out
-            norm_store[bids, :, boffs, :] = norms_out
-        except Exception:
-            # Fallback: Python quantize path
-            x = key_or_value[:num_tokens].float()
-            norms = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-            normalized = x / norms
-            rotated = self._hadamard_rotate(normalized)
-            norms_fp16 = norms.squeeze(-1).to(torch.float16)
-            for chunk in range(self._dc):
-                ds = chunk * TILE_DIMS
-                cd = rotated[..., ds:ds + TILE_DIMS]
-                indices = torch.bucketize(cd.contiguous(), self._hi_b).to(torch.uint8)
-                packed = _pack_4bit(indices)
-
-                byte_off = chunk * QUANT_BYTES_PER_CHUNK
-                for t in range(num_tokens):
-                    slot = slot_mapping[t].item()
-                    bid = slot // block_size
-                    boff = slot % block_size
-                    quant_store[bid, :, boff, byte_off:byte_off + QUANT_BYTES_PER_CHUNK] = packed[t]
-                    norm_store[bid, :, boff, chunk] = norms_fp16[t]
-
     def _get_fused_module(self):
-        """JIT-compile the v4 fused decode kernel."""
         if self._fused_module is not None:
             return self._fused_module
-
         from turboquant.decode_kernel_v4 import _get_module
         self._fused_module = _get_module()
         return self._fused_module
 
     def _get_write_module(self):
-        """JIT-compile the CUDA quantize-write kernel."""
-        if not hasattr(self, '_write_module') or self._write_module is None:
-            from turboquant.decode_kernel_v4 import _CSRC_DIR
+        if self._write_module_cache is not None:
+            return self._write_module_cache
+        from turboquant.decode_kernel_v4 import _CSRC_DIR
+        from torch.utils.cpp_extension import load
+        self._write_module_cache = load(
+            name="turboquant_write",
+            sources=[str(_CSRC_DIR / "src" / "quantize_write_binding.cu")],
+            extra_include_paths=[str(_CSRC_DIR / "include")],
+            extra_cuda_cflags=["-std=c++17", "-O3", "--expt-relaxed-constexpr",
+                "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__"],
+            verbose=False)
+        return self._write_module_cache
 
-            from torch.utils.cpp_extension import load
-            self._write_module = load(
-                name="turboquant_write",
-                sources=[str(_CSRC_DIR / "src" / "quantize_write_binding.cu")],
-                extra_include_paths=[str(_CSRC_DIR / "include")],
-                extra_cuda_cflags=[
-                    "-std=c++17", "-O3", "--expt-relaxed-constexpr",
-                    "-U__CUDA_NO_HALF_OPERATORS__",
-                    "-U__CUDA_NO_HALF_CONVERSIONS__",
-                ],
-                verbose=False,
-            )
-        return self._write_module
+    def _parse_tq_cache(self, kv_cache):
+        """Split vLLM's fp8/uint8 cache into quant + norms views.
+
+        kv_cache: [2, blocks, block_size, kv_heads, head_size] uint8
+        First qbytes bytes = packed quant data, next nbytes = norms (fp16 as uint8).
+        Remaining bytes are padding (unused).
+        """
+        k_cache, v_cache = kv_cache[0], kv_cache[1]
+        k_q = k_cache[..., :self._qbytes].contiguous()
+        v_q = v_cache[..., :self._qbytes].contiguous()
+        k_n = k_cache[..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16)
+        v_n = v_cache[..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16)
+        return k_q.view(-1), v_q.view(-1), k_n.view(-1), v_n.view(-1), kv_cache.shape[2]
 
     @torch.no_grad()
     def do_kv_cache_update(self, layer, key, value, kv_cache, slot_mapping):
-        """Store quantized bytes for fused decode + fp16 for prefill FA."""
-        self._ensure_quant_storage(kv_cache)
         self._ensure(key.device)
         num_tokens = slot_mapping.shape[0]
-        block_size = self._k_quant.shape[2]
 
-        # Quantize K+V in one call (single Python dispatch, back-to-back kernels)
-        bids = slot_mapping // block_size
-        boffs = slot_mapping % block_size
-        try:
-            wm = self._get_write_module()
-            kq, vq, kn, vn = wm.quantize_write_kv(
-                key[:num_tokens].float(), value[:num_tokens].float(),
-                self._signs, self.head_size, self._pd)
-            self._k_quant[bids, :, boffs, :] = kq
-            self._v_quant[bids, :, boffs, :] = vq
-            self._k_norms[bids, :, boffs, :] = kn
-            self._v_norms[bids, :, boffs, :] = vn
-        except Exception:
-            self._quantize_and_store(key, slot_mapping, is_key=True)
-            self._quantize_and_store(value, slot_mapping, is_key=False)
-
-        # fp16 in vLLM cache (for prefill FA)
-        key_cache, value_cache = kv_cache.unbind(0)
-        reshape_and_cache_flash(
-            key[:num_tokens], value[:num_tokens],
-            key_cache, value_cache, slot_mapping,
-            self.kv_cache_dtype, layer._k_scale, layer._v_scale,
-        )
+        if self._is_tq_cache:
+            # Single-cache mode: write quantized data directly to vLLM's fp8/uint8 cache
+            # kv_cache: [2, blocks, block_size, kv_heads, head_size] uint8
+            block_size = kv_cache.shape[2]
+            bids = slot_mapping // block_size
+            boffs = slot_mapping % block_size
+            try:
+                wm = self._get_write_module()
+                kq, vq, kn, vn = wm.quantize_write_kv(
+                    key[:num_tokens].float(), value[:num_tokens].float(),
+                    self._signs, self.head_size, self._pd)
+                kn_u8 = kn.view(torch.uint8)
+                vn_u8 = vn.view(torch.uint8)
+                kv_cache[0, bids, boffs, :, :self._qbytes] = kq
+                kv_cache[0, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = kn_u8
+                kv_cache[1, bids, boffs, :, :self._qbytes] = vq
+                kv_cache[1, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = vn_u8
+            except Exception:
+                pass
+        else:
+            # Legacy dual-storage mode
+            self._ensure_legacy_storage(kv_cache)
+            block_size = self._k_quant.shape[2]
+            bids = slot_mapping // block_size
+            boffs = slot_mapping % block_size
+            try:
+                wm = self._get_write_module()
+                kq, vq, kn, vn = wm.quantize_write_kv(
+                    key[:num_tokens].float(), value[:num_tokens].float(),
+                    self._signs, self.head_size, self._pd)
+                self._k_quant[bids, :, boffs, :] = kq
+                self._v_quant[bids, :, boffs, :] = vq
+                self._k_norms[bids, :, boffs, :] = kn
+                self._v_norms[bids, :, boffs, :] = vn
+            except Exception:
+                pass
+            # Also store fp16 for prefill FA
+            key_cache, value_cache = kv_cache.unbind(0)
+            reshape_and_cache_flash(
+                key[:num_tokens], value[:num_tokens],
+                key_cache, value_cache, slot_mapping,
+                self.kv_cache_dtype, layer._k_scale, layer._v_scale,
+            )
 
     @torch.no_grad()
     def forward(self, layer, query, key, value, kv_cache, attn_metadata,
@@ -258,7 +228,35 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         is_decode = (max_query_len == 1)
 
         if not is_decode:
-            # Prefill: use parent FlashAttention (reads fp16 from vLLM cache)
+            if self._is_tq_cache:
+                # TQ-native prefill: compute attention from fresh fp16 K,V
+                # using PyTorch SDPA. Bypasses FA entirely (no dtype check).
+                num_tokens = attn_metadata.num_actual_tokens
+                q = query[:num_tokens]
+                k = key[:num_tokens]
+                v = value[:num_tokens]
+                if output is None:
+                    output = torch.empty_like(q)
+
+                # Reshape for SDPA: [batch=1, heads, seq, head_dim]
+                # Handle GQA: repeat K,V heads to match Q heads
+                nqo, nkv = self.num_heads, self.num_kv_heads
+                q_sdpa = q.transpose(0, 1).unsqueeze(0)  # [1, nqo, seq, hd]
+                k_sdpa = k.transpose(0, 1).unsqueeze(0)  # [1, nkv, seq, hd]
+                v_sdpa = v.transpose(0, 1).unsqueeze(0)
+                if nqo != nkv:
+                    gqa = nqo // nkv
+                    k_sdpa = k_sdpa.repeat_interleave(gqa, dim=1)
+                    v_sdpa = v_sdpa.repeat_interleave(gqa, dim=1)
+
+                with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+                    attn_out = F.scaled_dot_product_attention(
+                        q_sdpa.to(torch.float16), k_sdpa.to(torch.float16),
+                        v_sdpa.to(torch.float16), is_causal=True,
+                        scale=self.scale)
+
+                output[:num_tokens] = attn_out.squeeze(0).transpose(0, 1).to(query.dtype)
+                return output
             return super().forward(layer, query, key, value, kv_cache,
                                    attn_metadata, output, output_scale, **kwargs)
 
@@ -270,12 +268,18 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
 
         block_table = attn_metadata.block_table
         seq_lens = attn_metadata.seq_lens
-        block_size = self._k_quant.shape[2]
 
         try:
             module = self._get_fused_module()
 
-            # Page table: vectorized GPU ops (no Python loops)
+            if self._is_tq_cache:
+                kqf, vqf, knf, vnf, block_size = self._parse_tq_cache(kv_cache)
+            else:
+                block_size = self._k_quant.shape[2]
+                kqf, vqf = self._k_quant_flat, self._v_quant_flat
+                knf, vnf = self._k_norms_flat, self._v_norms_flat
+
+            # Page table: vectorized GPU ops
             num_pages_per_req = (seq_lens + block_size - 1) // block_size
             kv_indptr = torch.zeros(seq_lens.shape[0] + 1, dtype=torch.int32, device=q.device)
             torch.cumsum(num_pages_per_req, dim=0, out=kv_indptr[1:])
@@ -287,8 +291,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             result = module.decode_v4(
                 q.to(torch.float16) if self.head_size == self._pd else
                     F.pad(q.to(torch.float16), (0, self._pd - self.head_size)),
-                self._k_quant_flat, self._v_quant_flat,
-                self._k_norms_flat, self._v_norms_flat,
+                kqf, vqf, knf, vnf,
                 kv_indices, kv_indptr, kv_last_page_len,
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,

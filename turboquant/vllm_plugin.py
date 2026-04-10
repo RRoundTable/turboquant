@@ -2,7 +2,13 @@
 
 When turboquant is pip-installed, vLLM discovers this plugin at startup
 and registers the TurboQuantBackend as CUSTOM attention backend.
-Use with: LLM(..., attention_backend="CUSTOM")
+
+Usage:
+  LLM(..., attention_backend="CUSTOM", kv_cache_dtype="fp8")
+
+The fp8 cache dtype gives uint8 allocation (2× memory savings vs fp16).
+TurboQuant stores 4-bit quantized data in the first 68 bytes of each
+128-byte per-head allocation (for head_dim=128). True compression: 1.88×.
 """
 
 _registered = False
@@ -26,5 +32,4 @@ def register():
             "turboquant.vllm_backend_fused.TurboQuantBackend",
         )
     except ImportError:
-        # vLLM not installed or incompatible version — skip silently
         pass
