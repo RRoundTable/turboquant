@@ -73,8 +73,55 @@ std::tuple<torch::Tensor, torch::Tensor> quantize_write(
     return std::make_tuple(quant_out, norms_out);
 }
 
+// quantize_write_hadamard: fused L2 norm + Hadamard rotate + quantize + pack.
+// Takes UNROTATED fp16 KV and signs tensor. Does everything in one kernel.
+std::tuple<torch::Tensor, torch::Tensor> quantize_write_hadamard(
+    torch::Tensor kv_in,
+    torch::Tensor signs,    // [padded_dim] float32
+    int head_dim,
+    int padded_dim
+) {
+    TORCH_CHECK(kv_in.is_cuda(), "kv_in must be on CUDA");
+    TORCH_CHECK(kv_in.dtype() == torch::kFloat32, "kv_in must be float32");
+    TORCH_CHECK(kv_in.dim() == 3, "kv_in must be [num_tokens, num_heads, head_dim]");
+    TORCH_CHECK(signs.numel() == padded_dim, "signs must have padded_dim elements");
+
+    uint32_t num_tokens = kv_in.size(0);
+    uint32_t num_heads  = kv_in.size(1);
+    uint32_t dim_chunks = padded_dim / 64;
+    uint32_t quant_bytes_per_head = dim_chunks * 32;
+
+    auto quant_out = torch::zeros(
+        {(int64_t)num_tokens, (int64_t)num_heads, (int64_t)quant_bytes_per_head},
+        torch::dtype(torch::kUInt8).device(kv_in.device())
+    );
+    auto norms_out = torch::zeros(
+        {(int64_t)num_tokens, (int64_t)num_heads, (int64_t)dim_chunks},
+        torch::dtype(torch::kFloat16).device(kv_in.device())
+    );
+
+    auto stream = c10::cuda::getCurrentCUDAStream();
+
+    cudaError_t err = turboquant::launch_quantize_write_hadamard(
+        kv_in.data_ptr<float>(),
+        quant_out.data_ptr<uint8_t>(),
+        reinterpret_cast<__half*>(norms_out.data_ptr<at::Half>()),
+        signs.data_ptr<float>(),
+        num_tokens, num_heads, head_dim, padded_dim,
+        stream
+    );
+
+    TORCH_CHECK(err == cudaSuccess,
+                "quantize_write_hadamard failed: ", cudaGetErrorString(err));
+
+    return std::make_tuple(quant_out, norms_out);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("quantize_write", &quantize_write,
           "Fused quantize-write: L2 normalize + 4-bit codebook quantize + nibble pack",
           py::arg("kv_in"), py::arg("head_dim"), py::arg("padded_dim"));
+    m.def("quantize_write_hadamard", &quantize_write_hadamard,
+          "Fused quantize-write with Hadamard: normalize + FWHT + quantize + pack",
+          py::arg("kv_in"), py::arg("signs"), py::arg("head_dim"), py::arg("padded_dim"));
 }

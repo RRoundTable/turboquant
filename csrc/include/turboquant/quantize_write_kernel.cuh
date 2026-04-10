@@ -180,4 +180,190 @@ inline cudaError_t launch_quantize_write(
     return cudaGetLastError();
 }
 
+// ═══ Fused quantize-write WITH Hadamard rotation ═══════════════════════
+//
+// Full pipeline in one kernel: load fp16 → L2 norm → normalize → signs ×
+// → FWHT (warp shuffles) → codebook quantize → nibble pack → store.
+//
+// 32 threads per (token, head). Each thread holds VEC_SIZE = padded_dim/32
+// elements. FWHT stages: local (h < VEC_SIZE) + cross-thread (shfl_xor).
+//
+// Template on VEC_SIZE for compile-time unrolling.
+
+template <uint32_t VEC_SIZE>
+__global__ void quantize_write_hadamard_kernel(
+    const float*  __restrict__ kv_in,       // [num_tokens, num_heads, head_dim] float32
+    uint8_t*      __restrict__ quant_out,   // [num_tokens, num_heads, dim_chunks * 32] uint8
+    __half*       __restrict__ norms_out,   // [num_tokens, num_heads, dim_chunks] fp16
+    const float*  __restrict__ signs,       // [padded_dim] float32
+    const uint32_t num_tokens,
+    const uint32_t num_heads,
+    const uint32_t head_dim,
+    const uint32_t padded_dim,
+    const uint32_t dim_chunks,
+    const uint32_t quant_bytes_per_head,
+    const float    boundary_scale
+) {
+    const uint32_t token_idx = blockIdx.x;
+    const uint32_t head_idx  = blockIdx.y;
+    const uint32_t tid       = threadIdx.x;  // 0..31
+
+    if (token_idx >= num_tokens) return;
+
+    const float* head_ptr = kv_in + (size_t)token_idx * num_heads * head_dim
+                                  + (size_t)head_idx * head_dim;
+
+    // ── Step 1: Load float32 + compute L2 norm ──
+    float v[VEC_SIZE];
+    float sum_sq = 0.0f;
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i++) {
+        uint32_t d = tid * VEC_SIZE + i;
+        float val = (d < head_dim) ? head_ptr[d] : 0.0f;
+        v[i] = val;
+        sum_sq += val * val;
+    }
+
+    // Warp reduce for L2 norm
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum_sq += __shfl_down_sync(0xFFFFFFFF, sum_sq, offset);
+    }
+    float l2_norm = sqrtf(__shfl_sync(0xFFFFFFFF, sum_sq, 0));
+    float inv_norm = (l2_norm > 1e-8f) ? (1.0f / l2_norm) : 0.0f;
+
+    // ── Step 2: Normalize ──
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i++) {
+        v[i] *= inv_norm;
+    }
+
+    // ── Step 3: Signs multiply ──
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i++) {
+        v[i] *= signs[tid * VEC_SIZE + i];
+    }
+
+    // ── Step 4: FWHT via warp shuffles ──
+    // Local stages: h = 1, 2, ..., VEC_SIZE/2
+    #pragma unroll
+    for (uint32_t h = 1; h < VEC_SIZE; h <<= 1) {
+        #pragma unroll
+        for (uint32_t i = 0; i < VEC_SIZE; i += 2 * h) {
+            #pragma unroll
+            for (uint32_t k = 0; k < h; k++) {
+                float a = v[i + k], b = v[i + k + h];
+                v[i + k] = a + b;
+                v[i + k + h] = a - b;
+            }
+        }
+    }
+
+    // Cross-thread stages via shfl_xor
+    #pragma unroll
+    for (uint32_t delta = 1; delta < 32; delta <<= 1) {
+        #pragma unroll
+        for (uint32_t i = 0; i < VEC_SIZE; i++) {
+            float partner = __shfl_xor_sync(0xFFFFFFFF, v[i], delta);
+            if (tid & delta)
+                v[i] = partner - v[i];
+            else
+                v[i] = v[i] + partner;
+        }
+    }
+
+    // Normalize: scale by 1/sqrt(padded_dim)
+    float fwht_scale = rsqrtf(static_cast<float>(padded_dim));
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i++) {
+        v[i] *= fwht_scale;
+    }
+
+    // ── Step 5: Pre-scale boundaries ──
+    float b_scaled[15];
+    #pragma unroll
+    for (int i = 0; i < 15; i++) {
+        b_scaled[i] = kWriteBoundaries4bit[i] * boundary_scale;
+    }
+
+    // ── Step 6: Quantize + pack ──
+    // Thread tid holds dims [tid*VEC_SIZE .. tid*VEC_SIZE+VEC_SIZE-1].
+    // Pack pairs of adjacent dims into nibbles.
+    uint8_t* quant_ptr = quant_out + (size_t)token_idx * num_heads * quant_bytes_per_head
+                                   + (size_t)head_idx * quant_bytes_per_head;
+    __half* norm_ptr = norms_out + (size_t)token_idx * num_heads * dim_chunks
+                                 + (size_t)head_idx * dim_chunks;
+    __half norm_fp16 = __float2half(l2_norm);
+
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i += 2) {
+        uint8_t idx0 = write_bucketize_4bit(v[i], b_scaled);
+        uint8_t idx1 = write_bucketize_4bit(v[i + 1], b_scaled);
+        uint8_t packed = (idx0 << 4) | (idx1 & 0x0F);
+
+        // Compute output byte position: dims are contiguous in the rotated vector,
+        // so byte position = (tid * VEC_SIZE + i) / 2
+        uint32_t byte_pos = (tid * VEC_SIZE + i) / 2;
+        quant_ptr[byte_pos] = packed;
+    }
+
+    // Store norm for each chunk
+    if (tid == 0) {
+        #pragma unroll
+        for (uint32_t c = 0; c < dim_chunks; c++) {
+            norm_ptr[c] = norm_fp16;
+        }
+    }
+}
+
+// ---- Fused launcher (with Hadamard) ----------------------------------------
+
+inline cudaError_t launch_quantize_write_hadamard(
+    const float*  kv_in,       // [num_tokens, num_heads, head_dim] float32
+    uint8_t*      quant_out,
+    __half*       norms_out,
+    const float*  signs,        // [padded_dim] Hadamard signs
+    uint32_t      num_tokens,
+    uint32_t      num_heads,
+    uint32_t      head_dim,
+    uint32_t      padded_dim,
+    cudaStream_t  stream = nullptr
+) {
+    if (num_tokens == 0 || num_heads == 0) return cudaSuccess;
+
+    uint32_t dim_chunks = padded_dim / 64;
+    uint32_t quant_bytes_per_head = dim_chunks * 32;
+    float boundary_scale = rsqrtf(static_cast<float>(padded_dim));
+
+    dim3 grid(num_tokens, num_heads);
+    dim3 block(32);
+
+    uint32_t vec_size = padded_dim / 32;
+
+    switch (vec_size) {
+        case 2:  // padded_dim=64
+            quantize_write_hadamard_kernel<2><<<grid, block, 0, stream>>>(
+                kv_in, quant_out, norms_out, signs,
+                num_tokens, num_heads, head_dim, padded_dim,
+                dim_chunks, quant_bytes_per_head, boundary_scale);
+            break;
+        case 4:  // padded_dim=128
+            quantize_write_hadamard_kernel<4><<<grid, block, 0, stream>>>(
+                kv_in, quant_out, norms_out, signs,
+                num_tokens, num_heads, head_dim, padded_dim,
+                dim_chunks, quant_bytes_per_head, boundary_scale);
+            break;
+        case 8:  // padded_dim=256
+            quantize_write_hadamard_kernel<8><<<grid, block, 0, stream>>>(
+                kv_in, quant_out, norms_out, signs,
+                num_tokens, num_heads, head_dim, padded_dim,
+                dim_chunks, quant_bytes_per_head, boundary_scale);
+            break;
+        default:
+            return cudaErrorInvalidValue;
+    }
+
+    return cudaGetLastError();
+}
+
 }  // namespace turboquant

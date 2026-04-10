@@ -139,37 +139,33 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
     def _quantize_and_store(self, key_or_value, slot_mapping, is_key=True):
         """Quantize and store in HND layout: [pages, heads, entries, bytes].
 
-        Uses CUDA write kernel when available, falls back to Python.
+        Uses fused CUDA kernel (norm + Hadamard + quantize) when available.
         """
         self._ensure(key_or_value.device)
         num_tokens = slot_mapping.shape[0]
-        x = key_or_value[:num_tokens].float()
         block_size = self._k_quant.shape[2]
-
-        # Normalize and rotate
-        norms = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-        normalized = x / norms
-        rotated = self._hadamard_rotate(normalized)
-
-        # Prepare input for CUDA kernel: rotated * norm (kernel re-normalizes)
-        kv_ready = (rotated * norms).to(torch.float16)
 
         quant_store = self._k_quant if is_key else self._v_quant
         norm_store = self._k_norms if is_key else self._v_norms
 
         try:
             write_mod = self._get_write_module()
-            # CUDA kernel: normalize + quantize + pack → [tokens, heads, bytes]
-            quant_out, norms_out = write_mod.quantize_write(
-                kv_ready, self.head_size, self._pd)
+            # Fused kernel: float32 input → normalize → Hadamard → quantize → pack
+            kv_f32 = key_or_value[:num_tokens].float()
+            quant_out, norms_out = write_mod.quantize_write_hadamard(
+                kv_f32, self._signs, self.head_size, self._pd)
 
-            # Scatter to paged HND layout using slot_mapping
+            # Scatter to paged HND layout
             bids = slot_mapping // block_size
             boffs = slot_mapping % block_size
             quant_store[bids, :, boffs, :] = quant_out
             norm_store[bids, :, boffs, :] = norms_out
         except Exception:
             # Fallback: Python quantize path
+            x = key_or_value[:num_tokens].float()
+            norms = x.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            normalized = x / norms
+            rotated = self._hadamard_rotate(normalized)
             norms_fp16 = norms.squeeze(-1).to(torch.float16)
             for chunk in range(self._dc):
                 ds = chunk * TILE_DIMS
