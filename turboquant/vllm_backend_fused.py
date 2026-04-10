@@ -222,13 +222,14 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         num_tokens = slot_mapping.shape[0]
         block_size = self._k_quant.shape[2]
 
-        # Quantize K and V
+        # Quantize K+V in one call (single Python dispatch, back-to-back kernels)
         bids = slot_mapping // block_size
         boffs = slot_mapping % block_size
         try:
             wm = self._get_write_module()
-            kq, kn = wm.quantize_write_hadamard(key[:num_tokens].float(), self._signs, self.head_size, self._pd)
-            vq, vn = wm.quantize_write_hadamard(value[:num_tokens].float(), self._signs, self.head_size, self._pd)
+            kq, vq, kn, vn = wm.quantize_write_kv(
+                key[:num_tokens].float(), value[:num_tokens].float(),
+                self._signs, self.head_size, self._pd)
             self._k_quant[bids, :, boffs, :] = kq
             self._v_quant[bids, :, boffs, :] = vq
             self._k_norms[bids, :, boffs, :] = kn

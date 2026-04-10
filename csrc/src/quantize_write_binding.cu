@@ -117,6 +117,72 @@ std::tuple<torch::Tensor, torch::Tensor> quantize_write_hadamard(
     return std::make_tuple(quant_out, norms_out);
 }
 
+// quantize_write_kv: combined K+V quantize in one kernel launch.
+// Grid covers both K and V tokens (2*num_tokens blocks in x dimension).
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+quantize_write_kv(
+    torch::Tensor key,      // [num_tokens, num_heads, head_dim] float32
+    torch::Tensor value,    // [num_tokens, num_heads, head_dim] float32
+    torch::Tensor signs,    // [padded_dim] float32
+    int head_dim,
+    int padded_dim
+) {
+    TORCH_CHECK(key.is_cuda() && value.is_cuda(), "inputs must be on CUDA");
+    TORCH_CHECK(key.dtype() == torch::kFloat32, "key must be float32");
+    TORCH_CHECK(key.sizes() == value.sizes(), "key and value must have same shape");
+
+    uint32_t num_tokens = key.size(0);
+    uint32_t num_heads  = key.size(1);
+    uint32_t dim_chunks = padded_dim / 64;
+    uint32_t qbytes = dim_chunks * 32;
+    auto dev = key.device();
+
+    // Allocate all outputs at once
+    auto kq = torch::zeros({(int64_t)num_tokens, (int64_t)num_heads, (int64_t)qbytes},
+                           torch::dtype(torch::kUInt8).device(dev));
+    auto vq = torch::zeros_like(kq);
+    auto kn = torch::zeros({(int64_t)num_tokens, (int64_t)num_heads, (int64_t)dim_chunks},
+                           torch::dtype(torch::kFloat16).device(dev));
+    auto vn = torch::zeros_like(kn);
+
+    auto stream = c10::cuda::getCurrentCUDAStream();
+    float boundary_scale = rsqrtf(static_cast<float>(padded_dim));
+    uint32_t vec_size = padded_dim / 32;
+
+    // Single kernel launch for K, then V (back-to-back on same stream, no sync)
+    auto launch = [&](const float* in, uint8_t* qout, __half* nout) {
+        dim3 grid(num_tokens, num_heads);
+        dim3 block(32);
+        switch (vec_size) {
+            case 2:
+                turboquant::quantize_write_hadamard_kernel<2><<<grid, block, 0, stream>>>(
+                    in, qout, nout, signs.data_ptr<float>(),
+                    num_tokens, num_heads, head_dim, padded_dim,
+                    dim_chunks, qbytes, boundary_scale);
+                break;
+            case 4:
+                turboquant::quantize_write_hadamard_kernel<4><<<grid, block, 0, stream>>>(
+                    in, qout, nout, signs.data_ptr<float>(),
+                    num_tokens, num_heads, head_dim, padded_dim,
+                    dim_chunks, qbytes, boundary_scale);
+                break;
+            case 8:
+                turboquant::quantize_write_hadamard_kernel<8><<<grid, block, 0, stream>>>(
+                    in, qout, nout, signs.data_ptr<float>(),
+                    num_tokens, num_heads, head_dim, padded_dim,
+                    dim_chunks, qbytes, boundary_scale);
+                break;
+        }
+    };
+
+    launch(key.data_ptr<float>(), kq.data_ptr<uint8_t>(),
+           reinterpret_cast<__half*>(kn.data_ptr<at::Half>()));
+    launch(value.data_ptr<float>(), vq.data_ptr<uint8_t>(),
+           reinterpret_cast<__half*>(vn.data_ptr<at::Half>()));
+
+    return std::make_tuple(kq, vq, kn, vn);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("quantize_write", &quantize_write,
           "Fused quantize-write: L2 normalize + 4-bit codebook quantize + nibble pack",
@@ -124,4 +190,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("quantize_write_hadamard", &quantize_write_hadamard,
           "Fused quantize-write with Hadamard: normalize + FWHT + quantize + pack",
           py::arg("kv_in"), py::arg("signs"), py::arg("head_dim"), py::arg("padded_dim"));
+    m.def("quantize_write_kv", &quantize_write_kv,
+          "Combined K+V quantize-write (single call, pre-allocated outputs)",
+          py::arg("key"), py::arg("value"), py::arg("signs"),
+          py::arg("head_dim"), py::arg("padded_dim"));
 }
