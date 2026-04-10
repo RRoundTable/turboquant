@@ -352,14 +352,34 @@ v4 fused kernel runs with no FA fallback. Quality needs investigation on some pr
 
 ## Next
 
+### Memory savings roadmap
+
+Current: 2× savings (fp8 hack, 128B/head allocated, 68B/head used, 60B wasted).
+Target: 3.76× savings (68B/head allocated).
+
+| Step | Savings | Approach | Effort |
+|------|---------|----------|--------|
+| **Done: fp8 plugin** | 2× | `kv_cache_dtype="fp8"` → uint8, 128B/head | Plugin only |
+| **vLLM upstream: custom cache size** | 3.76× | `get_kv_cache_shape` returns 68B/head | PR to vLLM |
+| **3-bit quantization** | 5× | 3-bit codebook, 48B/head | Kernel + upstream |
+
+Upstream PR requirements:
+1. Add `"turboquant"` to `CacheDType` Literal in `vllm/config/cache.py`
+2. `AttentionSpec.real_page_size_bytes` uses backend's `get_kv_cache_shape` element count
+3. Raw allocation sized from `page_size_bytes` (not `head_size × dtype_size`)
+4. Cache viewed as uint8 (not float8) for TQ backend
+
+### Other items
+
 - [ ] **3-bit quantization** — GOAL.md target: ≥5× compression with <1% PPL
-- [ ] **FWHT in write kernel** — fuse Hadamard rotation into CUDA quantize kernel
 - [ ] **LongBench / NIAH** — quality evaluation at long contexts (4K-32K)
 - [ ] **Tensor cores for GQA≥4** — WMMA gives 1.9× at bdy=4 (Llama-3, Mistral)
+- [ ] **Decode TPOT optimization** — remove `.contiguous()` copies, profile single-cache overhead
+- [ ] **TP=4,8 validation** with single-cache mode
 
 ## Later
 
-- [ ] Upstream contribution to vLLM
+- [ ] **vLLM upstream PR** — custom cache dtype for full 3.76× savings
 - [ ] Speculative decoding compatibility
 - [ ] Multi-node distributed (TP across nodes via NCCL)
 - [ ] Continuous batching with dynamic KV cache growth
