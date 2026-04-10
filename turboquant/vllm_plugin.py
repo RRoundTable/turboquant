@@ -1,21 +1,16 @@
-"""TurboQuant vLLM plugin — auto-registers attention backend via entry_points.
+"""TurboQuant vLLM plugin — registers attention backend via entry_points.
 
-When turboquant is pip-installed, vLLM discovers this plugin at startup
-and registers the TurboQuantBackend as CUSTOM attention backend.
-
-Usage:
-  LLM(..., attention_backend="CUSTOM", kv_cache_dtype="fp8")
-
-The fp8 cache dtype gives uint8 allocation (2× memory savings vs fp16).
-TurboQuant stores 4-bit quantized data in the first 68 bytes of each
-128-byte per-head allocation (for head_dim=128). True compression: 1.88×.
+Usage: LLM(..., attention_backend="CUSTOM", kv_cache_dtype="fp8")
+  fp8 gives uint8 cache allocation (2× memory savings vs fp16).
+  TQ quantizes K,V into 4-bit and stores in the fp8 cache.
+  Prefill uses FlashAttention with fresh fp16 K,V.
+  Decode uses the fused v4 CUDA kernel.
 """
 
 _registered = False
 
 
 def register():
-    """Called by vLLM's plugin discovery system (vllm.general_plugins entry point)."""
     global _registered
     if _registered:
         return
@@ -26,7 +21,6 @@ def register():
             AttentionBackendEnum,
             register_backend,
         )
-
         register_backend(
             AttentionBackendEnum.CUSTOM,
             "turboquant.vllm_backend_fused.TurboQuantBackend",
