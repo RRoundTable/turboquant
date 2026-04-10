@@ -30,6 +30,11 @@ def _next_pow2(n):
 
 
 class TurboQuantBackend(FlashAttentionBackend):
+    # vLLM must call do_kv_cache_update separately (not inside forward).
+    # We quantize K,V to the fp8 cache in do_kv_cache_update.
+    # FA's forward only handles attention — not cache writes.
+    forward_includes_kv_cache_update = False
+
     @staticmethod
     def get_name():
         return "CUSTOM"
@@ -47,6 +52,16 @@ class TurboQuantBackend(FlashAttentionBackend):
         if kv_cache_dtype in ("fp8", "fp8_e4m3"):
             return True
         return super().supports_kv_cache_dtype(kv_cache_dtype)
+
+    @staticmethod
+    def get_kv_cache_stride_order(
+        include_num_layers_dimension: bool = False,
+    ) -> tuple[int, ...]:
+        # HND physical layout matches paged_kv_turbo_t strides.
+        # With uint8 view, writes go to correct HND positions.
+        if include_num_layers_dimension:
+            return (2, 4, 0, 1, 3, 5)
+        return (0, 1, 3, 2, 4)
 
 
 class TurboQuantMetadataBuilder(FlashAttentionMetadataBuilder):
@@ -119,25 +134,48 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             key[:num_tokens].float(), value[:num_tokens].float(),
             self._signs, self.head_size, self._pd)
 
+        # View as uint8 to avoid float8 type-casting corruption.
+        # vLLM allocates fp8 cache as float8_e4m3fn — raw byte writes
+        # get type-cast, destroying our packed quantization bytes.
+        cache_u8 = kv_cache.view(torch.uint8)
         kn_u8 = kn.view(torch.uint8)
         vn_u8 = vn.view(torch.uint8)
-        kv_cache[0, bids, boffs, :, :self._qbytes] = kq
-        kv_cache[0, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = kn_u8
-        kv_cache[1, bids, boffs, :, :self._qbytes] = vq
-        kv_cache[1, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = vn_u8
+        cache_u8[0, bids, boffs, :, :self._qbytes] = kq
+        cache_u8[0, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = kn_u8
+        cache_u8[1, bids, boffs, :, :self._qbytes] = vq
+        cache_u8[1, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = vn_u8
+
+    _update_count = 0
 
     @torch.no_grad()
     def do_kv_cache_update(self, layer, key, value, kv_cache, slot_mapping):
         self._ensure(key.device)
+        TurboQuantFusedImpl._update_count += 1
+        if False and TurboQuantFusedImpl._update_count <= 3:
+            import sys
+            print(f"[TQ] do_kv_cache_update #{TurboQuantFusedImpl._update_count}: "
+                  f"key={key.shape} dt={key.dtype} cache={kv_cache.shape} "
+                  f"slots={slot_mapping[:5].tolist()} bs={kv_cache.shape[2]} fp8={self._is_fp8}",
+                  flush=True, file=sys.stderr)
 
         if self._is_fp8:
-            # Single-cache mode: quantize and write directly to uint8 cache.
-            # No fp16 copy — the cache IS the quantized storage.
             try:
                 self._write_to_cache(key, value, kv_cache, slot_mapping)
+                if False and TurboQuantFusedImpl._update_count <= 3:
+                    import sys
+                    num_tokens = slot_mapping.shape[0]
+                    bs = kv_cache.shape[2]
+                    bids = slot_mapping[:5] // bs
+                    boffs = slot_mapping[:5] % bs
+                    # Check what's at the first write location
+                    sample = kv_cache[0, bids[0], boffs[0], 0, :8].tolist()
+                    total_nz = (kv_cache[0] != 0).sum().item()
+                    print(f"[TQ] Write OK. nz={total_nz} bids={bids.tolist()} "
+                          f"sample={sample}", flush=True, file=sys.stderr)
             except Exception as e:
-                import sys
+                import sys, traceback
                 print(f"[TQ] Write kernel failed: {e}", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
         else:
             # Legacy fp16 mode: store fp16 in vLLM cache for FA
             from vllm.v1.attention.backends.fa_utils import reshape_and_cache_flash
@@ -162,30 +200,33 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
 
         if not is_decode:
             if self._is_fp8:
-                # Prefill: FA needs fp16 cache tensor. Allocate a SMALL dummy —
-                # just enough blocks for this batch. FA writes here but we discard.
-                # Real quantized data goes to the uint8 cache via do_kv_cache_update.
-                bs, nkv = kv_cache.shape[2], kv_cache.shape[3]
+                # Prefill: call flash_attn directly with fresh fp16 K,V.
+                # Cannot use super().forward() — FA's internal reshape_and_cache_flash
+                # writes to slot_mapping positions that exceed the dummy cache size.
+                from vllm.vllm_flash_attn import flash_attn_varlen_func
                 num_tokens = attn_metadata.num_actual_tokens
-                dummy_blocks = (num_tokens + bs - 1) // bs + 1  # +1 safety margin
-                if not hasattr(self, '_dummy_cache') or self._dummy_cache.shape[1] < dummy_blocks:
-                    self._dummy_cache = torch.zeros(
-                        2, dummy_blocks, bs, nkv, self.head_size,
-                        dtype=torch.float16, device=kv_cache.device)
-                # vLLM pre-quantizes query to fp8 when kv_cache_dtype="fp8".
-                # Cast back to fp16 for FA prefill (FA only accepts fp16/bf16).
-                query_fp16 = query.to(torch.float16) if query.dtype != torch.float16 else query
-                key_fp16 = key.to(torch.float16) if key.dtype != torch.float16 else key
-                value_fp16 = value.to(torch.float16) if value.dtype != torch.float16 else value
-                saved = self.kv_cache_dtype
-                self.kv_cache_dtype = "auto"
-                try:
-                    result = super().forward(layer, query_fp16, key_fp16, value_fp16,
-                                            self._dummy_cache, attn_metadata,
-                                            output, output_scale, **kwargs)
-                finally:
-                    self.kv_cache_dtype = saved
-                return result
+                q = query[:num_tokens].to(torch.float16)
+                k = key[:num_tokens].to(torch.float16)
+                v = value[:num_tokens].to(torch.float16)
+
+                if output is None:
+                    output = torch.empty_like(query[:num_tokens])
+
+                # Build cu_seqlens for varlen FA from attn_metadata
+                seq_start = attn_metadata.query_start_loc
+                max_seqlen = attn_metadata.max_query_len
+
+                attn_out = flash_attn_varlen_func(
+                    q, k, v,
+                    cu_seqlens_q=seq_start,
+                    cu_seqlens_k=seq_start,
+                    max_seqlen_q=max_seqlen,
+                    max_seqlen_k=max_seqlen,
+                    softmax_scale=self.scale,
+                    causal=True,
+                )
+                output[:num_tokens] = attn_out.to(output.dtype)
+                return output
             return super().forward(layer, query, key, value, kv_cache,
                                    attn_metadata, output, output_scale, **kwargs)
 
@@ -202,12 +243,14 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             module = self._get_decode_module()
 
             if self._is_fp8:
-                # Parse uint8 cache: vLLM layout [blocks, entries, heads, bytes]
-                # Kernel expects HND: [blocks, heads, entries, bytes]
-                # Transpose dims 1,2 to convert NHD → HND
+                # Physical layout is HND (via get_kv_cache_stride_order).
+                # Logical view is NHD [blocks, entries, heads, bytes].
+                # permute(0,2,1,3) → HND logical, already contiguous in memory.
+                cache_u8 = kv_cache.view(torch.uint8)
                 block_size = kv_cache.shape[2]
-                k_hnd = kv_cache[0].transpose(1, 2)  # [blocks, heads, entries, bytes]
-                v_hnd = kv_cache[1].transpose(1, 2)
+                k_hnd = cache_u8[0].permute(0, 2, 1, 3)  # HND logical = HND physical
+                v_hnd = cache_u8[1].permute(0, 2, 1, 3)
+                # Slice quant/norms (last dim stride=1 but size<head_size → not contiguous)
                 k_q = k_hnd[..., :self._qbytes].contiguous().view(-1)
                 v_q = v_hnd[..., :self._qbytes].contiguous().view(-1)
                 k_n = k_hnd[..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
