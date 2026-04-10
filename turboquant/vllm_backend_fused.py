@@ -122,6 +122,11 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         self._k_norms = torch.zeros(num_blocks, self.num_kv_heads, block_size,
                                      self._dc, dtype=torch.float16, device=dev)
         self._v_norms = torch.zeros_like(self._k_norms)
+        # Pre-flatten for decode kernel (avoids per-step .view(-1))
+        self._k_quant_flat = self._k_quant.view(-1)
+        self._v_quant_flat = self._v_quant.view(-1)
+        self._k_norms_flat = self._k_norms.view(-1)
+        self._v_norms_flat = self._v_norms.view(-1)
 
     def _hadamard_rotate(self, x):
         d = x.shape[-1]
@@ -211,16 +216,28 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
 
     @torch.no_grad()
     def do_kv_cache_update(self, layer, key, value, kv_cache, slot_mapping):
-        """Quantize-dequant for FA cache + store quantized bytes for fused kernel."""
+        """Store quantized bytes for fused decode + fp16 for prefill FA."""
         self._ensure_quant_storage(kv_cache)
+        self._ensure(key.device)
         num_tokens = slot_mapping.shape[0]
+        block_size = self._k_quant.shape[2]
 
-        # Store quantized bytes in separate tensors (for fused decode kernel)
-        self._quantize_and_store(key, slot_mapping, is_key=True)
-        self._quantize_and_store(value, slot_mapping, is_key=False)
+        # Quantize K and V
+        bids = slot_mapping // block_size
+        boffs = slot_mapping % block_size
+        try:
+            wm = self._get_write_module()
+            kq, kn = wm.quantize_write_hadamard(key[:num_tokens].float(), self._signs, self.head_size, self._pd)
+            vq, vn = wm.quantize_write_hadamard(value[:num_tokens].float(), self._signs, self.head_size, self._pd)
+            self._k_quant[bids, :, boffs, :] = kq
+            self._v_quant[bids, :, boffs, :] = vq
+            self._k_norms[bids, :, boffs, :] = kn
+            self._v_norms[bids, :, boffs, :] = vn
+        except Exception:
+            self._quantize_and_store(key, slot_mapping, is_key=True)
+            self._quantize_and_store(value, slot_mapping, is_key=False)
 
-        # Store ORIGINAL fp16 K,V in vLLM cache (for prefill FlashAttention).
-        # No quantize-dequant: prefill uses exact values, decode uses quantized.
+        # fp16 in vLLM cache (for prefill FA)
         key_cache, value_cache = kv_cache.unbind(0)
         reshape_and_cache_flash(
             key[:num_tokens], value[:num_tokens],
@@ -245,7 +262,6 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                                    attn_metadata, output, output_scale, **kwargs)
 
         # === DECODE: fused CUDA kernel ===
-        self._ensure(query.device)
         num_actual = attn_metadata.num_actual_tokens
         q = query[:num_actual]
         if output is None:
@@ -253,48 +269,32 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
 
         block_table = attn_metadata.block_table
         seq_lens = attn_metadata.seq_lens
-        block_size = self._k_quant.shape[2]  # HND: [pages, heads, entries, bytes]
+        block_size = self._k_quant.shape[2]
 
         try:
             module = self._get_fused_module()
-            num_reqs = seq_lens.shape[0]
 
-            # Build page table on GPU (no Python loops, no CPU→GPU copies)
+            # Page table: vectorized GPU ops (no Python loops)
             num_pages_per_req = (seq_lens + block_size - 1) // block_size
-            total_pages = num_pages_per_req.sum().item()
-            kv_indptr = torch.zeros(num_reqs + 1, dtype=torch.int32, device=q.device)
+            kv_indptr = torch.zeros(seq_lens.shape[0] + 1, dtype=torch.int32, device=q.device)
             torch.cumsum(num_pages_per_req, dim=0, out=kv_indptr[1:])
             kv_last_page_len = (seq_lens - (num_pages_per_req - 1) * block_size).to(torch.int32)
-
-            # Gather page indices from block_table (GPU tensor op)
             page_offsets = torch.arange(block_table.shape[1], device=q.device)
-            mask = page_offsets.unsqueeze(0) < num_pages_per_req.unsqueeze(1)
-            kv_indices = block_table[mask].to(torch.int32)
+            kv_indices = block_table[page_offsets.unsqueeze(0) < num_pages_per_req.unsqueeze(1)].to(torch.int32)
 
-            # Pad Q to padded_dim if needed (kernel expects padded_dim)
-            q_fp16 = q.to(torch.float16)
-            if self.head_size < self._pd:
-                q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
-
-            # v4 kernel with fused Hadamard: rotates Q, computes attention,
-            # un-rotates output — all inside the kernel via warp shuffles.
+            # v4 kernel: fused Hadamard Q rotate + attention + output un-rotate
             result = module.decode_v4(
-                q_fp16,
-                self._k_quant.view(-1),
-                self._v_quant.view(-1),
-                self._k_norms.view(-1),
-                self._v_norms.view(-1),
+                q.to(torch.float16) if self.head_size == self._pd else
+                    F.pad(q.to(torch.float16), (0, self._pd - self.head_size)),
+                self._k_quant_flat, self._v_quant_flat,
+                self._k_norms_flat, self._v_norms_flat,
                 kv_indices, kv_indptr, kv_last_page_len,
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
                 self._signs,
             )
 
-            # Output is already un-rotated by the kernel
-            if self.head_size < self._pd:
-                output[:num_actual] = result[:num_actual, :, :self.head_size]
-            else:
-                output[:num_actual] = result[:num_actual]
+            output[:num_actual] = result[:num_actual, :, :self.head_size] if self.head_size < self._pd else result[:num_actual]
 
         except Exception as e:
             import sys
