@@ -53,15 +53,9 @@ class TurboQuantBackend(FlashAttentionBackend):
             return True
         return super().supports_kv_cache_dtype(kv_cache_dtype)
 
-    @staticmethod
-    def get_kv_cache_stride_order(
-        include_num_layers_dimension: bool = False,
-    ) -> tuple[int, ...]:
-        # HND physical layout: write and read both use logical NHD indices
-        # which get mapped to HND physical via the stride permutation.
-        if include_num_layers_dimension:
-            return (2, 4, 0, 1, 3, 5)
-        return (0, 1, 3, 2, 4)
+    # Use default NHD stride order (inherited from FA).
+    # Write uses NHD logical indices: cache[0, bids, boffs, :, :].
+    # Read passes NHD data to kernel with layout_nhd=True.
 
 
 class TurboQuantMetadataBuilder(FlashAttentionMetadataBuilder):
@@ -224,21 +218,17 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             module = self._get_decode_module()
 
             if self._is_fp8:
-                # Physical = HND via get_kv_cache_stride_order.
-                # permute(0,2,1,3) → HND logical = contiguous (no copy).
-                # Pass quant as full 128B-stride flat buffer.
-                # Pass norms as separate sliced array (tight packed).
+                # NHD physical (default stride order). No permute needed.
+                # Kernel reads NHD directly via layout_nhd=True.
+                # Quant: full NHD flat (entry_byte_stride=head_size for padding).
+                # Norms: separate sliced array (tight packed, dim_chunks per entry).
                 cache_u8 = kv_cache.view(torch.uint8)
                 block_size = kv_cache.shape[2]
-                k_hnd = cache_u8[0].permute(0, 2, 1, 3).contiguous()
-                v_hnd = cache_u8[1].permute(0, 2, 1, 3).contiguous()
-                # Quant: full HND flat (kernel skips padding via entry_byte_stride)
-                k_q = k_hnd.view(-1)
-                v_q = v_hnd.view(-1)
-                # Norms: separate tight-packed array (dim_chunks fp16 per entry)
-                k_n = k_hnd[..., self._qbytes:self._qbytes + self._nbytes].reshape(-1).view(torch.float16)
-                v_n = v_hnd[..., self._qbytes:self._qbytes + self._nbytes].reshape(-1).view(torch.float16)
-                entry_stride = self.head_size  # 128B stride for quant
+                k_q = cache_u8[0].contiguous().view(-1)
+                v_q = cache_u8[1].contiguous().view(-1)
+                k_n = cache_u8[0][..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
+                v_n = cache_u8[1][..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
+                entry_stride = self.head_size
             else:
                 return super().forward(layer, query, key, value, kv_cache,
                                        attn_metadata, output, output_scale, **kwargs)
@@ -270,7 +260,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 self.head_size, self._pd, self.scale,
                 self._signs,
                 entry_stride if self._is_fp8 else 0,
-                False,  # layout_nhd: False=HND (data is permuted to HND)
+                True if self._is_fp8 else False,  # NHD for fp8, HND for legacy
             )
 
             if self.head_size < self._pd:
