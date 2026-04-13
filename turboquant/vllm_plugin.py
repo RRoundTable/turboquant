@@ -1,10 +1,8 @@
 """TurboQuant vLLM plugin — registers attention backend via entry_points.
 
 Usage: LLM(..., attention_backend="CUSTOM", kv_cache_dtype="fp8")
-  fp8 gives uint8 cache allocation (2× memory savings vs fp16).
-  TQ quantizes K,V into 4-bit and stores in the fp8 cache.
-  Prefill uses FlashAttention with fresh fp16 K,V.
-  Decode uses the fused v4 CUDA kernel.
+  fp8 gives uint8 cache (2× memory savings vs fp16).
+  Full 3.76× savings requires vLLM upstream PR (custom page_size_bytes).
 """
 
 _registered = False

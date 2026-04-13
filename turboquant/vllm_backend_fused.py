@@ -58,7 +58,6 @@ class TurboQuantBackend(FlashAttentionBackend):
         include_num_layers_dimension: bool = False,
     ) -> tuple[int, ...]:
         # HND physical layout matches paged_kv_turbo_t strides.
-        # With uint8 view, writes go to correct HND positions.
         if include_num_layers_dimension:
             return (2, 4, 0, 1, 3, 5)
         return (0, 1, 3, 2, 4)
@@ -234,7 +233,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 # Norms: offset by qbytes, viewed as fp16
                 k_n = k_flat[self._qbytes:].view(torch.float16)
                 v_n = v_flat[self._qbytes:].view(torch.float16)
-                entry_stride = self.head_size
+                entry_stride = self.head_size  # fp8: 128 bytes per entry (includes padding)
             else:
                 # Legacy: shouldn't reach here without fp8 cache
                 return super().forward(layer, query, key, value, kv_cache,
