@@ -75,7 +75,6 @@ __device__ __forceinline__ void fwht_in_registers(
 // ─── Inline dequant: read packed bytes from smem, return float ──────
 
 // Read 8 float values from packed staging smem for one thread's slice.
-// No fp16 conversion — dequant goes directly to float.
 __device__ __forceinline__ void inline_dequant_8(
     float* out,                   // [8] output floats
     const uint8_t* staging_row,   // packed bytes for this row+chunk (32 bytes)
