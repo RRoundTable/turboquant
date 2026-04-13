@@ -163,11 +163,24 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         cache_u8[1, bids, boffs, :, :self._qbytes] = vq
         cache_u8[1, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = vn_u8
 
+    _dbg_count = 0
     @torch.no_grad()
     def do_kv_cache_update(self, layer, key, value, kv_cache, slot_mapping):
         self._ensure(key.device)
+        TurboQuantFusedImpl._dbg_count += 1
 
         if self._is_fp8:
+            if TurboQuantFusedImpl._dbg_count == 1:
+                import sys
+                cache_u8 = kv_cache.view(torch.uint8)
+                print(f"[DBG] cache shape={cache_u8.shape} dtype={cache_u8.dtype} "
+                      f"strides={cache_u8.stride()} contiguous={cache_u8.is_contiguous()}",
+                      flush=True, file=sys.stderr)
+                print(f"[DBG] cache[0] shape={cache_u8[0].shape} strides={cache_u8[0].stride()}",
+                      flush=True, file=sys.stderr)
+                print(f"[DBG] key={key.shape} slots={slot_mapping[:3].tolist()} "
+                      f"qbytes={self._qbytes} nbytes={self._nbytes} head_size={self.head_size}",
+                      flush=True, file=sys.stderr)
             self._write_to_cache(key, value, kv_cache, slot_mapping)
         else:
             # Legacy fp16 mode: store fp16 in vLLM cache for FA
@@ -246,11 +259,12 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 # entry_byte_stride = bytes_per_head for kernel to navigate entries.
                 cache_u8 = kv_cache.view(torch.uint8)
                 block_size = kv_cache.shape[2]
-                k_q = cache_u8[0].contiguous().view(-1)
-                v_q = cache_u8[1].contiguous().view(-1)
+                # Slice quant and norms separately (tight packed, entry_stride=0)
+                k_q = cache_u8[0][..., :self._qbytes].contiguous().view(-1)
+                v_q = cache_u8[1][..., :self._qbytes].contiguous().view(-1)
                 k_n = cache_u8[0][..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
                 v_n = cache_u8[1][..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
-                entry_stride = self._qbytes + self._nbytes  # 68B tight packed
+                entry_stride = 0  # tight packing after slicing
             else:
                 return super().forward(layer, query, key, value, kv_cache,
                                        attn_metadata, output, output_scale, **kwargs)
