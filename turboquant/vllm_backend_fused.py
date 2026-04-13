@@ -93,6 +93,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         self._decode_module = None
         self._write_module = None
         self._is_fp8 = kv_cache_dtype in ("fp8", "fp8_e4m3")
+        self._write_stream = None  # separate CUDA stream for async write
 
     def _ensure(self, dev):
         if self._signs is not None:
@@ -145,37 +146,12 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         cache_u8[1, bids, boffs, :, :self._qbytes] = vq
         cache_u8[1, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = vn_u8
 
-    _update_count = 0
-
     @torch.no_grad()
     def do_kv_cache_update(self, layer, key, value, kv_cache, slot_mapping):
         self._ensure(key.device)
-        TurboQuantFusedImpl._update_count += 1
-        if False and TurboQuantFusedImpl._update_count <= 3:
-            import sys
-            print(f"[TQ] do_kv_cache_update #{TurboQuantFusedImpl._update_count}: "
-                  f"key={key.shape} dt={key.dtype} cache={kv_cache.shape} "
-                  f"slots={slot_mapping[:5].tolist()} bs={kv_cache.shape[2]} fp8={self._is_fp8}",
-                  flush=True, file=sys.stderr)
 
         if self._is_fp8:
-            try:
-                self._write_to_cache(key, value, kv_cache, slot_mapping)
-                if False and TurboQuantFusedImpl._update_count <= 3:
-                    import sys
-                    num_tokens = slot_mapping.shape[0]
-                    bs = kv_cache.shape[2]
-                    bids = slot_mapping[:5] // bs
-                    boffs = slot_mapping[:5] % bs
-                    # Check what's at the first write location
-                    sample = kv_cache[0, bids[0], boffs[0], 0, :8].tolist()
-                    total_nz = (kv_cache[0] != 0).sum().item()
-                    print(f"[TQ] Write OK. nz={total_nz} bids={bids.tolist()} "
-                          f"sample={sample}", flush=True, file=sys.stderr)
-            except Exception as e:
-                import sys, traceback
-                print(f"[TQ] Write kernel failed: {e}", file=sys.stderr)
-                traceback.print_exc(file=sys.stderr)
+            self._write_to_cache(key, value, kv_cache, slot_mapping)
         else:
             # Legacy fp16 mode: store fp16 in vLLM cache for FA
             from vllm.v1.attention.backends.fa_utils import reshape_and_cache_flash
