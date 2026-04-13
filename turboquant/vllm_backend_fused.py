@@ -53,9 +53,21 @@ class TurboQuantBackend(FlashAttentionBackend):
             return True
         return super().supports_kv_cache_dtype(kv_cache_dtype)
 
-    # get_kv_cache_shape: returns head_size (128) to match fp8 allocation.
-    # When custom_page_size is active (upstream PR), override to return
-    # bytes_per_head (68) for true 3.76× savings. Until then, 128 = 2× savings.
+    @staticmethod
+    def get_kv_cache_shape(
+        num_blocks: int,
+        block_size: int,
+        num_kv_heads: int,
+        head_size: int,
+        cache_dtype_str: str = "auto",
+    ) -> tuple[int, ...]:
+        if cache_dtype_str in ("fp8", "fp8_e4m3"):
+            pd = _next_pow2(head_size)
+            dc = pd // TILE_DIMS
+            bytes_per_head = dc * QUANT_BYTES_PER_CHUNK + dc * 2
+            return (2, num_blocks, block_size, num_kv_heads, bytes_per_head)
+        return FlashAttentionBackend.get_kv_cache_shape(
+            num_blocks, block_size, num_kv_heads, head_size, cache_dtype_str)
 
     @classmethod
     def get_kv_cache_page_size(
@@ -238,7 +250,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 v_q = cache_u8[1].contiguous().view(-1)
                 k_n = cache_u8[0][..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
                 v_n = cache_u8[1][..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
-                entry_stride = self.head_size  # 128B fp8 allocation
+                entry_stride = self._qbytes + self._nbytes  # 68B tight packed
             else:
                 return super().forward(layer, query, key, value, kv_cache,
                                        attn_metadata, output, output_scale, **kwargs)
