@@ -93,7 +93,6 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         self._decode_module = None
         self._write_module = None
         self._is_fp8 = kv_cache_dtype in ("fp8", "fp8_e4m3")
-        self._write_stream = None  # separate CUDA stream for async write
 
     def _ensure(self, dev):
         if self._signs is not None:
