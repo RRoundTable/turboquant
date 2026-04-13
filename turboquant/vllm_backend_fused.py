@@ -243,18 +243,23 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             module = self._get_decode_module()
 
             if self._is_fp8:
-                # Physical layout is HND (via get_kv_cache_stride_order).
-                # Logical view is NHD [blocks, entries, heads, bytes].
-                # permute(0,2,1,3) → HND logical, already contiguous in memory.
+                # Physical = HND [blocks, heads, entries, head_size] via stride order.
+                # ZERO COPY: pass flat pointers directly into HND memory.
+                # Kernel uses entry_byte_stride=head_size to skip norms+padding.
+                # Norms pointer = quant pointer + qbytes offset (same underlying buffer).
                 cache_u8 = kv_cache.view(torch.uint8)
                 block_size = kv_cache.shape[2]
-                k_hnd = cache_u8[0].permute(0, 2, 1, 3)  # HND logical = HND physical
-                v_hnd = cache_u8[1].permute(0, 2, 1, 3)
-                # Slice quant/norms (last dim stride=1 but size<head_size → not contiguous)
-                k_q = k_hnd[..., :self._qbytes].contiguous().view(-1)
-                v_q = v_hnd[..., :self._qbytes].contiguous().view(-1)
-                k_n = k_hnd[..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
-                v_n = v_hnd[..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
+                # permute NHD→HND (no copy, just reinterprets strides)
+                k_flat = cache_u8[0].permute(0, 2, 1, 3).contiguous().view(-1)
+                v_flat = cache_u8[1].permute(0, 2, 1, 3).contiguous().view(-1)
+                # k_flat is HND with head_size bytes per entry.
+                # Quant data at offset 0, norms at offset qbytes.
+                k_q = k_flat
+                v_q = v_flat
+                # Norms: offset by qbytes, viewed as fp16
+                k_n = k_flat[self._qbytes:].view(torch.float16)
+                v_n = v_flat[self._qbytes:].view(torch.float16)
+                entry_stride = self.head_size
             else:
                 # Legacy: shouldn't reach here without fp8 cache
                 return super().forward(layer, query, key, value, kv_cache,
@@ -279,6 +284,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
                 self._signs,
+                entry_stride if self._is_fp8 else 0,
             )
 
             if self.head_size < self._pd:

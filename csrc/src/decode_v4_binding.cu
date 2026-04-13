@@ -75,7 +75,8 @@ torch::Tensor turboquant_decode_v4(
     int head_dim,
     int padded_dim,
     float sm_scale,
-    torch::Tensor hadamard_signs  // [padded_dim] float32, or empty for no rotation
+    torch::Tensor hadamard_signs, // [padded_dim] float32, or empty for no rotation
+    int entry_byte_stride = 0     // 0=tight packing, >0=stride between entries (for fp8 cache)
 ) {
     int batch_size = q.size(0);
     int num_qo_heads = q.size(1);
@@ -86,7 +87,8 @@ torch::Tensor turboquant_decode_v4(
         k_quant.data_ptr<uint8_t>(), v_quant.data_ptr<uint8_t>(),
         (__half*)k_norms.data_ptr<at::Half>(), (__half*)v_norms.data_ptr<at::Half>(),
         indices.data_ptr<int32_t>(), indptr.data_ptr<int32_t>(),
-        last_page_len.data_ptr<int32_t>(), nullptr);
+        last_page_len.data_ptr<int32_t>(), nullptr,
+        static_cast<uint32_t>(entry_byte_stride));
 
     using P = TurboQuantBatchDecodeParams<__half, __half, int32_t>;
     P params;

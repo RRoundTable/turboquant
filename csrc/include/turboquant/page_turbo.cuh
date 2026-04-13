@@ -84,7 +84,8 @@ struct paged_kv_turbo_t {
         uint8_t* k_quant, uint8_t* v_quant,
         __half* k_norms, __half* v_norms,
         IdType* indices, IdType* indptr, IdType* last_page_len,
-        IdType* rope_pos_offset = nullptr)
+        IdType* rope_pos_offset = nullptr,
+        uint32_t entry_byte_stride = 0)
         : num_heads(num_heads), page_size(page_size), head_dim(head_dim),
           padded_dim(padded_dim), batch_size(batch_size),
           k_quant(k_quant), v_quant(v_quant),
@@ -93,12 +94,19 @@ struct paged_kv_turbo_t {
           rope_pos_offset(rope_pos_offset)
     {
         dim_chunks = padded_dim / kTileDims;
-        // HND layout for quantized data
-        quant_stride_n = dim_chunks * kQuantBytesPerChunk;
-        quant_stride_h = page_size * quant_stride_n;
+        // entry_byte_stride: bytes between consecutive entries for same head.
+        // Default (0): tight packing = dim_chunks * kQuantBytesPerChunk.
+        // For fp8 cache: head_size (includes norms + padding after quant bytes).
+        uint32_t qbytes = dim_chunks * kQuantBytesPerChunk;
+        uint32_t ebs = (entry_byte_stride > 0) ? entry_byte_stride : qbytes;
+        quant_stride_n = ebs;
+        quant_stride_h = page_size * ebs;
         quant_stride_page = num_heads * quant_stride_h;
-        norm_stride_n = dim_chunks;
-        norm_stride_h = page_size * norm_stride_n;
+        // Norms: stored at quant_base + qbytes, stride same as quant entries
+        // but in fp16 units. norm_stride_n = ebs/2 (bytes→fp16 elements).
+        uint32_t norm_ebs = (entry_byte_stride > 0) ? entry_byte_stride / 2 : dim_chunks;
+        norm_stride_n = norm_ebs;
+        norm_stride_h = page_size * norm_ebs;
         norm_stride_page = num_heads * norm_stride_h;
     }
 
