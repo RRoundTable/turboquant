@@ -57,7 +57,8 @@ class TurboQuantBackend(FlashAttentionBackend):
     def get_kv_cache_stride_order(
         include_num_layers_dimension: bool = False,
     ) -> tuple[int, ...]:
-        # HND physical layout matches paged_kv_turbo_t strides.
+        # HND physical layout: write and read both use logical NHD indices
+        # which get mapped to HND physical via the stride permutation.
         if include_num_layers_dimension:
             return (2, 4, 0, 1, 3, 5)
         return (0, 1, 3, 2, 4)
@@ -175,18 +176,24 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         if not is_decode:
             if self._is_fp8:
                 # Prefill: call flash_attn directly with fresh fp16 K,V.
-                # Cannot use super().forward() — FA's internal reshape_and_cache_flash
-                # writes to slot_mapping positions that exceed the dummy cache size.
-                from vllm.vllm_flash_attn import flash_attn_varlen_func
+                # Cannot use super().forward() — FA writes to cache slots
+                # that may exceed a dummy cache's bounds.
+                try:
+                    from vllm.vllm_flash_attn import flash_attn_varlen_func
+                except ImportError:
+                    from flash_attn import flash_attn_varlen_func
+
                 num_tokens = attn_metadata.num_actual_tokens
                 q = query[:num_tokens].to(torch.float16)
                 k = key[:num_tokens].to(torch.float16)
                 v = value[:num_tokens].to(torch.float16)
+                # Debug: verify dtypes in TP worker
+                assert q.dtype == torch.float16, f"q dtype={q.dtype}"
+                assert k.dtype == torch.float16, f"k dtype={k.dtype}"
 
                 if output is None:
                     output = torch.empty_like(query[:num_tokens])
 
-                # Build cu_seqlens for varlen FA from attn_metadata
                 seq_start = attn_metadata.query_start_loc
                 max_seqlen = attn_metadata.max_query_len
 
@@ -217,25 +224,19 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             module = self._get_decode_module()
 
             if self._is_fp8:
-                # Physical = HND [blocks, heads, entries, head_size] via stride order.
-                # ZERO COPY: pass flat pointers directly into HND memory.
-                # Kernel uses entry_byte_stride=head_size to skip norms+padding.
-                # Norms pointer = quant pointer + qbytes offset (same underlying buffer).
+                # Physical = HND via get_kv_cache_stride_order.
+                # Logical NHD → permute to HND (contiguous in memory = no copy).
+                # Slice quant/norms BEFORE flatten to get correct per-entry data.
                 cache_u8 = kv_cache.view(torch.uint8)
                 block_size = kv_cache.shape[2]
-                # permute NHD→HND (no copy, just reinterprets strides)
-                k_flat = cache_u8[0].permute(0, 2, 1, 3).contiguous().view(-1)
-                v_flat = cache_u8[1].permute(0, 2, 1, 3).contiguous().view(-1)
-                # k_flat is HND with head_size bytes per entry.
-                # Quant data at offset 0, norms at offset qbytes.
-                k_q = k_flat
-                v_q = v_flat
-                # Norms: offset by qbytes, viewed as fp16
-                k_n = k_flat[self._qbytes:].view(torch.float16)
-                v_n = v_flat[self._qbytes:].view(torch.float16)
-                entry_stride = self.head_size  # fp8: 128 bytes per entry (includes padding)
+                k_hnd = cache_u8[0].permute(0, 2, 1, 3)
+                v_hnd = cache_u8[1].permute(0, 2, 1, 3)
+                k_q = k_hnd[..., :self._qbytes].contiguous().view(-1)
+                v_q = v_hnd[..., :self._qbytes].contiguous().view(-1)
+                k_n = k_hnd[..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
+                v_n = v_hnd[..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
+                entry_stride = 0  # tight packing (sliced data, no padding)
             else:
-                # Legacy: shouldn't reach here without fp8 cache
                 return super().forward(layer, query, key, value, kv_cache,
                                        attn_metadata, output, output_scale, **kwargs)
 
@@ -266,6 +267,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 self.head_size, self._pd, self.scale,
                 self._signs,
                 entry_stride if self._is_fp8 else 0,
+                False,  # layout_nhd: False=HND (data is permuted to HND)
             )
 
             if self.head_size < self._pd:
@@ -274,8 +276,13 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 output[:num_actual] = result[:num_actual]
 
         except Exception as e:
-            import sys
-            print(f"[TQ] Decode kernel failed ({e}), falling back to FA", file=sys.stderr)
+            import sys, traceback
+            print(f"[TQ] Decode kernel failed: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            # Do NOT fall back to FA for fp8 cache — FA can't read uint8.
+            # Re-raise so the error is visible.
+            if self._is_fp8:
+                raise
             return super().forward(layer, query, key, value, kv_cache,
                                    attn_metadata, output, output_scale, **kwargs)
 

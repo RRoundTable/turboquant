@@ -85,7 +85,8 @@ struct paged_kv_turbo_t {
         __half* k_norms, __half* v_norms,
         IdType* indices, IdType* indptr, IdType* last_page_len,
         IdType* rope_pos_offset = nullptr,
-        uint32_t entry_byte_stride = 0)
+        uint32_t entry_byte_stride = 0,
+        bool layout_nhd = false)
         : num_heads(num_heads), page_size(page_size), head_dim(head_dim),
           padded_dim(padded_dim), batch_size(batch_size),
           k_quant(k_quant), v_quant(v_quant),
@@ -94,20 +95,30 @@ struct paged_kv_turbo_t {
           rope_pos_offset(rope_pos_offset)
     {
         dim_chunks = padded_dim / kTileDims;
-        // entry_byte_stride: bytes between consecutive entries for same head.
-        // Default (0): tight packing = dim_chunks * kQuantBytesPerChunk.
-        // For fp8 cache: head_size (includes norms + padding after quant bytes).
         uint32_t qbytes = dim_chunks * kQuantBytesPerChunk;
         uint32_t ebs = (entry_byte_stride > 0) ? entry_byte_stride : qbytes;
-        quant_stride_n = ebs;
-        quant_stride_h = page_size * ebs;
-        quant_stride_page = num_heads * quant_stride_h;
-        // Norms: stored at quant_base + qbytes, stride same as quant entries
-        // but in fp16 units. norm_stride_n = ebs/2 (bytes→fp16 elements).
         uint32_t norm_ebs = (entry_byte_stride > 0) ? entry_byte_stride / 2 : dim_chunks;
-        norm_stride_n = norm_ebs;
-        norm_stride_h = page_size * norm_ebs;
-        norm_stride_page = num_heads * norm_stride_h;
+
+        if (layout_nhd) {
+            // NHD: [page, entry, head, bytes]
+            // stride_h = ebs (adjacent in memory)
+            // stride_n = num_heads * ebs (skip all heads)
+            // stride_page = page_size * num_heads * ebs
+            quant_stride_h = ebs;
+            quant_stride_n = num_heads * ebs;
+            quant_stride_page = page_size * quant_stride_n;
+            norm_stride_h = norm_ebs;
+            norm_stride_n = num_heads * norm_ebs;
+            norm_stride_page = page_size * norm_stride_n;
+        } else {
+            // HND: [page, head, entry, bytes] (default)
+            quant_stride_n = ebs;
+            quant_stride_h = page_size * ebs;
+            quant_stride_page = num_heads * quant_stride_h;
+            norm_stride_n = norm_ebs;
+            norm_stride_h = page_size * norm_ebs;
+            norm_stride_page = num_heads * norm_stride_h;
+        }
     }
 
     __host__ __device__ __forceinline__ uint32_t get_length(uint32_t batch_idx) const {
