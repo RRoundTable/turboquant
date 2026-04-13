@@ -265,13 +265,20 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 return super().forward(layer, query, key, value, kv_cache,
                                        attn_metadata, output, output_scale, **kwargs)
 
-            # Page table on GPU
-            num_pages = (seq_lens + block_size - 1) // block_size
-            kv_indptr = torch.zeros(seq_lens.shape[0] + 1, dtype=torch.int32, device=q.device)
-            torch.cumsum(num_pages, dim=0, out=kv_indptr[1:])
-            kv_last_page_len = (seq_lens - (num_pages - 1) * block_size).to(torch.int32)
-            page_offsets = torch.arange(block_table.shape[1], device=q.device)
-            kv_indices = block_table[page_offsets.unsqueeze(0) < num_pages.unsqueeze(1)].to(torch.int32)
+            # Page table: build once per decode step, cache for reuse across layers.
+            # attn_metadata is the same object for all 28 layers in one step.
+            _meta_id = id(attn_metadata)
+            if not hasattr(self, '_pt_cache_id') or self._pt_cache_id != _meta_id:
+                num_pages = (seq_lens + block_size - 1) // block_size
+                self._pt_indptr = torch.zeros(seq_lens.shape[0] + 1, dtype=torch.int32, device=q.device)
+                torch.cumsum(num_pages, dim=0, out=self._pt_indptr[1:])
+                self._pt_last = (seq_lens - (num_pages - 1) * block_size).to(torch.int32)
+                page_offsets = torch.arange(block_table.shape[1], device=q.device)
+                self._pt_indices = block_table[page_offsets.unsqueeze(0) < num_pages.unsqueeze(1)].to(torch.int32)
+                self._pt_cache_id = _meta_id
+            kv_indptr = self._pt_indptr
+            kv_last_page_len = self._pt_last
+            kv_indices = self._pt_indices
 
             # v4 kernel with fused Hadamard
             q_fp16 = q.to(torch.float16)
