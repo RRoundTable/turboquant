@@ -225,17 +225,20 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
 
             if self._is_fp8:
                 # Physical = HND via get_kv_cache_stride_order.
-                # ONE permute+contiguous of full cache, then cheap slices.
+                # permute(0,2,1,3) → HND logical = contiguous (no copy).
+                # Pass quant as full 128B-stride flat buffer.
+                # Pass norms as separate sliced array (tight packed).
                 cache_u8 = kv_cache.view(torch.uint8)
                 block_size = kv_cache.shape[2]
                 k_hnd = cache_u8[0].permute(0, 2, 1, 3).contiguous()
                 v_hnd = cache_u8[1].permute(0, 2, 1, 3).contiguous()
-                # Slice quant and norms from the contiguous HND buffer (cheap view+reshape)
-                k_q = k_hnd[..., :self._qbytes].reshape(-1)
-                v_q = v_hnd[..., :self._qbytes].reshape(-1)
+                # Quant: full HND flat (kernel skips padding via entry_byte_stride)
+                k_q = k_hnd.view(-1)
+                v_q = v_hnd.view(-1)
+                # Norms: separate tight-packed array (dim_chunks fp16 per entry)
                 k_n = k_hnd[..., self._qbytes:self._qbytes + self._nbytes].reshape(-1).view(torch.float16)
                 v_n = v_hnd[..., self._qbytes:self._qbytes + self._nbytes].reshape(-1).view(torch.float16)
-                entry_stride = 0  # tight packing (sliced arrays)
+                entry_stride = self.head_size  # 128B stride for quant
             else:
                 return super().forward(layer, query, key, value, kv_cache,
                                        attn_metadata, output, output_scale, **kwargs)
