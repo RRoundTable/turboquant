@@ -225,17 +225,17 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
 
             if self._is_fp8:
                 # Physical = HND via get_kv_cache_stride_order.
-                # Logical NHD → permute to HND (contiguous in memory = no copy).
-                # Slice quant/norms BEFORE flatten to get correct per-entry data.
+                # ONE permute+contiguous of full cache, then cheap slices.
                 cache_u8 = kv_cache.view(torch.uint8)
                 block_size = kv_cache.shape[2]
-                k_hnd = cache_u8[0].permute(0, 2, 1, 3)
-                v_hnd = cache_u8[1].permute(0, 2, 1, 3)
-                k_q = k_hnd[..., :self._qbytes].contiguous().view(-1)
-                v_q = v_hnd[..., :self._qbytes].contiguous().view(-1)
-                k_n = k_hnd[..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
-                v_n = v_hnd[..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
-                entry_stride = 0  # tight packing (sliced data, no padding)
+                k_hnd = cache_u8[0].permute(0, 2, 1, 3).contiguous()
+                v_hnd = cache_u8[1].permute(0, 2, 1, 3).contiguous()
+                # Slice quant and norms from the contiguous HND buffer (cheap view+reshape)
+                k_q = k_hnd[..., :self._qbytes].reshape(-1)
+                v_q = v_hnd[..., :self._qbytes].reshape(-1)
+                k_n = k_hnd[..., self._qbytes:self._qbytes + self._nbytes].reshape(-1).view(torch.float16)
+                v_n = v_hnd[..., self._qbytes:self._qbytes + self._nbytes].reshape(-1).view(torch.float16)
+                entry_stride = 0  # tight packing (sliced arrays)
             else:
                 return super().forward(layer, query, key, value, kv_cache,
                                        attn_metadata, output, output_scale, **kwargs)
