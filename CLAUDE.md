@@ -150,23 +150,38 @@ forge job submit --name tq-sweep-b --entrypoint-file /tmp/b.sh --gpu 1 --image t
 
 **Claude tool usage:** when dispatching multiple independent Forge commands, emit them as parallel tool calls in a single message — don't wait for one `forge job submit` before issuing the next.
 
-**Monitor until terminal.** After `forge job submit`, Claude must stay attached until every job reaches a terminal state (`Succeeded` or `Failed`) — never submit-and-forget. Catch the exact moment each job finishes and react immediately.
+**Monitor until terminal.** After `forge job submit`, Claude must stay attached until every job reaches a terminal state (`Succeeded` or `Failed`) — never submit-and-forget. Catch the exact moment each job finishes and react immediately. Watch jobs as a group — don't tail one log at a time.
 
 ```bash
-# Run the job in the background and get notified when it exits
-forge job logs <id> --follow        # use run_in_background=true — returns on job terminal state
-# On completion: pull artifacts, inspect logs, move to the next step.
-# On failure: read the tail of the log, diagnose, resubmit a fix — do not let other jobs block on the dead one.
+# Snapshot: all jobs, states, GPUs used
+forge job list
+forge job list --name-prefix tq-bench-      # filter this sweep
 
-# Polling alternative when --follow is unavailable
-forge job get <id>                  # look for status: Succeeded | Failed | Running
+# Per-job detail — state, start time, entrypoint, exit code
+forge job get <id>
+
+# Follow a job until it exits — use run_in_background=true so the harness
+# notifies on terminal state instead of blocking the conversation
+forge job logs <id> --follow
+forge job logs <id> --tail 200              # last 200 lines, non-blocking
+
+# Aggregate: one status line per job of the sweep
+for id in $(forge job list --name-prefix tq-bench- -o json | jq -r '.[].id'); do
+  printf "%s  %-20s  %s\n" "$id" "$(forge job get $id -o json | jq -r .status)" \
+    "$(forge job get $id -o json | jq -r .name)"
+done
 ```
 
-Rules:
-- Use `run_in_background=true` for `forge job logs --follow` when fanning out — the harness notifies on completion. Do NOT sleep-poll in a loop.
-- The moment a job fails, read its log tail before anything else. A failed sweep entry that sits unread wastes the whole fan-out.
-- The moment a job succeeds, fetch its artifact from `/workspace/shared/` and fold it into the aggregation step. Don't wait for the slowest job to finish before starting analysis of the fast ones.
-- If any job is still `Pending` after quota is clearly available, investigate — don't assume it will schedule.
+**Monitoring checklist after submit:**
+1. `forge job list` — confirm all N jobs are `Pending`/`Running`, not `Failed` at launch (image pull, quota, mount errors surface here).
+2. `forge job logs <id> --tail 50` on one job after ~30s — verify the entrypoint actually started (catches silent `entry.sh` bugs before all N jobs burn time).
+3. For each job, run `forge job logs <id> --follow` with `run_in_background=true` — the harness notifies on terminal state. Do NOT sleep-poll in a loop.
+4. The moment a job **fails**, read its log tail before anything else and diagnose — a failed sweep entry that sits unread wastes the whole fan-out.
+5. The moment a job **succeeds**, fetch its artifact from `/workspace/shared/` and start folding it into the aggregation step — don't wait for the slowest job to finish before analyzing the fast ones.
+6. If a job stays `Pending` after quota is clearly available, investigate — don't assume it will schedule.
+7. For long runs (>15 min) without a stream, use the `loop` skill to poll on an interval instead of blocking.
+
+**Fail-fast rule:** if the first finished job crashed with a bug that applies to all configs (wrong import, missing env var, OOM at batch=1), cancel the remaining siblings immediately — don't let the whole sweep burn quota reproducing the same failure.
 
 **Quota discipline:**
 - `forge quota my` before fanning out — confirm headroom for N concurrent GPUs
