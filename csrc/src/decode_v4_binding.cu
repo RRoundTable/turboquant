@@ -60,6 +60,94 @@ void dispatch_bdz(
     else                launch_v4<HD, BDX, BDY,  1>(params, batch_size, num_kv_heads, stream);
 }
 
+// ─── Shared dispatch body: params → launch the right v4 kernel ──────
+static void dispatch_decode_v4(
+    TurboQuantBatchDecodeParams<__half, __half, int32_t>& params,
+    int batch_size, int num_kv_heads, int num_qo_heads, int padded_dim,
+    cudaStream_t stream
+) {
+    int bdy = num_qo_heads / num_kv_heads;
+    constexpr int VEC = 8;
+
+    // Maximize bdz within 768 threads (keeps ~64 regs/thread × 768 = 49K regs/SM).
+    auto compute_bdz = [](int bdx, int by) -> int {
+        int max_bdz = 768 / (bdx * by);
+        return (max_bdz > 64) ? 64 : (max_bdz < 1 ? 1 : max_bdz);
+    };
+
+    if (padded_dim <= 64) {
+        constexpr int BDX = 64 / VEC;
+        int bdz = compute_bdz(BDX, bdy);
+        switch (bdy) {
+            case 1: dispatch_bdz<64, BDX, 1>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 2: dispatch_bdz<64, BDX, 2>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 4: dispatch_bdz<64, BDX, 4>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 8: dispatch_bdz<64, BDX, 8>(params, batch_size, num_kv_heads, bdz, stream); break;
+            default: TORCH_CHECK(false, "Unsupported GQA ratio ", bdy, " for head_dim=64");
+        }
+    } else if (padded_dim <= 128) {
+        constexpr int BDX = 128 / VEC;
+        int bdz = compute_bdz(BDX, bdy);
+        switch (bdy) {
+            case 1: dispatch_bdz<128, BDX, 1>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 2: dispatch_bdz<128, BDX, 2>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 3: dispatch_bdz<128, BDX, 3>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 4: dispatch_bdz<128, BDX, 4>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 5: dispatch_bdz<128, BDX, 5>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 6: dispatch_bdz<128, BDX, 6>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 7: dispatch_bdz<128, BDX, 7>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 8: dispatch_bdz<128, BDX, 8>(params, batch_size, num_kv_heads, bdz, stream); break;
+            default: TORCH_CHECK(false, "Unsupported GQA ratio ", bdy, " for head_dim=128");
+        }
+    } else if (padded_dim <= 256) {
+        constexpr int BDX = 256 / VEC;
+        int bdz = compute_bdz(BDX, bdy);
+        switch (bdy) {
+            case 1: dispatch_bdz<256, BDX, 1>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 2: dispatch_bdz<256, BDX, 2>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 4: dispatch_bdz<256, BDX, 4>(params, batch_size, num_kv_heads, bdz, stream); break;
+            case 8: dispatch_bdz<256, BDX, 8>(params, batch_size, num_kv_heads, bdz, stream); break;
+            default: TORCH_CHECK(false, "Unsupported GQA ratio ", bdy, " for head_dim=256");
+        }
+    } else {
+        TORCH_CHECK(false, "Unsupported padded_dim ", padded_dim);
+    }
+}
+
+// ─── Shared param setup for non-partitioned decode ──────────────────
+static void fill_decode_params(
+    TurboQuantBatchDecodeParams<__half, __half, int32_t>& params,
+    torch::Tensor& q, torch::Tensor& o,
+    const paged_kv_turbo_t<int32_t>& tq_kv,
+    int batch_size, int num_qo_heads, int padded_dim,
+    float sm_scale, torch::Tensor& hadamard_signs,
+    torch::Tensor& ri, torch::Tensor& kti, torch::Tensor& kcs
+) {
+    params.q = (__half*)q.data_ptr<at::Half>();
+    params.tq_kv = tq_kv;
+    params.o = (__half*)o.data_ptr<at::Half>();
+    params.lse = nullptr;
+    params.maybe_alibi_slopes = nullptr;
+    params.padded_batch_size = batch_size;
+    params.num_qo_heads = num_qo_heads;
+    params.q_stride_n = num_qo_heads * padded_dim;
+    params.q_stride_h = padded_dim;
+    params.window_left = -1;
+    params.logits_soft_cap = 0;
+    params.sm_scale = sm_scale;
+    params.rope_rcp_scale = 0;
+    params.rope_rcp_theta = 0;
+    params.partition_kv = false;
+    params.hadamard_signs = hadamard_signs.numel() > 0 ?
+        hadamard_signs.data_ptr<float>() : nullptr;
+    params.hadamard_scale = rsqrtf(static_cast<float>(padded_dim));
+    params.request_indices = ri.data_ptr<int32_t>();
+    params.kv_tile_indices = kti.data_ptr<int32_t>();
+    params.kv_chunk_size_ptr = kcs.data_ptr<int32_t>();
+    params.block_valid_mask = nullptr;
+    params.o_indptr = nullptr;
+}
+
 // ─── Main entry point ───────────────────────────────────────────────
 torch::Tensor turboquant_decode_v4(
     torch::Tensor q,              // [batch, num_qo_heads, head_dim] fp16
@@ -93,85 +181,80 @@ torch::Tensor turboquant_decode_v4(
 
     using P = TurboQuantBatchDecodeParams<__half, __half, int32_t>;
     P params;
-    params.q = (__half*)q.data_ptr<at::Half>();
-    params.tq_kv = tq_kv;
-    params.o = (__half*)o.data_ptr<at::Half>();
-    params.lse = nullptr;
-    params.maybe_alibi_slopes = nullptr;
-    params.padded_batch_size = batch_size;
-    params.num_qo_heads = num_qo_heads;
-    params.q_stride_n = num_qo_heads * padded_dim;
-    params.q_stride_h = padded_dim;
-    params.window_left = -1;
-    params.logits_soft_cap = 0;
-    params.sm_scale = sm_scale;
-    params.rope_rcp_scale = 0;
-    params.rope_rcp_theta = 0;
-    params.partition_kv = false;
-    params.hadamard_signs = hadamard_signs.numel() > 0 ?
-        hadamard_signs.data_ptr<float>() : nullptr;
-    params.hadamard_scale = rsqrtf(static_cast<float>(padded_dim));
-
     auto ri = torch::arange(batch_size, torch::dtype(torch::kInt32).device(q.device()));
     auto kti = torch::zeros(batch_size, torch::dtype(torch::kInt32).device(q.device()));
     auto kcs = torch::zeros(1, torch::dtype(torch::kInt32).device(q.device()));
-    params.request_indices = ri.data_ptr<int32_t>();
-    params.kv_tile_indices = kti.data_ptr<int32_t>();
-    params.kv_chunk_size_ptr = kcs.data_ptr<int32_t>();
-    params.block_valid_mask = nullptr;
-    params.o_indptr = nullptr;
+    fill_decode_params(params, q, o, tq_kv, batch_size, num_qo_heads, padded_dim,
+                       sm_scale, hadamard_signs, ri, kti, kcs);
 
     auto stream = c10::cuda::getCurrentCUDAStream();
-    int bdy = num_qo_heads / num_kv_heads;
-    constexpr int VEC = 8;
+    dispatch_decode_v4(params, batch_size, num_kv_heads, num_qo_heads, padded_dim, stream);
+    return o;
+}
 
-    // Compute optimal bdz: maximize within 1024 threads, cap at 64
-    // Cap at 768 threads to avoid register pressure (v4 uses ~64 regs/thread,
-    // A100 has 65536 regs/SM, 768*64=49152 leaves headroom)
-    auto compute_bdz = [](int bdx, int bdy) -> int {
-        int max_bdz = 768 / (bdx * bdy);
-        return (max_bdz > 64) ? 64 : (max_bdz < 1 ? 1 : max_bdz);
-    };
+// ─── Graph-safe entry: takes kv_cache directly, derives 4 base pointers ──
+// vLLM V1 swaps kv_cache storage post-profiling (bind_kv_cache); passing
+// kv_cache as a Tensor through the dispatcher ensures data_ptr is refreshed
+// on graph replay. All 4 base pointers are computed AFTER the refresh.
+torch::Tensor turboquant_decode_v4_from_cache(
+    torch::Tensor q,              // [batch, num_qo_heads, head_dim] fp16
+    torch::Tensor kv_cache,       // [2, num_blocks, block_size, num_heads, qbytes+nbytes] uint8
+    torch::Tensor indices,
+    torch::Tensor indptr,
+    torch::Tensor last_page_len,
+    torch::Tensor seq_lens,       // [batch] int32 — actual KV length per sequence
+    int num_kv_heads,
+    int page_size,
+    int head_dim,
+    int padded_dim,
+    float sm_scale,
+    torch::Tensor hadamard_signs,
+    int qbytes,
+    int nbytes
+) {
+    TORCH_CHECK(kv_cache.scalar_type() == at::kByte || kv_cache.scalar_type() == at::kFloat8_e4m3fn ||
+                kv_cache.element_size() == 1,
+                "kv_cache must be a byte-addressable tensor");
+    TORCH_CHECK(kv_cache.size(0) == 2, "kv_cache must have leading dim 2 (K,V)");
+    // entry_byte_stride = kv_cache.size(-1), the per-head slot size.
+    // Must be 16-byte aligned for cp_async.ca.shared.global 128-bit loads.
+    int entry_byte_stride = static_cast<int>(kv_cache.size(-1));
+    TORCH_CHECK(entry_byte_stride % 16 == 0,
+                "kv_cache.size(-1) must be a multiple of 16 for cp_async alignment, got ",
+                entry_byte_stride);
+    TORCH_CHECK(qbytes + nbytes <= entry_byte_stride,
+                "qbytes+nbytes exceeds per-head slot size");
 
-    // Dispatch on padded_dim → bdx, then bdy, then bdz
-    if (padded_dim <= 64) {
-        constexpr int BDX = 64 / VEC;  // 8
-        int bdz = compute_bdz(BDX, bdy);
-        switch (bdy) {
-            case 1: dispatch_bdz<64, BDX, 1>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 2: dispatch_bdz<64, BDX, 2>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 4: dispatch_bdz<64, BDX, 4>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 8: dispatch_bdz<64, BDX, 8>(params, batch_size, num_kv_heads, bdz, stream); break;
-            default: TORCH_CHECK(false, "Unsupported GQA ratio ", bdy, " for head_dim=64");
-        }
-    } else if (padded_dim <= 128) {
-        constexpr int BDX = 128 / VEC;  // 16
-        int bdz = compute_bdz(BDX, bdy);
-        switch (bdy) {
-            case 1: dispatch_bdz<128, BDX, 1>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 2: dispatch_bdz<128, BDX, 2>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 3: dispatch_bdz<128, BDX, 3>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 4: dispatch_bdz<128, BDX, 4>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 5: dispatch_bdz<128, BDX, 5>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 6: dispatch_bdz<128, BDX, 6>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 7: dispatch_bdz<128, BDX, 7>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 8: dispatch_bdz<128, BDX, 8>(params, batch_size, num_kv_heads, bdz, stream); break;
-            default: TORCH_CHECK(false, "Unsupported GQA ratio ", bdy, " for head_dim=128");
-        }
-    } else if (padded_dim <= 256) {
-        constexpr int BDX = 256 / VEC;  // 32
-        int bdz = compute_bdz(BDX, bdy);
-        switch (bdy) {
-            case 1: dispatch_bdz<256, BDX, 1>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 2: dispatch_bdz<256, BDX, 2>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 4: dispatch_bdz<256, BDX, 4>(params, batch_size, num_kv_heads, bdz, stream); break;
-            case 8: dispatch_bdz<256, BDX, 8>(params, batch_size, num_kv_heads, bdz, stream); break;
-            default: TORCH_CHECK(false, "Unsupported GQA ratio ", bdy, " for head_dim=256");
-        }
-    } else {
-        TORCH_CHECK(false, "Unsupported padded_dim ", padded_dim);
-    }
+    int batch_size = q.size(0);
+    int num_qo_heads = q.size(1);
+    auto o = torch::zeros_like(q);
+    auto k_half = kv_cache.select(0, 0);  // K half — dispatcher-refreshed storage
+    auto v_half = kv_cache.select(0, 1);
+    uint8_t* k_base = (uint8_t*)k_half.data_ptr();
+    uint8_t* v_base = (uint8_t*)v_half.data_ptr();
+    __half* k_norms = (__half*)(k_base + qbytes);
+    __half* v_norms = (__half*)(v_base + qbytes);
 
+    auto tq_kv = paged_kv_turbo_t<int32_t>(
+        num_kv_heads, page_size, head_dim, padded_dim, batch_size,
+        k_base, v_base, k_norms, v_norms,
+        indices.data_ptr<int32_t>(), indptr.data_ptr<int32_t>(),
+        last_page_len.data_ptr<int32_t>(), nullptr,
+        static_cast<uint32_t>(entry_byte_stride),
+        /*layout_nhd=*/true,
+        /*norm_entry_byte_stride=*/static_cast<uint32_t>(entry_byte_stride),
+        /*seq_lens=*/seq_lens.numel() > 0 ? seq_lens.data_ptr<int32_t>() : nullptr);
+
+    using P = TurboQuantBatchDecodeParams<__half, __half, int32_t>;
+    P params;
+    auto ri = torch::arange(batch_size, torch::dtype(torch::kInt32).device(q.device()));
+    auto kti = torch::zeros(batch_size, torch::dtype(torch::kInt32).device(q.device()));
+    auto kcs = torch::zeros(1, torch::dtype(torch::kInt32).device(q.device()));
+    fill_decode_params(params, q, o, tq_kv, batch_size, num_qo_heads, padded_dim,
+                       sm_scale, hadamard_signs, ri, kti, kcs);
+
+    auto stream = c10::cuda::getCurrentCUDAStream();
+    dispatch_decode_v4(params, batch_size, num_kv_heads, num_qo_heads, padded_dim, stream);
     return o;
 }
 
@@ -335,6 +418,18 @@ static torch::Tensor turboquant_decode_v4_splitkv_op(
         (int)num_kv_heads, (int)page_size, (int)head_dim, (int)padded_dim,
         (float)sm_scale, (int)num_splits);
 }
+static torch::Tensor turboquant_decode_v4_from_cache_op(
+    torch::Tensor q, torch::Tensor kv_cache,
+    torch::Tensor indices, torch::Tensor indptr, torch::Tensor last_page_len,
+    torch::Tensor seq_lens,
+    int64_t num_kv_heads, int64_t page_size, int64_t head_dim, int64_t padded_dim,
+    double sm_scale, torch::Tensor hadamard_signs,
+    int64_t qbytes, int64_t nbytes) {
+    return turboquant_decode_v4_from_cache(
+        q, kv_cache, indices, indptr, last_page_len, seq_lens,
+        (int)num_kv_heads, (int)page_size, (int)head_dim, (int)padded_dim,
+        (float)sm_scale, hadamard_signs, (int)qbytes, (int)nbytes);
+}
 
 // ─── torch.library registration (graph-replay-safe dispatch) ──────────
 // Registering through TORCH_LIBRARY makes these ops visible to PyTorch's
@@ -354,11 +449,17 @@ TORCH_LIBRARY(turboquant, m) {
         "Tensor k_norms, Tensor v_norms, Tensor indices, Tensor indptr, "
         "Tensor last_page_len, int num_kv_heads, int page_size, int head_dim, "
         "int padded_dim, float sm_scale, int num_splits) -> Tensor");
+    m.def(
+        "decode_v4_from_cache(Tensor q, Tensor kv_cache, Tensor indices, "
+        "Tensor indptr, Tensor last_page_len, Tensor seq_lens, "
+        "int num_kv_heads, int page_size, int head_dim, int padded_dim, "
+        "float sm_scale, Tensor hadamard_signs, int qbytes, int nbytes) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(turboquant, CUDA, m) {
     m.impl("decode_v4", &turboquant_decode_v4_op);
     m.impl("decode_v4_splitkv", &turboquant_decode_v4_splitkv_op);
+    m.impl("decode_v4_from_cache", &turboquant_decode_v4_from_cache_op);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -368,4 +469,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "TurboQuant v4 fused decode with inline dequant (generalized dispatch)");
     m.def("decode_v4_splitkv", &turboquant_decode_v4_splitkv,
           "TurboQuant v4 decode with split-KV parallelism (FlashDecoding)");
+    m.def("decode_v4_from_cache", &turboquant_decode_v4_from_cache,
+          "Graph-safe v4 decode taking kv_cache directly (interleaved norms)");
 }

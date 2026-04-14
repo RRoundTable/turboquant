@@ -316,6 +316,120 @@ __global__ void quantize_write_hadamard_kernel(
     }
 }
 
+// ═══ Scatter-to-cache variant: writes directly into vLLM's kv_cache slab ═══
+//
+// Same math as quantize_write_hadamard_kernel, but the destination pointer
+// is computed from slot_mapping[token_idx] → (block, entry) and the NHD
+// cache layout instead of a flat [num_tokens, num_heads, qbytes] buffer.
+// This lets the op take kv_cache as a mutable Tensor argument — the
+// dispatcher refreshes its storage pointer on CUDA graph replay, unlike
+// the Python-side scatter that bakes in the placeholder ptr at capture.
+//
+// slot_mapping: int32 per-token. slot = slot_mapping[t], block = slot /
+// block_size, entry = slot % block_size. Negative slots skip the write.
+
+template <uint32_t VEC_SIZE>
+__global__ void quantize_write_hadamard_scatter_kernel(
+    const float*   __restrict__ kv_in,        // [num_tokens, num_heads, head_dim] fp32
+    uint8_t*       __restrict__ cache_slab,   // start of K slab OR V slab (uint8)
+    const int32_t* __restrict__ slot_mapping, // [num_tokens] int32 (negative = skip)
+    const float*   __restrict__ signs,        // [padded_dim] fp32
+    const uint32_t num_tokens,
+    const uint32_t num_heads,
+    const uint32_t head_dim,
+    const uint32_t padded_dim,
+    const uint32_t dim_chunks,
+    const uint32_t qbytes,                    // dim_chunks * 32
+    const uint32_t ebs,                       // bytes per (block, entry, head) slot
+    const uint32_t block_size,
+    const float    boundary_scale
+) {
+    const uint32_t token_idx = blockIdx.x;
+    const uint32_t head_idx  = blockIdx.y;
+    const uint32_t tid       = threadIdx.x;
+
+    if (token_idx >= num_tokens) return;
+    int32_t slot = slot_mapping[token_idx];
+    if (slot < 0) return;
+
+    const float* head_ptr = kv_in + (size_t)token_idx * num_heads * head_dim
+                                  + (size_t)head_idx * head_dim;
+
+    float v[VEC_SIZE];
+    float sum_sq = 0.0f;
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i++) {
+        uint32_t d = tid * VEC_SIZE + i;
+        float val = (d < head_dim) ? head_ptr[d] : 0.0f;
+        v[i] = val;
+        sum_sq += val * val;
+    }
+
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum_sq += __shfl_down_sync(0xFFFFFFFF, sum_sq, offset);
+    }
+    float l2_norm = sqrtf(__shfl_sync(0xFFFFFFFF, sum_sq, 0));
+    float inv_norm = (l2_norm > 1e-8f) ? (1.0f / l2_norm) : 0.0f;
+
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i++) v[i] *= inv_norm;
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i++) v[i] *= signs[tid * VEC_SIZE + i];
+
+    #pragma unroll
+    for (uint32_t h = 1; h < VEC_SIZE; h <<= 1) {
+        #pragma unroll
+        for (uint32_t i = 0; i < VEC_SIZE; i += 2 * h) {
+            #pragma unroll
+            for (uint32_t k = 0; k < h; k++) {
+                float a = v[i + k], b = v[i + k + h];
+                v[i + k] = a + b;
+                v[i + k + h] = a - b;
+            }
+        }
+    }
+    #pragma unroll
+    for (uint32_t delta = 1; delta < 32; delta <<= 1) {
+        #pragma unroll
+        for (uint32_t i = 0; i < VEC_SIZE; i++) {
+            float partner = __shfl_xor_sync(0xFFFFFFFF, v[i], delta);
+            if (tid & delta) v[i] = partner - v[i];
+            else             v[i] = v[i] + partner;
+        }
+    }
+    float fwht_scale = rsqrtf(static_cast<float>(padded_dim));
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i++) v[i] *= fwht_scale;
+
+    float b_scaled[15];
+    #pragma unroll
+    for (int i = 0; i < 15; i++) b_scaled[i] = kWriteBoundaries4bit[i] * boundary_scale;
+
+    // Compute destination pointer from slot_mapping (NHD: [block, entry, head, ebs])
+    uint32_t block_idx = static_cast<uint32_t>(slot) / block_size;
+    uint32_t entry_idx = static_cast<uint32_t>(slot) % block_size;
+    uint8_t* entry_base = cache_slab
+        + (size_t)block_idx * block_size * num_heads * ebs
+        + (size_t)entry_idx * num_heads * ebs
+        + (size_t)head_idx * ebs;
+
+    __half norm_fp16 = __float2half(l2_norm);
+    #pragma unroll
+    for (uint32_t i = 0; i < VEC_SIZE; i += 2) {
+        uint8_t idx0 = write_bucketize_4bit(v[i], b_scaled);
+        uint8_t idx1 = write_bucketize_4bit(v[i + 1], b_scaled);
+        uint8_t packed = (idx0 << 4) | (idx1 & 0x0F);
+        uint32_t byte_pos = (tid * VEC_SIZE + i) / 2;
+        entry_base[byte_pos] = packed;
+    }
+    if (tid == 0) {
+        __half* norm_ptr = (__half*)(entry_base + qbytes);
+        #pragma unroll
+        for (uint32_t c = 0; c < dim_chunks; c++) norm_ptr[c] = norm_fp16;
+    }
+}
+
 // ---- Fused launcher (with Hadamard) ----------------------------------------
 
 inline cudaError_t launch_quantize_write_hadamard(

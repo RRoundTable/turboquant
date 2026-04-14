@@ -201,6 +201,73 @@ quantize_write_kv_op(torch::Tensor key, torch::Tensor value, torch::Tensor signs
     return quantize_write_kv(key, value, signs, (int)head_dim, (int)padded_dim);
 }
 
+// quantize_write_kv_cache: graph-safe scatter variant. Takes kv_cache as
+// a mutable Tensor so the dispatcher refreshes its data_ptr on graph replay.
+// Writes quant+norm bytes directly into slots indicated by slot_mapping.
+void quantize_write_kv_cache(
+    torch::Tensor kv_cache,     // [2, num_blocks, block_size, num_heads, ebs] uint8-addressable
+    torch::Tensor key,          // [num_tokens, num_heads, head_dim] fp32
+    torch::Tensor value,
+    torch::Tensor signs,
+    torch::Tensor slot_mapping, // [num_tokens] int32
+    int64_t head_dim,
+    int64_t padded_dim
+) {
+    TORCH_CHECK(key.is_cuda() && value.is_cuda() && kv_cache.is_cuda(), "inputs must be CUDA");
+    TORCH_CHECK(key.dtype() == torch::kFloat32, "key must be float32");
+    TORCH_CHECK(kv_cache.size(0) == 2, "kv_cache leading dim must be 2 (K,V)");
+    TORCH_CHECK(slot_mapping.dtype() == torch::kInt32, "slot_mapping must be int32");
+
+    uint32_t num_tokens = key.size(0);
+    uint32_t num_heads  = key.size(1);
+    uint32_t dim_chunks = (uint32_t)padded_dim / 64;
+    uint32_t qbytes = dim_chunks * 32;
+    uint32_t ebs = (uint32_t)kv_cache.size(-1);
+    uint32_t block_size = (uint32_t)kv_cache.size(2);
+    TORCH_CHECK(ebs % 16 == 0, "kv_cache.size(-1) must be 16-byte aligned, got ", ebs);
+
+    if (num_tokens == 0) return;
+
+    auto k_slab = kv_cache.select(0, 0);
+    auto v_slab = kv_cache.select(0, 1);
+    uint8_t* k_base = (uint8_t*)k_slab.data_ptr();
+    uint8_t* v_base = (uint8_t*)v_slab.data_ptr();
+
+    auto stream = c10::cuda::getCurrentCUDAStream();
+    float boundary_scale = rsqrtf(static_cast<float>(padded_dim));
+    uint32_t vec_size = (uint32_t)padded_dim / 32;
+
+    auto launch = [&](const float* in, uint8_t* slab) {
+        dim3 grid(num_tokens, num_heads);
+        dim3 block(32);
+        switch (vec_size) {
+            case 2:
+                turboquant::quantize_write_hadamard_scatter_kernel<2><<<grid, block, 0, stream>>>(
+                    in, slab, slot_mapping.data_ptr<int32_t>(), signs.data_ptr<float>(),
+                    num_tokens, num_heads, (uint32_t)head_dim, (uint32_t)padded_dim,
+                    dim_chunks, qbytes, ebs, block_size, boundary_scale);
+                break;
+            case 4:
+                turboquant::quantize_write_hadamard_scatter_kernel<4><<<grid, block, 0, stream>>>(
+                    in, slab, slot_mapping.data_ptr<int32_t>(), signs.data_ptr<float>(),
+                    num_tokens, num_heads, (uint32_t)head_dim, (uint32_t)padded_dim,
+                    dim_chunks, qbytes, ebs, block_size, boundary_scale);
+                break;
+            case 8:
+                turboquant::quantize_write_hadamard_scatter_kernel<8><<<grid, block, 0, stream>>>(
+                    in, slab, slot_mapping.data_ptr<int32_t>(), signs.data_ptr<float>(),
+                    num_tokens, num_heads, (uint32_t)head_dim, (uint32_t)padded_dim,
+                    dim_chunks, qbytes, ebs, block_size, boundary_scale);
+                break;
+            default:
+                TORCH_CHECK(false, "unsupported vec_size ", vec_size);
+        }
+    };
+
+    launch(key.data_ptr<float>(), k_base);
+    launch(value.data_ptr<float>(), v_base);
+}
+
 // ─── torch.library registration (graph-replay-safe dispatch) ──────────
 // Register in a SEPARATE namespace (`turboquant_write`) from decode so the
 // two extensions can be loaded independently without schema conflicts.
@@ -214,12 +281,16 @@ TORCH_LIBRARY(turboquant_write, m) {
     m.def(
         "quantize_write_kv(Tensor key, Tensor value, Tensor signs, "
         "int head_dim, int padded_dim) -> (Tensor, Tensor, Tensor, Tensor)");
+    m.def(
+        "quantize_write_kv_cache(Tensor(a!) kv_cache, Tensor key, Tensor value, "
+        "Tensor signs, Tensor slot_mapping, int head_dim, int padded_dim) -> ()");
 }
 
 TORCH_LIBRARY_IMPL(turboquant_write, CUDA, m) {
     m.impl("quantize_write", &quantize_write_op);
     m.impl("quantize_write_hadamard", &quantize_write_hadamard_op);
     m.impl("quantize_write_kv", &quantize_write_kv_op);
+    m.impl("quantize_write_kv_cache", &quantize_write_kv_cache);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -233,4 +304,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Combined K+V quantize-write (single call, pre-allocated outputs)",
           py::arg("key"), py::arg("value"), py::arg("signs"),
           py::arg("head_dim"), py::arg("padded_dim"));
+    m.def("quantize_write_kv_cache", &quantize_write_kv_cache,
+          "Graph-safe K+V quantize-write that scatters into kv_cache slots",
+          py::arg("kv_cache"), py::arg("key"), py::arg("value"), py::arg("signs"),
+          py::arg("slot_mapping"), py::arg("head_dim"), py::arg("padded_dim"));
 }
