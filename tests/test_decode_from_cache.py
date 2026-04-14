@@ -107,10 +107,16 @@ def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_
 
     if not torch.equal(out_old, out_new):
         diff = (out_old.float() - out_new.float()).abs()
-        print(f"\n=== DIAG hd={head_dim} kv={num_kv_heads} bdy={bdy} batch={batch} seq={seq_len} ===", flush=True)
-        print(f"max_abs_diff={diff.max().item():.6f} mean_abs_diff={diff.mean().item():.6f}", flush=True)
-        print(f"out_old[0,0,:8]={out_old[0,0,:8].tolist()}", flush=True)
-        print(f"out_new[0,0,:8]={out_new[0,0,:8].tolist()}", flush=True)
-        print(f"out_old[0,-1,:8]={out_old[0,-1,:8].tolist()}", flush=True)
-        print(f"out_new[0,-1,:8]={out_new[0,-1,:8].tolist()}", flush=True)
-        assert False, f"mismatch: max_abs_diff={diff.max().item()} shape={out_old.shape}"
+        lines = [
+            f"=== DIAG hd={head_dim} kv={num_kv_heads} bdy={bdy} batch={batch} seq={seq_len} ===",
+            f"max_abs_diff={diff.max().item():.6f} mean_abs_diff={diff.mean().item():.6f}",
+            f"nonzero_diff_count={(diff > 0).sum().item()}/{diff.numel()}",
+            f"out_old[0,0,:8]={out_old[0,0,:8].tolist()}",
+            f"out_new[0,0,:8]={out_new[0,0,:8].tolist()}",
+            f"out_old[-1,-1,:8]={out_old[-1,-1,:8].tolist()}",
+            f"out_new[-1,-1,:8]={out_new[-1,-1,:8].tolist()}",
+        ]
+        text = "\n".join(lines)
+        with open("/tmp/tq_hyp029_diag.txt", "w") as f:
+            f.write(text)
+        assert False, f"mismatch: max_abs_diff={diff.max().item()} shape={out_old.shape}\n{text}"
