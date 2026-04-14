@@ -75,6 +75,7 @@ struct paged_kv_turbo_t {
     IdType* indptr;      // CSR offsets (same as paged_kv_t)
     IdType* last_page_len;
     IdType* rope_pos_offset;
+    IdType* seq_lens;    // optional: per-batch kv length (overrides get_length calc)
 
     __host__ __device__ __forceinline__ paged_kv_turbo_t() {}
 
@@ -87,13 +88,14 @@ struct paged_kv_turbo_t {
         IdType* rope_pos_offset = nullptr,
         uint32_t entry_byte_stride = 0,
         bool layout_nhd = false,
-        uint32_t norm_entry_byte_stride = 0)
+        uint32_t norm_entry_byte_stride = 0,
+        IdType* seq_lens = nullptr)
         : num_heads(num_heads), page_size(page_size), head_dim(head_dim),
           padded_dim(padded_dim), batch_size(batch_size),
           k_quant(k_quant), v_quant(v_quant),
           k_norms(k_norms), v_norms(v_norms),
           indices(indices), indptr(indptr), last_page_len(last_page_len),
-          rope_pos_offset(rope_pos_offset)
+          rope_pos_offset(rope_pos_offset), seq_lens(seq_lens)
     {
         dim_chunks = padded_dim / kTileDims;
         uint32_t qbytes = dim_chunks * kQuantBytesPerChunk;
@@ -124,6 +126,9 @@ struct paged_kv_turbo_t {
     }
 
     __host__ __device__ __forceinline__ uint32_t get_length(uint32_t batch_idx) const {
+        // When seq_lens is provided (strided-indptr layout), trust it.
+        // Otherwise fall back to the CSR-indptr convention.
+        if (seq_lens != nullptr) return static_cast<uint32_t>(seq_lens[batch_idx]);
         if (indptr[batch_idx + 1] == indptr[batch_idx]) return 0;
         return (indptr[batch_idx + 1] - indptr[batch_idx] - 1) * page_size + last_page_len[batch_idx];
     }

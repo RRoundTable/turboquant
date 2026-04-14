@@ -82,6 +82,7 @@ def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_
         (batch,), seq_len - (num_pages - 1) * block_size,
         dtype=torch.int32, device=DEVICE,
     )
+    seq_lens_tensor = torch.full((batch,), seq_len, dtype=torch.int32, device=DEVICE)
 
     # Python-side sanity: verify that the tight k_n buffer and the cache's
     # interleaved norm bytes describe the same fp16 values.
@@ -105,7 +106,7 @@ def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_
     )
     out_new = torch.ops.turboquant.decode_v4_from_cache(
         q, cache,
-        indices, indptr, last_page_len,
+        indices, indptr, last_page_len, seq_lens_tensor,
         num_kv_heads, block_size,
         head_dim, padded_dim, sm_scale,
         signs, qbytes, nbytes,

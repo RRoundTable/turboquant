@@ -202,6 +202,7 @@ torch::Tensor turboquant_decode_v4_from_cache(
     torch::Tensor indices,
     torch::Tensor indptr,
     torch::Tensor last_page_len,
+    torch::Tensor seq_lens,       // [batch] int32 — actual KV length per sequence
     int num_kv_heads,
     int page_size,
     int head_dim,
@@ -241,7 +242,8 @@ torch::Tensor turboquant_decode_v4_from_cache(
         last_page_len.data_ptr<int32_t>(), nullptr,
         static_cast<uint32_t>(entry_byte_stride),
         /*layout_nhd=*/true,
-        /*norm_entry_byte_stride=*/static_cast<uint32_t>(entry_byte_stride));
+        /*norm_entry_byte_stride=*/static_cast<uint32_t>(entry_byte_stride),
+        /*seq_lens=*/seq_lens.numel() > 0 ? seq_lens.data_ptr<int32_t>() : nullptr);
 
     using P = TurboQuantBatchDecodeParams<__half, __half, int32_t>;
     P params;
@@ -419,11 +421,12 @@ static torch::Tensor turboquant_decode_v4_splitkv_op(
 static torch::Tensor turboquant_decode_v4_from_cache_op(
     torch::Tensor q, torch::Tensor kv_cache,
     torch::Tensor indices, torch::Tensor indptr, torch::Tensor last_page_len,
+    torch::Tensor seq_lens,
     int64_t num_kv_heads, int64_t page_size, int64_t head_dim, int64_t padded_dim,
     double sm_scale, torch::Tensor hadamard_signs,
     int64_t qbytes, int64_t nbytes) {
     return turboquant_decode_v4_from_cache(
-        q, kv_cache, indices, indptr, last_page_len,
+        q, kv_cache, indices, indptr, last_page_len, seq_lens,
         (int)num_kv_heads, (int)page_size, (int)head_dim, (int)padded_dim,
         (float)sm_scale, hadamard_signs, (int)qbytes, (int)nbytes);
 }
@@ -448,9 +451,9 @@ TORCH_LIBRARY(turboquant, m) {
         "int padded_dim, float sm_scale, int num_splits) -> Tensor");
     m.def(
         "decode_v4_from_cache(Tensor q, Tensor kv_cache, Tensor indices, "
-        "Tensor indptr, Tensor last_page_len, int num_kv_heads, int page_size, "
-        "int head_dim, int padded_dim, float sm_scale, Tensor hadamard_signs, "
-        "int qbytes, int nbytes) -> Tensor");
+        "Tensor indptr, Tensor last_page_len, Tensor seq_lens, "
+        "int num_kv_heads, int page_size, int head_dim, int padded_dim, "
+        "float sm_scale, Tensor hadamard_signs, int qbytes, int nbytes) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(turboquant, CUDA, m) {

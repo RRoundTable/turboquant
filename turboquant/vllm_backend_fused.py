@@ -264,6 +264,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             result = torch.ops.turboquant.decode_v4_from_cache(
                 q_fp16, kv_cache,
                 kv_indices, kv_indptr, kv_last_page_len,
+                seq_lens.to(torch.int32),
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
                 self._signs,
