@@ -119,6 +119,15 @@ Team quota is 8 GPUs. Run independent work concurrently — don't serialize.
 - **One notebook + parallel jobs** when you need a compile-debug loop *and* large sweeps at the same time. Keep the notebook on 1 GPU; fan out jobs for the sweep.
 - **Never** allocate multiple SSH notebooks for the same task — idle notebooks burn quota.
 
+**Decompose before dispatching.** Don't throw one monolithic job at the cluster — break the problem into independent sub-problems and run them in parallel.
+
+1. **Profile first** (see "GPU Profiling" below). A single nsys/ncu run tells you which phase is the bottleneck. Without it, parallel work just parallelizes guessing.
+2. **Split along an independent axis.** Good axes: seq length, batch size, kernel variant, layer index, tile size, head count. Bad axes: anything where sub-results depend on each other.
+3. **One sub-problem per job.** Each job owns one config, writes its own log/artifact under `/workspace/shared/`, and exits. No shared mutable state between jobs.
+4. **Join at the end.** A final step (local or a tiny job) reads all per-job artifacts and aggregates — this is the only serial step.
+
+Example: "why is decode slow?" → profile → decompose into `{quantize, hadamard, dequant, attention}` phase benchmarks → submit 4 parallel jobs → aggregate → attack the worst phase.
+
 ```bash
 # Fan out a sweep: submit N jobs in one shell, each with its own config
 for SEQ in 512 1024 2048 4096; do
