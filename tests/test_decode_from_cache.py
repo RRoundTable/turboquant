@@ -114,16 +114,34 @@ def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_
         signs, qbytes, nbytes,
     )
 
+    # --- Isolation probes: pass partial strided inputs through decode_v4 ---
+    # Probe A: strided quant directly from cache[0], tight norms (tests quant stride).
+    cache_k_flat = cache[0].reshape(-1)  # [num_blocks*block_size*num_heads*ebs] uint8
+    cache_v_flat = cache[1].reshape(-1)
+    out_strided_quant = torch.ops.turboquant.decode_v4(
+        q, cache_k_flat, cache_v_flat, k_n, v_n,
+        indices, indptr, last_page_len,
+        num_kv_heads, block_size,
+        head_dim, padded_dim, sm_scale,
+        signs, qbytes + nbytes, True,  # strided quant ebs, tight norm
+    )
+    # Probe B: tight quant, norms read from interleaved via explicit offset ptr.
+    # Since decode_v4 takes k_norms/v_norms as Tensor, we need a Tensor view
+    # starting at cache[0][:, :, :, qbytes:] treated as fp16. That's what
+    # decode_v4_from_cache does internally — probe skipped (same path).
+
     if not torch.equal(out_old, out_new):
         diff = (out_old.float() - out_new.float()).abs()
+        diff_sq = (out_old.float() - out_strided_quant.float()).abs()
         lines = [
             f"=== DIAG hd={head_dim} kv={num_kv_heads} bdy={bdy} batch={batch} seq={seq_len} ===",
-            f"max_abs_diff={diff.max().item():.6f} mean_abs_diff={diff.mean().item():.6f}",
-            f"nonzero_diff_count={(diff > 0).sum().item()}/{diff.numel()}",
+            f"max_abs_diff(old,new)={diff.max().item():.6f} mean={diff.mean().item():.6f} (expected: 0)",
+            f"max_abs_diff(old,strided_quant)={diff_sq.max().item():.6f} mean={diff_sq.mean().item():.6f} "
+            f"(nonzero={(diff_sq > 0).sum().item()}/{diff_sq.numel()}) — tests QUANT stride only",
+            f"nonzero(old,new)={(diff > 0).sum().item()}/{diff.numel()}",
             f"out_old[0,0,:8]={out_old[0,0,:8].tolist()}",
             f"out_new[0,0,:8]={out_new[0,0,:8].tolist()}",
-            f"out_old[-1,-1,:8]={out_old[-1,-1,:8].tolist()}",
-            f"out_new[-1,-1,:8]={out_new[-1,-1,:8].tolist()}",
+            f"out_strided_quant[0,0,:8]={out_strided_quant[0,0,:8].tolist()}",
         ]
         text = "\n".join(lines)
         with open("/tmp/tq_hyp029_diag.txt", "w") as f:
