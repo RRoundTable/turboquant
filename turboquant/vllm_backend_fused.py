@@ -121,13 +121,12 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         signs[signs == 0] = 1.0
         self._signs = signs.to(dev)
 
-    def _get_decode_module(self):
+    def _ensure_kernels_loaded(self):
+        """Load both kernel extensions once; their TORCH_LIBRARY blocks register
+        ops at .so-load time so `torch.ops.turboquant[_write].*` becomes callable."""
         if self._decode_module is None:
             from turboquant.decode_kernel_v4 import _get_module
             self._decode_module = _get_module()
-        return self._decode_module
-
-    def _get_write_module(self):
         if self._write_module is None:
             from turboquant.decode_kernel_v4 import _CSRC_DIR
             from torch.utils.cpp_extension import load
@@ -138,7 +137,6 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 extra_cuda_cflags=["-std=c++17", "-O3", "--expt-relaxed-constexpr",
                     "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__"],
                 verbose=False)
-        return self._write_module
 
     def _write_to_cache(self, key, value, kv_cache, slot_mapping):
         """Quantize K,V and write to uint8 cache."""
@@ -147,8 +145,10 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         bids = slot_mapping // block_size
         boffs = slot_mapping % block_size
 
-        wm = self._get_write_module()
-        kq, vq, kn, vn = wm.quantize_write_kv(
+        # Call through torch.ops for graph-replay safety (tensor args are
+        # refreshed from the dispatcher on replay, not baked in as raw ptrs).
+        self._ensure_kernels_loaded()
+        kq, vq, kn, vn = torch.ops.turboquant_write.quantize_write_kv(
             key[:num_tokens].float(), value[:num_tokens].float(),
             self._signs, self.head_size, self._pd)
 
@@ -163,24 +163,11 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         cache_u8[1, bids, boffs, :, :self._qbytes] = vq
         cache_u8[1, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = vn_u8
 
-    _dbg_count = 0
     @torch.no_grad()
     def do_kv_cache_update(self, layer, key, value, kv_cache, slot_mapping):
         self._ensure(key.device)
-        TurboQuantFusedImpl._dbg_count += 1
 
         if self._is_fp8:
-            if TurboQuantFusedImpl._dbg_count == 1:
-                import sys
-                cache_u8 = kv_cache.view(torch.uint8)
-                print(f"[DBG] cache shape={cache_u8.shape} dtype={cache_u8.dtype} "
-                      f"strides={cache_u8.stride()} contiguous={cache_u8.is_contiguous()}",
-                      flush=True, file=sys.stderr)
-                print(f"[DBG] cache[0] shape={cache_u8[0].shape} strides={cache_u8[0].stride()}",
-                      flush=True, file=sys.stderr)
-                print(f"[DBG] key={key.shape} slots={slot_mapping[:3].tolist()} "
-                      f"qbytes={self._qbytes} nbytes={self._nbytes} head_size={self.head_size}",
-                      flush=True, file=sys.stderr)
             self._write_to_cache(key, value, kv_cache, slot_mapping)
         else:
             # Legacy fp16 mode: store fp16 in vLLM cache for FA
@@ -252,7 +239,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         seq_lens = attn_metadata.seq_lens
 
         try:
-            module = self._get_decode_module()
+            self._ensure_kernels_loaded()
 
             if self._is_fp8:
                 # NHD physical. Tightly packed: bytes_per_head = qbytes + nbytes (no padding).
@@ -269,27 +256,29 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 return super().forward(layer, query, key, value, kv_cache,
                                        attn_metadata, output, output_scale, **kwargs)
 
-            # Page table: build once per decode step, cache for reuse across layers.
-            # attn_metadata is the same object for all 28 layers in one step.
-            _meta_id = id(attn_metadata)
-            if not hasattr(self, '_pt_cache_id') or self._pt_cache_id != _meta_id:
-                num_pages = (seq_lens + block_size - 1) // block_size
-                self._pt_indptr = torch.zeros(seq_lens.shape[0] + 1, dtype=torch.int32, device=q.device)
-                torch.cumsum(num_pages, dim=0, out=self._pt_indptr[1:])
-                self._pt_last = (seq_lens - (num_pages - 1) * block_size).to(torch.int32)
-                page_offsets = torch.arange(block_table.shape[1], device=q.device)
-                self._pt_indices = block_table[page_offsets.unsqueeze(0) < num_pages.unsqueeze(1)].to(torch.int32)
-                self._pt_cache_id = _meta_id
-            kv_indptr = self._pt_indptr
-            kv_last_page_len = self._pt_last
-            kv_indices = self._pt_indices
+            # Page table: strided layout so all ops are static-shape and
+            # capturable under CUDA graphs. kv_indices = block_table flattened;
+            # kv_indptr steps by max_pages_per_seq. The kernel reads only up to
+            # kv_len[b] tokens per sequence, so trailing invalid entries are
+            # never touched. Boolean-mask indexing (the prior compact layout)
+            # allocates a dynamic-size tensor which errors at capture.
+            num_pages = (seq_lens + block_size - 1) // block_size
+            max_pages = block_table.shape[1]
+            kv_indptr = (torch.arange(seq_lens.shape[0] + 1,
+                                      dtype=torch.int32, device=q.device)
+                         * max_pages)
+            kv_last_page_len = (seq_lens - (num_pages - 1) * block_size).to(torch.int32)
+            kv_indices = block_table.reshape(-1).to(torch.int32)
 
             # v4 kernel with fused Hadamard
             q_fp16 = q.to(torch.float16)
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            result = module.decode_v4(
+            # Call via torch.ops for graph-replay-safe dispatch (vLLM swaps
+            # kv_cache storage after profile_cudagraph_memory; direct pybind
+            # calls bake in the placeholder pointer and crash on replay).
+            result = torch.ops.turboquant.decode_v4(
                 q_fp16, k_q, v_q, k_n, v_n,
                 kv_indices, kv_indptr, kv_last_page_len,
                 self.num_kv_heads, block_size,

@@ -306,7 +306,64 @@ torch::Tensor turboquant_decode_v4_splitkv(
     return o;
 }
 
+// ─── Schema-compatible wrappers for torch.library ────────────────────
+// torch.library only accepts int64_t (not int) and double (not float).
+// Thin wrappers convert and forward to the typed implementations.
+static torch::Tensor turboquant_decode_v4_op(
+    torch::Tensor q, torch::Tensor k_quant, torch::Tensor v_quant,
+    torch::Tensor k_norms, torch::Tensor v_norms,
+    torch::Tensor indices, torch::Tensor indptr, torch::Tensor last_page_len,
+    int64_t num_kv_heads, int64_t page_size, int64_t head_dim, int64_t padded_dim,
+    double sm_scale, torch::Tensor hadamard_signs,
+    int64_t entry_byte_stride, bool layout_nhd) {
+    return turboquant_decode_v4(
+        q, k_quant, v_quant, k_norms, v_norms,
+        indices, indptr, last_page_len,
+        (int)num_kv_heads, (int)page_size, (int)head_dim, (int)padded_dim,
+        (float)sm_scale, hadamard_signs,
+        (int)entry_byte_stride, layout_nhd);
+}
+static torch::Tensor turboquant_decode_v4_splitkv_op(
+    torch::Tensor q, torch::Tensor k_quant, torch::Tensor v_quant,
+    torch::Tensor k_norms, torch::Tensor v_norms,
+    torch::Tensor indices, torch::Tensor indptr, torch::Tensor last_page_len,
+    int64_t num_kv_heads, int64_t page_size, int64_t head_dim, int64_t padded_dim,
+    double sm_scale, int64_t num_splits) {
+    return turboquant_decode_v4_splitkv(
+        q, k_quant, v_quant, k_norms, v_norms,
+        indices, indptr, last_page_len,
+        (int)num_kv_heads, (int)page_size, (int)head_dim, (int)padded_dim,
+        (float)sm_scale, (int)num_splits);
+}
+
+// ─── torch.library registration (graph-replay-safe dispatch) ──────────
+// Registering through TORCH_LIBRARY makes these ops visible to PyTorch's
+// dispatcher. Under CUDA graph capture, the dispatcher records the call
+// as a first-class op referencing tensor IDENTITIES (not raw pointers),
+// so when vLLM swaps the KV-cache storage after profiling, replay picks
+// up the new storage automatically.
+TORCH_LIBRARY(turboquant, m) {
+    m.def(
+        "decode_v4(Tensor q, Tensor k_quant, Tensor v_quant, Tensor k_norms, "
+        "Tensor v_norms, Tensor indices, Tensor indptr, Tensor last_page_len, "
+        "int num_kv_heads, int page_size, int head_dim, int padded_dim, "
+        "float sm_scale, Tensor hadamard_signs, int entry_byte_stride=0, "
+        "bool layout_nhd=False) -> Tensor");
+    m.def(
+        "decode_v4_splitkv(Tensor q, Tensor k_quant, Tensor v_quant, "
+        "Tensor k_norms, Tensor v_norms, Tensor indices, Tensor indptr, "
+        "Tensor last_page_len, int num_kv_heads, int page_size, int head_dim, "
+        "int padded_dim, float sm_scale, int num_splits) -> Tensor");
+}
+
+TORCH_LIBRARY_IMPL(turboquant, CUDA, m) {
+    m.impl("decode_v4", &turboquant_decode_v4_op);
+    m.impl("decode_v4_splitkv", &turboquant_decode_v4_splitkv_op);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    // Pybind kept for backward-compat with direct `module.decode_v4(...)`
+    // calls; graph-captured callers should use `torch.ops.turboquant.*`.
     m.def("decode_v4", &turboquant_decode_v4,
           "TurboQuant v4 fused decode with inline dequant (generalized dispatch)");
     m.def("decode_v4_splitkv", &turboquant_decode_v4_splitkv,

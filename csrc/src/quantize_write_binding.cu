@@ -183,6 +183,45 @@ quantize_write_kv(
     return std::make_tuple(kq, vq, kn, vn);
 }
 
+// ─── Schema-compatible wrappers for torch.library ────────────────────
+// torch.library only accepts int64_t / double. Thin wrappers forward to
+// the int/float-typed implementations.
+static std::tuple<torch::Tensor, torch::Tensor>
+quantize_write_op(torch::Tensor kv_in, int64_t head_dim, int64_t padded_dim) {
+    return quantize_write(kv_in, (int)head_dim, (int)padded_dim);
+}
+static std::tuple<torch::Tensor, torch::Tensor>
+quantize_write_hadamard_op(torch::Tensor kv_in, torch::Tensor signs,
+                           int64_t head_dim, int64_t padded_dim) {
+    return quantize_write_hadamard(kv_in, signs, (int)head_dim, (int)padded_dim);
+}
+static std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+quantize_write_kv_op(torch::Tensor key, torch::Tensor value, torch::Tensor signs,
+                     int64_t head_dim, int64_t padded_dim) {
+    return quantize_write_kv(key, value, signs, (int)head_dim, (int)padded_dim);
+}
+
+// ─── torch.library registration (graph-replay-safe dispatch) ──────────
+// Register in a SEPARATE namespace (`turboquant_write`) from decode so the
+// two extensions can be loaded independently without schema conflicts.
+TORCH_LIBRARY(turboquant_write, m) {
+    m.def(
+        "quantize_write(Tensor kv_in, int head_dim, int padded_dim) "
+        "-> (Tensor, Tensor)");
+    m.def(
+        "quantize_write_hadamard(Tensor kv_in, Tensor signs, int head_dim, "
+        "int padded_dim) -> (Tensor, Tensor)");
+    m.def(
+        "quantize_write_kv(Tensor key, Tensor value, Tensor signs, "
+        "int head_dim, int padded_dim) -> (Tensor, Tensor, Tensor, Tensor)");
+}
+
+TORCH_LIBRARY_IMPL(turboquant_write, CUDA, m) {
+    m.impl("quantize_write", &quantize_write_op);
+    m.impl("quantize_write_hadamard", &quantize_write_hadamard_op);
+    m.impl("quantize_write_kv", &quantize_write_kv_op);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("quantize_write", &quantize_write,
           "Fused quantize-write: L2 normalize + 4-bit codebook quantize + nibble pack",
