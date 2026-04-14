@@ -150,6 +150,35 @@ forge job submit --name tq-sweep-b --entrypoint-file /tmp/b.sh --gpu 1 --image t
 
 **Claude tool usage:** when dispatching multiple independent Forge commands, emit them as parallel tool calls in a single message — don't wait for one `forge job submit` before issuing the next.
 
+**Monitoring fan-out jobs.** After submitting N jobs, watch them as a group — don't tail one log at a time.
+
+```bash
+# Snapshot: all jobs, states, GPUs used
+forge job list
+forge job list --name-prefix tq-bench-      # filter this sweep
+
+# Per-job detail — state, start time, entrypoint, exit code
+forge job get <id>
+
+# Tail one job's log (blocks; use parallel tool calls for N jobs)
+forge job logs <id> --follow
+forge job logs <id> --tail 200              # last 200 lines, non-blocking
+
+# Aggregate: one status line per job of the sweep
+for id in $(forge job list --name-prefix tq-bench- -o json | jq -r '.[].id'); do
+  printf "%s  %-20s  %s\n" "$id" "$(forge job get $id -o json | jq -r .status)" \
+    "$(forge job get $id -o json | jq -r .name)"
+done
+```
+
+**Monitoring checklist after submit:**
+1. `forge job list` — confirm all N jobs are `Pending`/`Running`, not `Failed` at launch (image pull, quota, mount errors surface here).
+2. `forge job logs <id> --tail 50` on one job after ~30s — verify the entrypoint actually started (catches silent `entry.sh` bugs before all N jobs burn time).
+3. Poll `forge job list` periodically until all complete; then `forge job get <id>` per job for exit codes.
+4. For long runs (>15 min), use the `loop` skill to poll on an interval instead of blocking on `--follow`.
+
+**Fail-fast rule:** if the first finished job crashed with a bug that applies to all configs (wrong import, missing env var, OOM at batch=1), cancel the remaining siblings immediately — don't let the whole sweep burn quota reproducing the same failure.
+
 **Quota discipline:**
 - `forge quota my` before fanning out — confirm headroom for N concurrent GPUs
 - Size each job to 1 GPU unless the workload needs more (most benches do not)
