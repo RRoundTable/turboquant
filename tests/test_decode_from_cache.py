@@ -39,8 +39,6 @@ def _next_pow2(n: int) -> int:
 def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_len):
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
-    import os
-    os.environ["TQ_DEBUG_STRIDES"] = "1"
 
     torch.manual_seed(0)
     num_qo_heads = num_kv_heads * bdy
