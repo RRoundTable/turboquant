@@ -149,11 +149,89 @@ Before filing as rejected, run diagnostic from HYP-028's "Things to try next":
 kernel. Also test `enable_prefix_caching=False` to rule out the cached-path
 interaction.
 
-## Status: pending
+## Status: **confirmed**
 
-## Results
+Graph replay works, TPOT comes in *below* the predicted band.
 
-_To be filled after Forge run._
+## Results (Forge A100-SXM4-40GB, Qwen3-1.7B, gpu_mem_util=0.3, max_model_len=512, 5 prompts × 20 tokens, best of 5 — job `86b8e89c`)
+
+| Config        | Best TPOT | Median  | KV tokens   | Outcome                                     |
+|---------------|-----------|---------|-------------|---------------------------------------------|
+| FP16 eager    | 3.36 ms   | 3.42 ms |  74,000     | reference                                   |
+| FP16 graphs   | 1.43 ms   | 1.44 ms |  73,920     | reference — 2.35× from graphs               |
+| TQ fp8 eager  | 4.33 ms   | 4.35 ms | 236,800     | faster than HYP-028 (8.89 ms): 4 `.contiguous()` copies removed from hot path |
+| TQ fp8 graphs | **1.74 ms** | **1.77 ms** | **236,384** | **no crash**; 2.49× from graphs; 1.22× slower than FP16 graphs |
+
+### Correctness
+
+Byte-equivalence test `tests/test_decode_from_cache.py` — 6/6 PASSED across
+`{hd=64, hd=128} × {num_kv=2,4,8} × {batch=2,3, seq=48,113}`.
+
+Eager output text is now coherent (was gibberish under HYP-028's shipped
+path — the strided-indptr bug was present but latent because decoded
+tokens were never empirically verified). Example:
+- "The capital of France is → Paris: 1. Paris, 2. London, 3. Rome, 4."
+- "Water boils at → 100°C at sea level. What is the boiling point of water at 10"
+
+### Memory
+
+236,384 tokens vs HYP-028's 278,592 = **15% regression (3.20× vs 3.76×)**.
+Trade-off: 16-byte alignment padding required for `cp_async.ca` 128-bit
+loads. For Qwen3-1.7B (hd=128): per-head slot went 68 → 80 bytes.
+Recoverable later by either using smaller `cp_async` cpSize or a
+manual-load fallback in the kernel — out of scope here.
+
+## What actually broke
+
+Three separate bugs, each exposed by the next:
+
+1. **Python-side `cache_u8 = kv_cache.view(torch.uint8)`** baked in the
+   placeholder `data_ptr` at graph capture (HYP-028's diagnosis). Fixed
+   by passing `kv_cache` through the dispatcher via `decode_v4_from_cache`.
+
+2. **cp_async 16-byte alignment**: with the tight-packed layout, per-head
+   stride was 34 bytes (hd=64) or 68 (hd=128) — not 16-aligned. The
+   `cp.async.ca.shared.global` 128-bit loads produced UB, silently
+   corrupting the staged quant bytes. Fixed by padding `bytes_per_head`
+   to `align(qbytes+nbytes, 16)` in `get_kv_cache_shape` and sourcing
+   `entry_byte_stride` from `kv_cache.size(-1)` in the op.
+
+3. **`get_length` under strided indptr**: the backend built a strided
+   `indptr` (stride = `max_pages`) for static-shape graph capture, but
+   computed `last_page_len` against the *actual* `num_pages`. The kernel
+   then returned `(max_pages-1)*block_size + last_page_len` — e.g.,
+   seq=48 with max_pages=32 → kernel read 512 tokens of garbage. Under
+   eager this silently corrupted attention (gibberish text); under graph
+   replay padded batches walked into sentinel block_table entries →
+   `cudaErrorIllegalAddress`. Fixed by adding `seq_lens` directly to
+   `paged_kv_turbo_t` — `get_length` now returns it verbatim when
+   provided.
+
+Bug #2 was identified via a three-way bisection probe (tight/tight vs
+strided-quant/tight vs both-strided). Bug #3 only surfaced after #1 and
+#2 were fixed and graph replay reached actual kernel execution with
+padded batches.
+
+## Also shipped
+
+- Graph-safe write op `quantize_write_kv_cache` (mirrors the read-path
+  fix): takes `kv_cache` as mutable Tensor, writes quant+norms directly
+  to slot-mapped positions. Replaces the Python advanced-indexing
+  scatter that baked in the placeholder pointer at capture time.
+  (HYP-028 proposed this but was rejected alone — it's necessary but
+  not sufficient without the read-path fix.)
+
+## References
+
+- HYP-028 (custom-op-cache-write) — prior diagnosis; identified #1
+- HYP-027 (cuda-graph-kv-cache-swap) — strided-indptr design (#3 latent)
+- HYP-023 (cuda-graph-capture) — confirmed kernel is graph-capturable
+- PTX cp.async.ca alignment: 128-bit copies require 16-byte aligned src
+- `turboquant/vllm_backend_fused.py:244-288` — decode call site
+- `turboquant/vllm_backend_fused.py:145-156` — write call site
+- `csrc/src/decode_v4_binding.cu` — `decode_v4_from_cache`
+- `csrc/src/quantize_write_binding.cu` — `quantize_write_kv_cache`
+- `csrc/include/turboquant/page_turbo.cuh` — `seq_lens`-aware `get_length`
 
 ## References
 
