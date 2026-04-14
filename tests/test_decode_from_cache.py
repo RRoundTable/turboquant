@@ -53,10 +53,20 @@ def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_
 
     # Interleaved cache (what vLLM allocates for fp8): per-entry layout is
     # [qbytes of quantized data | nbytes of fp16 norms], stride = qbytes+nbytes.
-    cache = torch.randint(
-        0, 256,
+    # Populate: random bytes for quant (valid codebook indices 0-15 packed),
+    # small positive fp16 values for norms (random uint8 → fp16 often yields NaN/Inf).
+    cache = torch.zeros(
         (2, num_blocks, block_size, num_kv_heads, qbytes + nbytes),
         dtype=torch.uint8, device=DEVICE,
+    )
+    cache[..., :qbytes] = torch.randint(
+        0, 256, cache[..., :qbytes].shape, dtype=torch.uint8, device=DEVICE,
+    )
+    # Fill norm slots with valid fp16 values in [0.1, 1.0).
+    norms_fp16 = (torch.rand(2, num_blocks, block_size, num_kv_heads, dim_chunks,
+                             dtype=torch.float16, device=DEVICE) * 0.9 + 0.1)
+    cache[..., qbytes:qbytes + nbytes] = norms_fp16.view(torch.uint8).view(
+        2, num_blocks, block_size, num_kv_heads, nbytes,
     )
 
     # Old path: slice + .contiguous() to get tight-packed flat buffers.
