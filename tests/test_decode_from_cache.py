@@ -39,6 +39,8 @@ def _next_pow2(n: int) -> int:
 def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_len):
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
+    import os
+    os.environ["TQ_DEBUG_STRIDES"] = "1"
 
     torch.manual_seed(0)
     num_qo_heads = num_kv_heads * bdy
@@ -103,7 +105,12 @@ def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_
         signs, qbytes, nbytes,
     )
 
-    assert torch.equal(out_old, out_new), (
-        f"mismatch: max abs diff = {(out_old - out_new).abs().max().item()}, "
-        f"shape={out_old.shape}"
-    )
+    if not torch.equal(out_old, out_new):
+        diff = (out_old.float() - out_new.float()).abs()
+        print(f"\n=== DIAG hd={head_dim} kv={num_kv_heads} bdy={bdy} batch={batch} seq={seq_len} ===", flush=True)
+        print(f"max_abs_diff={diff.max().item():.6f} mean_abs_diff={diff.mean().item():.6f}", flush=True)
+        print(f"out_old[0,0,:8]={out_old[0,0,:8].tolist()}", flush=True)
+        print(f"out_new[0,0,:8]={out_new[0,0,:8].tolist()}", flush=True)
+        print(f"out_old[0,-1,:8]={out_old[0,-1,:8].tolist()}", flush=True)
+        print(f"out_new[0,-1,:8]={out_new[0,-1,:8].tolist()}", flush=True)
+        assert False, f"mismatch: max_abs_diff={diff.max().item()} shape={out_old.shape}"
