@@ -5,14 +5,12 @@ Near-optimal KV cache quantization for LLM inference (arXiv:2504.19874).
 ## Environment
 
 - **Forge cluster**: 4 nodes, 32x A100-SXM4-40GB (8 per node), team quota 8 GPUs
-- **DGX Spark** (legacy): `ssh -q mlsys-dgx-spark` (NVIDIA GB10, aarch64)
 - **Python**: 3.12, managed with `uv`
 - **GPU only** — no CPU device support
 
 ## Setup
 
 ```bash
-# On DGX Spark node
 cd ~/workdir/turboquant
 uv venv
 uv pip install -e ".[dev]"
@@ -76,21 +74,77 @@ forge job get <id>
 forge job cancel <id>
 ```
 
+### Persistent disks (staging code/artifacts)
+
+For code, tarballs, or artifacts that the job must read, use a persistent disk
+or the shared NFS — not the entrypoint script itself.
+
+```bash
+# List / create / delete disks
+forge disk list
+forge disk create --name tq-staging --size 10          # size in GiB
+forge disk delete tq-staging
+
+# Mount into a job or notebook
+forge job submit --name foo --gpu 1 --disk-mount tq-staging:/mnt/tq ...
+```
+
+**Staging pattern** (use for any input > ~64 KB):
+
+1. Create a small SSH notebook with `--gpu 0 --shared-nfs`.
+2. `scp -o ProxyJump=bastion@forge.krafton-ml.net:30022 <local file> root@<notebook-host>:/workspace/shared/<file>` to stage the artifact.
+3. `forge notebook delete <id>` immediately.
+4. Submit the bench / compute job with `--shared-nfs`; its entrypoint reads `/workspace/shared/<file>`.
+
+Do NOT embed large (>~128 KB) base64 blobs in `--entrypoint-file` — the
+entire entrypoint is passed as a single argv and will hit
+`exec: argument list too long` (ARG_MAX).
+
 ### Key rules
 
+- Prefer `forge job submit` over `forge notebook create` for any non-interactive work. Notebooks burn quota while idle; jobs record the entrypoint and stop on their own. Only use notebooks when you genuinely need an SSH session or a compile-debug loop.
 - Always `forge quota my` before creating notebooks/jobs
 - Always `forge job dry-run` before `forge job submit`
 - Always `forge notebook delete` after interactive work is done
 - Shared NFS is at `/workspace/shared/` inside containers
 - Max 8 GPUs per node, max 24h for notebooks, max 168h for jobs
-- Use `--shared-nfs` for data and code that needs to persist
+- Use `--shared-nfs` for data and code that needs to persist, or `--disk-mount <name>:<path>` for a job-private persistent disk
 
-### Legacy: DGX Spark (SSH)
+### Parallel execution (jobs + notebooks)
+
+Team quota is 8 GPUs. Run independent work concurrently — don't serialize.
+
+**Rule of thumb:**
+- **Parallel jobs** for independent sweeps (seq lengths, batch sizes, kernel variants, ablations). Each job is self-contained and records its own logs.
+- **One notebook + parallel jobs** when you need a compile-debug loop *and* large sweeps at the same time. Keep the notebook on 1 GPU; fan out jobs for the sweep.
+- **Never** allocate multiple SSH notebooks for the same task — idle notebooks burn quota.
 
 ```bash
-# From local machine (fallback if Forge is unavailable)
-ssh -q mlsys-dgx-spark "cd ~/workdir/turboquant && uv run pytest tests/ -v"
+# Fan out a sweep: submit N jobs in one shell, each with its own config
+for SEQ in 512 1024 2048 4096; do
+  cat > /tmp/entry-$SEQ.sh <<SCRIPT
+cd /workspace/turboquant && uv run python bench.py --seq $SEQ
+SCRIPT
+  forge job submit --name tq-bench-$SEQ --entrypoint-file /tmp/entry-$SEQ.sh \
+    --gpu 1 --image tq-kernel --shared-nfs
+done
+
+# Watch all at once
+forge job list
+forge job logs <id> --follow   # per job
+
+# Compile-debug in a notebook, benchmark in jobs (in parallel)
+forge notebook create --name tq-debug --gpu 1 --type ssh --shared-nfs --duration 4
+forge job submit --name tq-sweep-a --entrypoint-file /tmp/a.sh --gpu 1 --image tq-kernel --shared-nfs
+forge job submit --name tq-sweep-b --entrypoint-file /tmp/b.sh --gpu 1 --image tq-kernel --shared-nfs
 ```
+
+**Claude tool usage:** when dispatching multiple independent Forge commands, emit them as parallel tool calls in a single message — don't wait for one `forge job submit` before issuing the next.
+
+**Quota discipline:**
+- `forge quota my` before fanning out — confirm headroom for N concurrent GPUs
+- Size each job to 1 GPU unless the workload needs more (most benches do not)
+- Cancel stragglers promptly (`forge job cancel <id>`) once you have enough data points
 
 ## Project Goal
 
@@ -160,7 +214,7 @@ cuobjdump --dump-sass /path/to/compiled.so
 nvidia-smi dmon -s u -d 1
 ```
 
-For full ncu profiling, use DGX Spark or request Forge admin to set
+For full ncu profiling, request Forge admin to set
 `RmProfilingAdminOnly=0` on cluster nodes.
 
 ### Compile flags for profiling
