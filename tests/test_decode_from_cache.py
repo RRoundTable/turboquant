@@ -54,17 +54,16 @@ def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_
     num_blocks = batch * max_pages_per_seq
 
     # Interleaved cache (what vLLM allocates for fp8): per-entry layout is
-    # [qbytes of quantized data | nbytes of fp16 norms], stride = qbytes+nbytes.
-    # Populate: random bytes for quant (valid codebook indices 0-15 packed),
-    # small positive fp16 values for norms (random uint8 → fp16 often yields NaN/Inf).
+    # [qbytes of quantized data | nbytes of fp16 norms | padding], with total
+    # bytes_per_head aligned to 16 for cp_async.ca 128-bit loads.
+    bytes_per_head = (qbytes + nbytes + 15) & ~15
     cache = torch.zeros(
-        (2, num_blocks, block_size, num_kv_heads, qbytes + nbytes),
+        (2, num_blocks, block_size, num_kv_heads, bytes_per_head),
         dtype=torch.uint8, device=DEVICE,
     )
     cache[..., :qbytes] = torch.randint(
         0, 256, cache[..., :qbytes].shape, dtype=torch.uint8, device=DEVICE,
     )
-    # Fill norm slots with valid fp16 values in [0.1, 1.0).
     norms_fp16 = (torch.rand(2, num_blocks, block_size, num_kv_heads, dim_chunks,
                              dtype=torch.float16, device=DEVICE) * 0.9 + 0.1)
     cache[..., qbytes:qbytes + nbytes] = norms_fp16.view(torch.uint8).view(
@@ -123,7 +122,7 @@ def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_
         indices, indptr, last_page_len,
         num_kv_heads, block_size,
         head_dim, padded_dim, sm_scale,
-        signs, qbytes + nbytes, True,  # strided quant ebs, tight norm
+        signs, bytes_per_head, True,  # strided quant ebs=bytes_per_head, tight norm
     )
     # Probe B: tight quant, norms read from interleaved via explicit offset ptr.
     # Since decode_v4 takes k_norms/v_norms as Tensor, we need a Tensor view

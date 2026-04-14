@@ -64,7 +64,10 @@ class TurboQuantBackend(FlashAttentionBackend):
         if cache_dtype_str in ("fp8", "fp8_e4m3"):
             pd = _next_pow2(head_size)
             dc = pd // TILE_DIMS
-            bytes_per_head = dc * QUANT_BYTES_PER_CHUNK + dc * 2
+            # cp_async.ca.shared.global with 128-bit loads requires 16-byte
+            # aligned source — pad so entry byte stride is a multiple of 16.
+            raw = dc * QUANT_BYTES_PER_CHUNK + dc * 2
+            bytes_per_head = (raw + 15) & ~15
             return (2, num_blocks, block_size, num_kv_heads, bytes_per_head)
         return FlashAttentionBackend.get_kv_cache_shape(
             num_blocks, block_size, num_kv_heads, head_size, cache_dtype_str)
@@ -77,7 +80,8 @@ class TurboQuantBackend(FlashAttentionBackend):
         if cache_dtype_str in ("fp8", "fp8_e4m3"):
             pd = _next_pow2(head_size)
             dc = pd // TILE_DIMS
-            bytes_per_head = dc * QUANT_BYTES_PER_CHUNK + dc * 2
+            raw = dc * QUANT_BYTES_PER_CHUNK + dc * 2
+            bytes_per_head = (raw + 15) & ~15
             return 2 * block_size * num_kv_heads * bytes_per_head
         return None
 

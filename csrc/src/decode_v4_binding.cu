@@ -230,14 +230,18 @@ torch::Tensor turboquant_decode_v4_from_cache(
                 kv_cache.element_size() == 1,
                 "kv_cache must be a byte-addressable tensor");
     TORCH_CHECK(kv_cache.size(0) == 2, "kv_cache must have leading dim 2 (K,V)");
-    TORCH_CHECK((qbytes + nbytes) % sizeof(__half) == 0,
-                "qbytes+nbytes must be a multiple of sizeof(__half) for norm stride");
+    // entry_byte_stride = kv_cache.size(-1), the per-head slot size.
+    // Must be 16-byte aligned for cp_async.ca.shared.global 128-bit loads.
+    int entry_byte_stride = static_cast<int>(kv_cache.size(-1));
+    TORCH_CHECK(entry_byte_stride % 16 == 0,
+                "kv_cache.size(-1) must be a multiple of 16 for cp_async alignment, got ",
+                entry_byte_stride);
+    TORCH_CHECK(qbytes + nbytes <= entry_byte_stride,
+                "qbytes+nbytes exceeds per-head slot size");
 
     int batch_size = q.size(0);
     int num_qo_heads = q.size(1);
     auto o = torch::zeros_like(q);
-
-    int entry_byte_stride = qbytes + nbytes;
     auto k_half = kv_cache.select(0, 0);  // K half — dispatcher-refreshed storage
     auto v_half = kv_cache.select(0, 1);
     uint8_t* k_base = (uint8_t*)k_half.data_ptr();
