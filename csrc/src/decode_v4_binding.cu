@@ -181,15 +181,17 @@ torch::Tensor turboquant_decode_v4(
         last_page_len.data_ptr<int32_t>(), nullptr,
         static_cast<uint32_t>(entry_byte_stride), layout_nhd);
 
-    if (const char* dbg = std::getenv("TQ_DEBUG_STRIDES")) {
-        (void)dbg;
-        std::printf("[decode_v4]  ebs=%d dc=%u | q_stride (h,n,page)=(%u,%u,%u) | n_stride (h,n,page)=(%u,%u,%u) k_base=%p v_base=%p k_norms=%p v_norms=%p\n",
-            entry_byte_stride, tq_kv.dim_chunks,
-            tq_kv.quant_stride_h, tq_kv.quant_stride_n, tq_kv.quant_stride_page,
-            tq_kv.norm_stride_h, tq_kv.norm_stride_n, tq_kv.norm_stride_page,
-            (void*)k_quant.data_ptr<uint8_t>(), (void*)v_quant.data_ptr<uint8_t>(),
-            (void*)k_norms.data_ptr<at::Half>(), (void*)v_norms.data_ptr<at::Half>());
-        std::fflush(stdout);
+    if (std::getenv("TQ_DEBUG_STRIDES")) {
+        FILE* f = std::fopen("/tmp/tq_strides.txt", "a");
+        if (f) {
+            std::fprintf(f, "[decode_v4]  ebs=%d dc=%u | q_stride (h,n,page)=(%u,%u,%u) | n_stride (h,n,page)=(%u,%u,%u) k_base=%p v_base=%p k_norms=%p v_norms=%p\n",
+                entry_byte_stride, tq_kv.dim_chunks,
+                tq_kv.quant_stride_h, tq_kv.quant_stride_n, tq_kv.quant_stride_page,
+                tq_kv.norm_stride_h, tq_kv.norm_stride_n, tq_kv.norm_stride_page,
+                (void*)k_quant.data_ptr<uint8_t>(), (void*)v_quant.data_ptr<uint8_t>(),
+                (void*)k_norms.data_ptr<at::Half>(), (void*)v_norms.data_ptr<at::Half>());
+            std::fclose(f);
+        }
     }
 
     using P = TurboQuantBatchDecodeParams<__half, __half, int32_t>;
@@ -252,14 +254,16 @@ torch::Tensor turboquant_decode_v4_from_cache(
         /*layout_nhd=*/true,
         /*norm_entry_byte_stride=*/static_cast<uint32_t>(entry_byte_stride));
 
-    if (const char* dbg = std::getenv("TQ_DEBUG_STRIDES")) {
-        (void)dbg;
-        std::printf("[from_cache] ebs=%d dc=%u qbytes=%d nbytes=%d | q_stride (h,n,page)=(%u,%u,%u) | n_stride (h,n,page)=(%u,%u,%u) k_base=%p v_base=%p k_norms=%p v_norms=%p\n",
-            entry_byte_stride, tq_kv.dim_chunks, qbytes, nbytes,
-            tq_kv.quant_stride_h, tq_kv.quant_stride_n, tq_kv.quant_stride_page,
-            tq_kv.norm_stride_h, tq_kv.norm_stride_n, tq_kv.norm_stride_page,
-            (void*)k_base, (void*)v_base, (void*)k_norms, (void*)v_norms);
-        std::fflush(stdout);
+    if (std::getenv("TQ_DEBUG_STRIDES")) {
+        FILE* f = std::fopen("/tmp/tq_strides.txt", "a");
+        if (f) {
+            std::fprintf(f, "[from_cache] ebs=%d dc=%u qbytes=%d nbytes=%d | q_stride (h,n,page)=(%u,%u,%u) | n_stride (h,n,page)=(%u,%u,%u) k_base=%p v_base=%p k_norms=%p v_norms=%p\n",
+                entry_byte_stride, tq_kv.dim_chunks, qbytes, nbytes,
+                tq_kv.quant_stride_h, tq_kv.quant_stride_n, tq_kv.quant_stride_page,
+                tq_kv.norm_stride_h, tq_kv.norm_stride_n, tq_kv.norm_stride_page,
+                (void*)k_base, (void*)v_base, (void*)k_norms, (void*)v_norms);
+            std::fclose(f);
+        }
     }
 
     using P = TurboQuantBatchDecodeParams<__half, __half, int32_t>;

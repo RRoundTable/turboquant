@@ -86,6 +86,15 @@ def test_from_cache_matches_sliced_path(head_dim, num_kv_heads, bdy, batch, seq_
         dtype=torch.int32, device=DEVICE,
     )
 
+    # Python-side sanity: verify that the tight k_n buffer and the cache's
+    # interleaved norm bytes describe the same fp16 values.
+    k_n_reshaped = k_n.view(num_blocks, block_size, num_kv_heads, dim_chunks)
+    cache_norms_direct = cache[0, ..., qbytes:qbytes + nbytes].contiguous().view(torch.float16)
+    assert torch.equal(k_n_reshaped, cache_norms_direct), "norm view mismatch"
+    k_q_reshaped = k_q.view(num_blocks, block_size, num_kv_heads, qbytes)
+    cache_quant_direct = cache[0, ..., :qbytes]
+    assert torch.equal(k_q_reshaped, cache_quant_direct), "quant view mismatch"
+
     q = torch.randn(batch, num_qo_heads, padded_dim, dtype=torch.float16, device=DEVICE) * 0.1
     signs = torch.sign(torch.randn(padded_dim, device=DEVICE)).to(torch.float32)
     sm_scale = 1.0 / math.sqrt(head_dim)
