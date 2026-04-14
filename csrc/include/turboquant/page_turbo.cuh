@@ -86,7 +86,8 @@ struct paged_kv_turbo_t {
         IdType* indices, IdType* indptr, IdType* last_page_len,
         IdType* rope_pos_offset = nullptr,
         uint32_t entry_byte_stride = 0,
-        bool layout_nhd = false)
+        bool layout_nhd = false,
+        uint32_t norm_entry_byte_stride = 0)
         : num_heads(num_heads), page_size(page_size), head_dim(head_dim),
           padded_dim(padded_dim), batch_size(batch_size),
           k_quant(k_quant), v_quant(v_quant),
@@ -97,9 +98,12 @@ struct paged_kv_turbo_t {
         dim_chunks = padded_dim / kTileDims;
         uint32_t qbytes = dim_chunks * kQuantBytesPerChunk;
         uint32_t ebs = (entry_byte_stride > 0) ? entry_byte_stride : qbytes;
-        // Norms always use tight packing: dim_chunks fp16 per entry.
-        // They are passed as a separate pointer, NOT interleaved with quant.
-        uint32_t norm_ebs = dim_chunks;
+        // Norms default to tight packing (dim_chunks fp16 per entry, own buffer).
+        // If norm_entry_byte_stride > 0, norms are interleaved inside the quant
+        // buffer — stride in halves = norm_entry_byte_stride / sizeof(__half).
+        uint32_t norm_ebs = (norm_entry_byte_stride > 0)
+            ? (norm_entry_byte_stride / sizeof(__half))
+            : dim_chunks;
 
         if (layout_nhd) {
             quant_stride_h = ebs;

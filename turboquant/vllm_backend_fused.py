@@ -241,27 +241,17 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         try:
             self._ensure_kernels_loaded()
 
-            if self._is_fp8:
-                # NHD physical. Tightly packed: bytes_per_head = qbytes + nbytes (no padding).
-                # entry_byte_stride = bytes_per_head for kernel to navigate entries.
-                cache_u8 = kv_cache.view(torch.uint8)
-                block_size = kv_cache.shape[2]
-                # Slice quant and norms separately (tight packed, entry_stride=0)
-                k_q = cache_u8[0][..., :self._qbytes].contiguous().view(-1)
-                v_q = cache_u8[1][..., :self._qbytes].contiguous().view(-1)
-                k_n = cache_u8[0][..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
-                v_n = cache_u8[1][..., self._qbytes:self._qbytes + self._nbytes].contiguous().view(torch.float16).view(-1)
-                entry_stride = 0  # tight packing after slicing
-            else:
+            if not self._is_fp8:
                 return super().forward(layer, query, key, value, kv_cache,
                                        attn_metadata, output, output_scale, **kwargs)
+
+            block_size = kv_cache.shape[2]
 
             # Page table: strided layout so all ops are static-shape and
             # capturable under CUDA graphs. kv_indices = block_table flattened;
             # kv_indptr steps by max_pages_per_seq. The kernel reads only up to
             # kv_len[b] tokens per sequence, so trailing invalid entries are
-            # never touched. Boolean-mask indexing (the prior compact layout)
-            # allocates a dynamic-size tensor which errors at capture.
+            # never touched.
             num_pages = (seq_lens + block_size - 1) // block_size
             max_pages = block_table.shape[1]
             kv_indptr = (torch.arange(seq_lens.shape[0] + 1,
@@ -270,22 +260,21 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             kv_last_page_len = (seq_lens - (num_pages - 1) * block_size).to(torch.int32)
             kv_indices = block_table.reshape(-1).to(torch.int32)
 
-            # v4 kernel with fused Hadamard
             q_fp16 = q.to(torch.float16)
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # Call via torch.ops for graph-replay-safe dispatch (vLLM swaps
-            # kv_cache storage after profile_cudagraph_memory; direct pybind
-            # calls bake in the placeholder pointer and crash on replay).
-            result = torch.ops.turboquant.decode_v4(
-                q_fp16, k_q, v_q, k_n, v_n,
+            # Pass kv_cache directly so the dispatcher refreshes its storage on
+            # graph replay. Deriving k/v/norms bases from a Python view of
+            # kv_cache before the op call bakes in the placeholder ptr and
+            # crashes after vLLM's bind_kv_cache swap.
+            result = torch.ops.turboquant.decode_v4_from_cache(
+                q_fp16, kv_cache,
                 kv_indices, kv_indptr, kv_last_page_len,
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
                 self._signs,
-                entry_stride if self._is_fp8 else 0,
-                True if self._is_fp8 else False,  # NHD for fp8, HND for legacy
+                self._qbytes, self._nbytes,
             )
 
             if self.head_size < self._pd:
