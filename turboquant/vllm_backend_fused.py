@@ -143,29 +143,18 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 verbose=False)
 
     def _write_to_cache(self, key, value, kv_cache, slot_mapping):
-        """Quantize K,V and write to uint8 cache."""
+        """Quantize K,V and scatter into kv_cache via dispatcher-routed op so
+        the storage pointer is refreshed on CUDA graph replay (not baked in
+        as a raw ptr the way Python advanced-indexing scatter would)."""
         num_tokens = slot_mapping.shape[0]
-        block_size = kv_cache.shape[2]
-        bids = slot_mapping // block_size
-        boffs = slot_mapping % block_size
-
-        # Call through torch.ops for graph-replay safety (tensor args are
-        # refreshed from the dispatcher on replay, not baked in as raw ptrs).
         self._ensure_kernels_loaded()
-        kq, vq, kn, vn = torch.ops.turboquant_write.quantize_write_kv(
+        torch.ops.turboquant_write.quantize_write_kv_cache(
+            kv_cache,
             key[:num_tokens].float(), value[:num_tokens].float(),
-            self._signs, self.head_size, self._pd)
-
-        # View as uint8 to avoid float8 type-casting corruption.
-        # vLLM allocates fp8 cache as float8_e4m3fn — raw byte writes
-        # get type-cast, destroying our packed quantization bytes.
-        cache_u8 = kv_cache.view(torch.uint8)
-        kn_u8 = kn.view(torch.uint8)
-        vn_u8 = vn.view(torch.uint8)
-        cache_u8[0, bids, boffs, :, :self._qbytes] = kq
-        cache_u8[0, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = kn_u8
-        cache_u8[1, bids, boffs, :, :self._qbytes] = vq
-        cache_u8[1, bids, boffs, :, self._qbytes:self._qbytes + self._nbytes] = vn_u8
+            self._signs,
+            slot_mapping.to(torch.int32),
+            self.head_size, self._pd,
+        )
 
     @torch.no_grad()
     def do_kv_cache_update(self, layer, key, value, kv_cache, slot_mapping):
