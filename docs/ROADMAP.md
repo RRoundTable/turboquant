@@ -350,19 +350,66 @@ v4 fused kernel runs with no FA fallback. Quality needs investigation on some pr
 - [ ] Replace Python `do_kv_cache_update` with CUDA write kernel (major perf win)
 - [ ] TP=4,8 validation with fused kernel
 
-### Phase 12: vLLM upstream PR — NOW
+### Phase 12: vLLM upstream PR — IN REVIEW
 
-Promoted from Later: we already ship four vendored vLLM files in
-`docker/vllm_patches/` that enable `kv_cache_dtype="fp8"` for custom
-attention backends. Upstreaming removes the rebase tax on every vLLM bump
-and is a prerequisite for the 3.76× memory target.
+Seam changes needed for plugin backends to declare custom `page_size_bytes`
+are now filed upstream. Ships as a single commit touching 4 files + 1
+pytest (147+/7- LOC).
 
-- [ ] **12a.** Fork `vllm-project/vllm`, branch off current `main`
-- [ ] **12b.** Apply the four seam changes (see "Upstream PR requirements" below)
-- [ ] **12c.** Stub-backend pytest proving plugin backends can register custom slot sizes
-- [ ] **12d.** Rebuild Docker image against the PR branch (no vendored patches)
-- [ ] **12e.** Re-run Qwen3-8B bench, confirm parity with HYP-029 (or better)
-- [ ] **12f.** Open PR against `vllm-project/vllm:main`
+- [x] **12a.** Fork `vllm-project/vllm`, branch off current `main`
+- [x] **12b.** Apply seam changes (see "Upstream PR requirements" below)
+- [x] **12c.** Pure-CPU pytest at `tests/v1/core/test_custom_page_size.py`
+- [x] **12d.** Rebuild Docker image + push to ECR (`tq-hyp029:v2`,
+      `847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:latest`)
+- [x] **12e.** Re-run Qwen3-8B bench — 3.20× KV tokens, TPOT 3.53 ms graphs
+      at seq≈100 (see HYP-029 results)
+- [x] **12f.** Opened as draft: https://github.com/vllm-project/vllm/pull/39868
+      (DCO green; waiting on maintainer `ready` label to unblock CI)
+
+### Phase 13: Seq-length scaling — NOW
+
+Phase 12's 3.20× memory win is **unconditional**, but the A100 sweep (see
+`docs/hypotheses/HYP-030-seqlen-sweep-bench.md`) exposes a latency
+regression that grows linearly with `seq_len`:
+
+| seq | FP16 graphs | FP8 native | TQ fp8 graphs | TQ vs FP16 |
+|-----|-------------|-----------|---------------|------------|
+|  128 | 3.88 ms | 4.00 ms |  4.77 ms | 1.23× |
+|  512 | 4.03 ms | 4.07 ms |  6.29 ms | 1.56× |
+| 1024 | 4.02 ms | 4.09 ms |  8.36 ms | 2.08× |
+| 2048 | 4.15 ms | 4.31 ms | 12.43 ms | 3.00× |
+| 4096 | 4.42 ms | 4.31 ms | 20.26 ms | 4.58× |
+
+Root causes (already enumerated in Phase 8's "Architecture gap" section):
+
+1. **Scalar-FMA dequant** — 20 TFLOPS vs 312 TFLOPS (tensor core). ~40%
+   of the gap at short seq, dominates at long seq.
+2. **Split-KV not wired into the vLLM path** — standalone kernel hits
+   48 μs at seq=1024 with split-KV (HYP-018 confirmed), but
+   `decode_v4_from_cache` (HYP-029) ships the non-partitioned path.
+3. **Python-launch overhead scales with block_table size** — every
+   decode step: `kv_indices.reshape(-1).to(int32)`, `seq_lens.to(int32)`,
+   possibly a redundant `q.to(fp16)`. Grows O(batch × max_pages).
+
+Priorities (see HYP-030 for sizing):
+
+- [ ] **13a.** Cheap fixes — profile and remove per-step host→device
+      copies on the Python backend path.
+- [ ] **13b.** HYP-031: Port split-KV into `decode_v4_from_cache`.
+      Target: 2–3× speedup at seq ≥ 1024 (matches standalone-kernel
+      numbers). Prerequisite: reuse the combine kernel from HYP-022.
+- [ ] **13c.** HYP-032 (stretch): Marlin-style dequant→fp16→tensor core
+      (Phase 9b candidate, never implemented). Target: 1.5–2× on compute,
+      closes the scalar-FMA gap without giving up the Lloyd-Max codebook.
+      Effort: ~weeks.
+
+### Phase 14: vLLM upstream PR — CLOSE-OUT
+
+- [ ] **14a.** Respond to upstream review comments (maintainer labels
+      `ready` → CI runs → address failures)
+- [ ] **14b.** Once merged, delete `docker/vllm_patches/` and bump the
+      pinned vLLM version in `Dockerfile`
+- [ ] **14c.** Announce in README + hypothesis docs
 
 ## Next
 
