@@ -1,5 +1,6 @@
 .git
 .claude
+.venv
 __pycache__
 *.pyc
 *.pyo
