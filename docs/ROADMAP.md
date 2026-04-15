@@ -350,6 +350,20 @@ v4 fused kernel runs with no FA fallback. Quality needs investigation on some pr
 - [ ] Replace Python `do_kv_cache_update` with CUDA write kernel (major perf win)
 - [ ] TP=4,8 validation with fused kernel
 
+### Phase 12: vLLM upstream PR — NOW
+
+Promoted from Later: we already ship four vendored vLLM files in
+`docker/vllm_patches/` that enable `kv_cache_dtype="fp8"` for custom
+attention backends. Upstreaming removes the rebase tax on every vLLM bump
+and is a prerequisite for the 3.76× memory target.
+
+- [ ] **12a.** Fork `vllm-project/vllm`, branch off current `main`
+- [ ] **12b.** Apply the four seam changes (see "Upstream PR requirements" below)
+- [ ] **12c.** Stub-backend pytest proving plugin backends can register custom slot sizes
+- [ ] **12d.** Rebuild Docker image against the PR branch (no vendored patches)
+- [ ] **12e.** Re-run Qwen3-8B bench, confirm parity with HYP-029 (or better)
+- [ ] **12f.** Open PR against `vllm-project/vllm:main`
+
 ## Next
 
 ### Memory savings roadmap
@@ -379,7 +393,6 @@ Upstream PR requirements:
 
 ## Later
 
-- [ ] **vLLM upstream PR** — custom cache dtype for full 3.76× savings
 - [ ] Speculative decoding compatibility
 - [ ] Multi-node distributed (TP across nodes via NCCL)
 - [ ] Continuous batching with dynamic KV cache growth
