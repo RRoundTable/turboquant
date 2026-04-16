@@ -148,9 +148,9 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         return x.to(q.dtype)
 
     def _hadamard_inverse(self, out):
-        """Inverse rotation: FWHT × scale (applied to output, NO signs)."""
+        """Inverse rotation: FWHT × scale × signs (applied to output)."""
         x = out.float()
-        x = self._fwht(x) * (1.0 / math.sqrt(x.shape[-1]))
+        x = self._fwht(x) * (1.0 / math.sqrt(x.shape[-1])) * self._signs
         return x.to(out.dtype)
 
     def _ensure_kernels_loaded(self):
