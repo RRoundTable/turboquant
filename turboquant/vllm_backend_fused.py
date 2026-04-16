@@ -295,20 +295,18 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # Pre-rotate Q with Hadamard: signs × FWHT × scale.
-            # Applied in PyTorch to avoid CUDA FWHT thread-layout mismatch
-            # between the write kernel (32 threads) and v5 kernel (32 threads
-            # with WMMA). The v5 kernel receives pre-rotated Q with empty signs.
-            if self._signs is not None and self._signs.numel() > 0:
-                q_fp16 = self._hadamard_rotate_q(q_fp16)
-
-            result = self._v5_module.decode_v5_from_cache(
+            # v4 decode with fused Hadamard rotation (proven correct).
+            # v5 tensor-core kernel is 2.5× faster standalone but has a
+            # Hadamard thread-layout mismatch with the write kernel that
+            # produces wrong Q rotation. Using v4 until HYP-031 resolves
+            # the FWHT consistency issue (see HYP-031 doc).
+            result = torch.ops.turboquant.decode_v4_from_cache(
                 q_fp16, kv_cache,
                 kv_indices, kv_indptr, kv_last_page_len,
                 seq_lens,
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
-                torch.empty(0, device=q.device),
+                self._signs,
                 self._qbytes, self._nbytes,
             )
 
