@@ -38,7 +38,7 @@ BOUNDARIES_4BIT = [
 ]
 
 _CSRC_DIR = Path(os.environ.get("TURBOQUANT_CSRC",
-    os.path.expanduser("~/workdir/turboquant/csrc")))
+    str(Path(__file__).resolve().parent.parent / "csrc")))
 _INCLUDE_DIR = _CSRC_DIR / "include"
 _FLASHINFER_INCLUDE = Path(os.environ.get("FLASHINFER_INCLUDE_DIR",
     os.path.expanduser("~/workdir/flashinfer/include")))
