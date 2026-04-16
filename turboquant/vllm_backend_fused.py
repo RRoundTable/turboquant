@@ -250,8 +250,8 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             kv_indptr = (torch.arange(seq_lens.shape[0] + 1,
                                       dtype=torch.int32, device=q.device)
                          * max_pages)
-            kv_last_page_len = (seq_lens - (num_pages - 1) * block_size).to(torch.int32)
-            kv_indices = block_table.reshape(-1).to(torch.int32)
+            kv_last_page_len = seq_lens - (num_pages - 1) * block_size
+            kv_indices = block_table.reshape(-1)
 
             q_fp16 = q.to(torch.float16)
             if self.head_size < self._pd:
@@ -264,7 +264,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             result = torch.ops.turboquant.decode_v4_from_cache(
                 q_fp16, kv_cache,
                 kv_indices, kv_indptr, kv_last_page_len,
-                seq_lens.to(torch.int32),
+                seq_lens,
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
                 self._signs,

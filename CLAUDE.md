@@ -234,30 +234,69 @@ ncu --section SpeedOfLight_RooflineChart --kernel-name "TurboQuant" \
 ncu --section SourceCounters --kernel-name "TurboQuant" -o source.ncu-rep python bench.py
 ```
 
-### Remote profiling (Forge notebook)
+### Remote profiling (Forge)
 
-**Forge containers lack GPU perf counter permissions (`ERR_NVGPUCTRPERM`).**
-ncu and CUPTI profiler metrics are blocked. Available alternatives:
+Forge `--security-profile profiling-debug` unlocks GPU perf counters
+(ncu, CUPTI). Without it, containers get `ERR_NVGPUCTRPERM`. nsys
+works without the profile.
 
 ```bash
-# nsys WORKS — kernel timeline, durations, CUDA API calls
-NSYS=/opt/nvidia/nsight-compute/2024.3.2/host/target-linux-x64/nsys
-$NSYS profile --stats=true -t cuda,nvtx -o /tmp/trace python bench.py
+# Notebook with ncu access
+forge notebook create --name ncu-debug --gpu 1 --type ssh \
+    --shared-nfs --duration 4 --security-profile profiling-debug
 
-# cuobjdump WORKS — SASS instruction disassembly (no GPU needed)
-cuobjdump --dump-sass /path/to/compiled.so
-
-# clock64() instrumentation WORKS — per-phase cycle counts inside kernel
-
-# torch.profiler WORKS (timing only, NOT CUPTI metrics)
-# CUPTI metrics silently return no data on Forge
-
-# nvidia-smi dmon WORKS — coarse SM utilization at 1s granularity
-nvidia-smi dmon -s u -d 1
+# Batch job with ncu access
+forge job submit --name ncu-job --gpu 1 --shared-nfs \
+    --security-profile profiling-debug --entrypoint-file /tmp/profile.sh
 ```
 
-For full ncu profiling, request Forge admin to set
-`RmProfilingAdminOnly=0` on cluster nodes.
+**Profiling plan (use in order):**
+
+```bash
+# ── Tier 1: nsys (no security profile needed) ──────────────────────
+# Q: Is the kernel the bottleneck, or Python/launch overhead?
+nsys profile --stats=true -t cuda,nvtx -o /tmp/trace python bench.py
+nsys stats /tmp/trace.nsys-rep
+
+# ── Tier 2: ncu (needs --security-profile profiling-debug) ────────
+# Q: Why is the kernel slow — compute, memory, or latency-bound?
+
+# Step 1: SpeedOfLight — classify bottleneck
+ncu --section SpeedOfLight --section Occupancy \
+    --kernel-name "TurboQuant" -o profile.ncu-rep python bench.py
+
+# Step 2: Warp stall reasons — what are warps waiting on?
+ncu --section WarpStateStatistics --kernel-name "TurboQuant" python bench.py
+#   long_scoreboard  → HBM latency → more ILP / occupancy
+#   short_scoreboard → smem bank conflicts → add padding
+#   math_pipe_throttle → compute-bound → use tensor cores
+#   wait             → sync overhead → reduce __syncthreads()
+
+# Step 3: Memory analysis — L2 hit rate, coalescing, bandwidth
+ncu --section MemoryWorkloadAnalysis --kernel-name "TurboQuant" python bench.py
+
+# Step 4: Roofline chart
+ncu --section SpeedOfLight_RooflineChart --kernel-name "TurboQuant" \
+    -o roofline.ncu-rep python bench.py
+
+# Step 5: Source-level hotspot (compile with -lineinfo)
+ncu --section SourceCounters --kernel-name "TurboQuant" \
+    -o source.ncu-rep python bench.py
+
+# Step 6: Compare TQ vs FlashInfer in same run
+ncu --section SpeedOfLight --section WarpStateStatistics \
+    --kernel-name regex:"TurboQuant|BatchDecode" \
+    -o compare.ncu-rep python bench_both.py
+
+# ── Other tools (always available) ─────────────────────────────────
+# SASS disassembly (no GPU needed)
+cuobjdump --dump-sass /path/to/compiled.so
+
+# Per-phase cycle counts (instrument kernel with clock64())
+
+# Coarse SM utilization
+nvidia-smi dmon -s u -d 1
+```
 
 ### Compile flags for profiling
 

@@ -88,17 +88,60 @@ Memory side is the clean win: **3.20× more KV tokens**, flat across
 seq_len. That translates directly to concurrent-request capacity at
 fixed VRAM.
 
+## Kernel-level analysis (standalone timing)
+
+Standalone kernel timing (no vLLM, CUDA events, batch=1, Qwen3-8B config hd=128/8KV/GQA=4, A100-40GB):
+
+TQ decode_v4_from_cache vs FlashInfer BatchDecodeWithPagedKVCache (fp16 tensor-core path):
+
+| seq_len | TQ kernel (ms) | FlashInfer kernel (ms) | TQ/FI |
+|---:|---:|---:|---:|
+| 128 | 0.114 | 0.337 | 0.34x (TQ wins) |
+| 256 | 0.200 | 0.212 | 0.95x (parity) |
+| 512 | 0.357 | 0.213 | 1.68x |
+| 1024 | 0.685 | 0.212 | 3.23x |
+| 2048 | 1.325 | 0.213 | 6.23x |
+| 4096 | 2.624 | 0.214 | 12.3x |
+
+Key findings:
+
+1. TQ wins at seq<=256 (less data: 80 vs 256 bytes/token)
+2. FlashInfer is flat at ~0.21ms for seq 256-4096 (tensor cores hide O(seq) work)
+3. TQ scales linearly (~0.6us per token of scalar-FMA dequant)
+4. 12x kernel gap at 4096 matches the 15x FLOPS ratio (scalar FMA 20 TFLOPS vs tensor core 312 TFLOPS)
+5. In vLLM context, kernel is only 11% of TPOT -- 89% is framework overhead. But the framework overhead is mostly amortized under CUDA graphs; the kernel gap is the irreducible cost.
+
+## Kernel vs vLLM TPOT decomposition
+
+| seq_len | Kernel (ms) | vLLM TPOT (ms) | Kernel % | Framework overhead |
+|---:|---:|---:|---:|---:|
+| 128 | 0.115 | 4.77 | 2.4% | 4.66 ms |
+| 512 | 0.358 | 6.29 | 5.7% | 5.93 ms |
+| 1024 | 0.688 | 8.36 | 8.2% | 7.67 ms |
+| 4096 | 2.255 | 20.26 | 11.1% | 18.01 ms |
+
 ## What comes next
 
-See ROADMAP Phase 13. Three follow-ups, cheapest first:
+See ROADMAP Phase 13. Three follow-ups, re-prioritized by standalone
+kernel data:
 
-- **13a (cheap):** remove per-step `.to(int32)` copies from the Python
-  path. Worth maybe 0.5–2 ms at seq=4K — won't close the gap but is
-  free engineering.
-- **13b (HYP-031):** port split-KV into `decode_v4_from_cache`. Target:
-  drop 4K TPOT from 20 ms to ~7–9 ms (≈ 2.5× speedup). Effort: ~1 week.
-- **13c (HYP-032, stretch):** Marlin-style dequant→fp16→tensor core.
-  Target: another 1.5–2×, bringing 4K TPOT near FP8-native. Effort: weeks.
+- **13c (HYP-032, #1 priority):** Marlin-style dequant->fp16->tensor core.
+  The standalone timing proves this is the dominant gap: FlashInfer's
+  tensor cores hold flat at 0.21ms while TQ scales linearly to 2.6ms at
+  seq=4096 (12x). Scalar FMA at 20 TFLOPS cannot compete with mma at
+  312 TFLOPS. This is the irreducible kernel-level cost that CUDA graphs
+  cannot amortize. Target: match FlashInfer's flat ~0.2ms curve.
+  Effort: weeks.
+- **13b (HYP-031):** port split-KV into `decode_v4_from_cache`. Still
+  valuable for parallelism at long seq, but tensor cores (13c) must come
+  first -- split-KV over scalar FMA just parallelizes slow work.
+  Target: drop 4K TPOT from 20 ms to ~7-9 ms (2.5x speedup).
+  Effort: ~1 week.
+- **13a (cheap, vLLM-only):** remove per-step `.to(int32)` copies from
+  the Python path. Standalone kernel timing shows this does NOT affect
+  the kernel gap at all -- it only matters for vLLM TPOT (framework
+  overhead is 89% of TPOT). Worth doing but won't improve kernel parity
+  with FlashInfer.
 
 ## Non-goals
 
