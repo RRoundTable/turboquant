@@ -40,8 +40,23 @@ BOUNDARIES_4BIT = [
 _CSRC_DIR = Path(os.environ.get("TURBOQUANT_CSRC",
     str(Path(__file__).resolve().parent.parent / "csrc")))
 _INCLUDE_DIR = _CSRC_DIR / "include"
-_FLASHINFER_INCLUDE = Path(os.environ.get("FLASHINFER_INCLUDE_DIR",
-    os.path.expanduser("~/workdir/flashinfer/include")))
+def _find_flashinfer_include():
+    env = os.environ.get("FLASHINFER_INCLUDE_DIR")
+    if env:
+        return Path(env)
+    try:
+        import flashinfer
+        p = Path(flashinfer.__file__).parent / "data" / "include"
+        if (p / "flashinfer" / "attention" / "decode.cuh").exists():
+            return p
+    except ImportError:
+        pass
+    local = Path(os.path.expanduser("~/workdir/flashinfer/include"))
+    if local.exists():
+        return local
+    raise RuntimeError("FlashInfer headers not found")
+
+_FLASHINFER_INCLUDE = _find_flashinfer_include()
 
 
 def _build_module():
