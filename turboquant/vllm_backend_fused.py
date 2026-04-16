@@ -125,23 +125,33 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         signs[signs == 0] = 1.0
         self._signs = signs.to(dev)
 
-    def _hadamard_rotate_q(self, q):
-        """Apply signs × FWHT × scale to Q in PyTorch.
-        q: [batch, num_qo_heads, padded_dim] fp16 → same shape, rotated."""
-        x = q.float() * self._signs
+    @staticmethod
+    def _fwht(x):
+        """Fast Walsh-Hadamard Transform on last dim. In-place-safe."""
         n = x.shape[-1]
         h = 1
         while h < n:
             shape = x.shape[:-1] + (n // (2 * h), 2, h)
             x = x.view(shape)
-            a = x[..., 0, :].clone()  # clone to avoid in-place mutation
+            a = x[..., 0, :].clone()
             b = x[..., 1, :].clone()
             x[..., 0, :] = a + b
             x[..., 1, :] = a - b
             x = x.view(*x.shape[:-3], n)
             h <<= 1
-        x = x * (1.0 / math.sqrt(n))
+        return x
+
+    def _hadamard_forward(self, q):
+        """Forward rotation: signs × FWHT × scale (applied to Q)."""
+        x = q.float() * self._signs
+        x = self._fwht(x) * (1.0 / math.sqrt(x.shape[-1]))
         return x.to(q.dtype)
+
+    def _hadamard_inverse(self, out):
+        """Inverse rotation: FWHT × scale (applied to output, NO signs)."""
+        x = out.float()
+        x = self._fwht(x) * (1.0 / math.sqrt(x.shape[-1]))
+        return x.to(out.dtype)
 
     def _ensure_kernels_loaded(self):
         """Load kernel extensions once. JIT-compiles v4 (decode + write) and v5
@@ -294,7 +304,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             # apply both in PyTorch around the v5 call.
             needs_hadamard = self._signs is not None and self._signs.numel() > 0
             if needs_hadamard:
-                q_fp16 = self._hadamard_rotate_q(q_fp16)
+                q_fp16 = self._hadamard_forward(q_fp16)
 
             result = self._v5_module.decode_v5_from_cache(
                 q_fp16, kv_cache,
@@ -307,7 +317,7 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             )
 
             if needs_hadamard:
-                result = self._hadamard_rotate_q(result)
+                result = self._hadamard_inverse(result)
 
             if self.head_size < self._pd:
                 output[:num_actual] = result[:num_actual, :, :self.head_size]
