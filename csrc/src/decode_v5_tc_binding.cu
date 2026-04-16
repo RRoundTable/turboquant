@@ -350,13 +350,14 @@ torch::Tensor decode_v5_from_cache(
     // Max seq_len for contiguous buffer sizing (use max from seq_lens)
     int max_len = seq_lens.max().item<int>();
 
-    // Allocate contiguous gather buffers
-    auto k_quant_c = torch::empty({batch_size, num_kv_heads, max_len, qbytes},
+    // Zero-init: tokens beyond seq_lens[b] read as zero quant + zero norms,
+    // which dequant to 0 → zero QK contribution → no output corruption.
+    auto k_quant_c = torch::zeros({batch_size, num_kv_heads, max_len, qbytes},
                                    torch::dtype(torch::kUInt8).device(dev));
-    auto v_quant_c = torch::empty_like(k_quant_c);
-    auto k_norms_c = torch::empty({batch_size, num_kv_heads, max_len, dim_chunks},
+    auto v_quant_c = torch::zeros_like(k_quant_c);
+    auto k_norms_c = torch::zeros({batch_size, num_kv_heads, max_len, dim_chunks},
                                    torch::dtype(torch::kFloat16).device(dev));
-    auto v_norms_c = torch::empty_like(k_norms_c);
+    auto v_norms_c = torch::zeros_like(k_norms_c);
 
     auto k_half = kv_cache.select(0, 0);
     auto v_half = kv_cache.select(0, 1);
