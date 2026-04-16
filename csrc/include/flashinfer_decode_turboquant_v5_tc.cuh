@@ -193,36 +193,28 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
         }
         __syncthreads();
 
-        // Load valid Q rows + fused Hadamard rotation (signs × FWHT × scale).
-        // Uses bdx=16, vec=8 layout to match v4's FWHT exactly.
-        // Only the first 16 threads of warp 0 participate in the FWHT;
-        // threads 16-31 load their dims directly (no FWHT contribution).
+        // Load valid Q rows + optional fused Hadamard rotation.
+        // Forward rotation: Q' = FWHT(signs × Q) × scale
+        // Uses 32 threads × VEC=4 layout (natural for this kernel).
         if (warp_id == 0) {
-            // First: all 32 threads load Q to smem (strided, 4 dims/thread)
+            constexpr uint32_t VEC = head_dim / 32;  // 4 for hd=128
             for (uint32_t qh = 0; qh < bdy; qh++) {
                 uint32_t qo_head_idx = kv_head_idx * bdy + qh;
                 const __half* q_ptr = (const __half*)params.q
                     + batch_idx * params.q_stride_n
                     + qo_head_idx * params.q_stride_h;
-                for (uint32_t d = tx; d < head_dim; d += 32) {
-                    q_smem[qh * head_dim + d] = q_ptr[d];
-                }
-            }
-            __syncwarp();
 
-            // Then: first 16 threads do the FWHT (bdx=16, vec=8, matching v4)
-            if (params.hadamard_signs && tx < 16) {
-                constexpr uint32_t BDX = 16;
-                constexpr uint32_t VEC = head_dim / BDX;  // 8 for hd=128
-                for (uint32_t qh = 0; qh < bdy; qh++) {
-                    float v[VEC];
-                    #pragma unroll
-                    for (uint32_t i = 0; i < VEC; i++) {
-                        uint32_t d = tx * VEC + i;
-                        v[i] = __half2float(q_smem[qh * head_dim + d])
-                               * params.hadamard_signs[d];
-                    }
-                    // Local FWHT: h = 1, 2, 4
+                float v[VEC];
+                #pragma unroll
+                for (uint32_t i = 0; i < VEC; i++) {
+                    uint32_t d = tx * VEC + i;
+                    float qval = __half2float(q_ptr[d]);
+                    v[i] = params.hadamard_signs ?
+                        qval * params.hadamard_signs[d] : qval;
+                }
+
+                if (params.hadamard_signs) {
+                    // Local FWHT stages
                     #pragma unroll
                     for (uint32_t h = 1; h < VEC; h <<= 1) {
                         #pragma unroll
@@ -235,13 +227,12 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
                             }
                         }
                     }
-                    // Cross-thread FWHT: delta = 1..8 (BDX/2)
-                    // Use 0xFFFF mask for first 16 threads only
+                    // Cross-thread FWHT stages (all 32 threads)
                     #pragma unroll
-                    for (uint32_t delta = 1; delta < BDX; delta <<= 1) {
+                    for (uint32_t delta = 1; delta < 32; delta <<= 1) {
                         #pragma unroll
                         for (uint32_t i = 0; i < VEC; i++) {
-                            float partner = __shfl_xor_sync(0x0000FFFF, v[i], delta);
+                            float partner = __shfl_xor_sync(0xFFFFFFFF, v[i], delta);
                             if (tx & delta)
                                 v[i] = partner - v[i];
                             else
@@ -250,10 +241,13 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
                     }
                     float had_scale = params.hadamard_scale;
                     #pragma unroll
-                    for (uint32_t i = 0; i < VEC; i++) {
-                        q_smem[qh * head_dim + tx * VEC + i] =
-                            __float2half(v[i] * had_scale);
-                    }
+                    for (uint32_t i = 0; i < VEC; i++) v[i] *= had_scale;
+                }
+
+                // Write to smem in row-major [16, head_dim] layout
+                #pragma unroll
+                for (uint32_t i = 0; i < VEC; i++) {
+                    q_smem[qh * head_dim + tx * VEC + i] = __float2half(v[i]);
                 }
             }
             __syncwarp();
@@ -608,6 +602,64 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
                 #pragma unroll
                 for (uint32_t i = 0; i < odims_per_thread; i++) {
                     o_merged[i] /= d_merged;
+                }
+            }
+
+            // Inverse Hadamard: FWHT(output) × scale × signs
+            // o_merged is in strided layout [tx + i*32]. Repack to
+            // contiguous [tx*VEC + i] for butterfly, then write out.
+            if (params.hadamard_signs) {
+                constexpr uint32_t VEC = head_dim / 32;
+                float v[VEC];
+
+                // Repack: strided → contiguous via smem
+                float* tmp = (float*)smem_raw;  // reuse merge_buf
+                #pragma unroll
+                for (uint32_t i = 0; i < odims_per_thread; i++) {
+                    tmp[tx + i * 32] = o_merged[i];
+                }
+                __syncwarp();
+                #pragma unroll
+                for (uint32_t i = 0; i < VEC; i++) {
+                    v[i] = tmp[tx * VEC + i];
+                }
+
+                // Local FWHT stages
+                #pragma unroll
+                for (uint32_t hh = 1; hh < VEC; hh <<= 1) {
+                    #pragma unroll
+                    for (uint32_t ii = 0; ii < VEC; ii += 2 * hh) {
+                        #pragma unroll
+                        for (uint32_t k = 0; k < hh; k++) {
+                            float a = v[ii + k], b = v[ii + k + hh];
+                            v[ii + k] = a + b;
+                            v[ii + k + hh] = a - b;
+                        }
+                    }
+                }
+                // Cross-thread FWHT
+                #pragma unroll
+                for (uint32_t delta = 1; delta < 32; delta <<= 1) {
+                    #pragma unroll
+                    for (uint32_t i = 0; i < VEC; i++) {
+                        float partner = __shfl_xor_sync(0xFFFFFFFF, v[i], delta);
+                        if (tx & delta)
+                            v[i] = partner - v[i];
+                        else
+                            v[i] = v[i] + partner;
+                    }
+                }
+                // Scale × signs, then write back to strided via smem
+                float had_scale = params.hadamard_scale;
+                #pragma unroll
+                for (uint32_t i = 0; i < VEC; i++) {
+                    tmp[tx * VEC + i] = v[i] * had_scale
+                        * params.hadamard_signs[tx * VEC + i];
+                }
+                __syncwarp();
+                #pragma unroll
+                for (uint32_t i = 0; i < odims_per_thread; i++) {
+                    o_merged[i] = tmp[tx + i * 32];
                 }
             }
 

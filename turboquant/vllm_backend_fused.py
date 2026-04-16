@@ -299,25 +299,17 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # Hadamard rotation: v4 applies FWHT to BOTH Q (forward) and
-            # output (inverse). v5 kernel doesn't fuse rotation, so we
-            # apply both in PyTorch around the v5 call.
-            needs_hadamard = self._signs is not None and self._signs.numel() > 0
-            if needs_hadamard:
-                q_fp16 = self._hadamard_forward(q_fp16)
-
+            # v5 tensor-core decode with fused Hadamard rotation.
+            # Kernel applies forward FWHT to Q and inverse FWHT to output.
             result = self._v5_module.decode_v5_from_cache(
                 q_fp16, kv_cache,
                 kv_indices, kv_indptr, kv_last_page_len,
                 seq_lens,
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
-                torch.empty(0, device=q.device),
+                self._signs if self._signs is not None else torch.empty(0, device=q.device),
                 self._qbytes, self._nbytes,
             )
-
-            if needs_hadamard:
-                result = self._hadamard_inverse(result)
 
             if self.head_size < self._pd:
                 output[:num_actual] = result[:num_actual, :, :self.head_size]
