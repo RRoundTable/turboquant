@@ -390,7 +390,7 @@ if __name__ == "__main__":
         bdy = 4
         nkv = 8
         nqo = nkv * bdy
-        for seq in [128, 256, 512, 1024, 2048]:
+        for seq in [128, 256, 512, 1024, 2048, 4096]:
             us = bench_v5_tc(module, seq_len=seq, num_kv_heads=nkv,
                             num_qo_heads=nqo)
             print(f"  seq={seq:5d}: {us:8.1f} us")
