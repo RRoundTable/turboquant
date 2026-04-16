@@ -125,6 +125,30 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         signs[signs == 0] = 1.0
         self._signs = signs.to(dev)
 
+    def _hadamard_rotate_q(self, q):
+        """Apply signs × FWHT × scale to Q in PyTorch.
+        q: [batch, num_qo_heads, padded_dim] fp16 → same shape, rotated."""
+        x = q.float() * self._signs.unsqueeze(0).unsqueeze(0)
+        n = x.shape[-1]
+        h = 1
+        while h < n:
+            x1 = x[..., 0::2*h, None]  # won't work — need butterfly
+            h <<= 1
+        # Iterative butterfly FWHT (in-place, last dim)
+        x = q.float() * self._signs
+        h = 1
+        while h < n:
+            # Reshape to [..., n/(2h), 2, h] and butterfly
+            shape = x.shape[:-1] + (n // (2 * h), 2, h)
+            x = x.view(shape)
+            a, b = x[..., 0, :], x[..., 1, :]
+            x[..., 0, :] = a + b
+            x[..., 1, :] = a - b
+            x = x.view(*x.shape[:-3], n)
+            h <<= 1
+        x = x * (1.0 / math.sqrt(n))
+        return x.to(q.dtype)
+
     def _ensure_kernels_loaded(self):
         """Load kernel extensions once. JIT-compiles v4 (decode + write) and v5
         (tensor-core decode) on first call."""
@@ -271,15 +295,20 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # v5 tensor-core decode: gather paged→contiguous + WMMA QK.
-            # ~2.5× faster kernel than v4 scalar-FMA at all seq_lens.
+            # Pre-rotate Q with Hadamard: signs × FWHT × scale.
+            # Applied in PyTorch to avoid CUDA FWHT thread-layout mismatch
+            # between the write kernel (32 threads) and v5 kernel (32 threads
+            # with WMMA). The v5 kernel receives pre-rotated Q with empty signs.
+            if self._signs is not None and self._signs.numel() > 0:
+                q_fp16 = self._hadamard_rotate_q(q_fp16)
+
             result = self._v5_module.decode_v5_from_cache(
                 q_fp16, kv_cache,
                 kv_indices, kv_indptr, kv_last_page_len,
                 seq_lens,
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
-                self._signs,
+                torch.empty(0, device=q.device),
                 self._qbytes, self._nbytes,
             )
 
