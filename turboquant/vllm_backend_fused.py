@@ -126,11 +126,25 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         self._signs = signs.to(dev)
 
     def _ensure_kernels_loaded(self):
-        """Load both kernel extensions once; their TORCH_LIBRARY blocks register
-        ops at .so-load time so `torch.ops.turboquant[_write].*` becomes callable."""
+        """Load kernel extensions once. JIT-compiles v4 (decode + write) and v5
+        (tensor-core decode) on first call."""
         if self._decode_module is None:
-            from turboquant.decode_kernel_v4 import _get_module
+            from turboquant.decode_kernel_v4 import _get_module, _CSRC_DIR, _find_flashinfer_include
             self._decode_module = _get_module()
+
+            # v5 tensor-core kernel (HYP-031)
+            from torch.utils.cpp_extension import load
+            fi_include = _find_flashinfer_include()
+            self._v5_module = load(
+                name="turboquant_v5_tc",
+                sources=[str(_CSRC_DIR / "src" / "decode_v5_tc_binding.cu")],
+                extra_include_paths=[str(_CSRC_DIR / "include"), str(fi_include)],
+                extra_cuda_cflags=["-std=c++17", "-O3", "--expt-relaxed-constexpr",
+                    "-use_fast_math",
+                    "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__",
+                    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__", "-U__CUDA_NO_HALF2_OPERATORS__"],
+                verbose=False)
+
         if self._write_module is None:
             from turboquant.decode_kernel_v4 import _CSRC_DIR
             from torch.utils.cpp_extension import load
@@ -257,11 +271,9 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # Pass kv_cache directly so the dispatcher refreshes its storage on
-            # graph replay. Deriving k/v/norms bases from a Python view of
-            # kv_cache before the op call bakes in the placeholder ptr and
-            # crashes after vLLM's bind_kv_cache swap.
-            result = torch.ops.turboquant.decode_v4_from_cache(
+            # v5 tensor-core decode: gather paged→contiguous + WMMA QK.
+            # ~2.5× faster kernel than v4 scalar-FMA at all seq_lens.
+            result = self._v5_module.decode_v5_from_cache(
                 q_fp16, kv_cache,
                 kv_indices, kv_indptr, kv_last_page_len,
                 seq_lens,

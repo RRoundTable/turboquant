@@ -208,9 +208,199 @@ torch::Tensor decode_v5_tc_contiguous_splitkv(
     return o;
 }
 
+// ---- Hadamard rotation kernel for Q -------------------------------------------
+// Apply signs × FWHT × scale to each Q head independently.
+// Grid: (batch, num_qo_heads), Block: (32) = one warp per head.
+// padded_dim must be 128 → vec_size = 4 per thread.
+__global__ void hadamard_rotate_q_kernel(
+    __half* q,                          // [batch, num_qo_heads, padded_dim] fp16 (in-place)
+    const float* __restrict__ signs,    // [padded_dim] float
+    int padded_dim,
+    float hadamard_scale                // 1/sqrt(padded_dim)
+) {
+    constexpr int VEC = 4;  // 128 / 32 threads
+    int batch_idx = blockIdx.x;
+    int head_idx = blockIdx.y;
+    int tx = threadIdx.x;
+
+    __half* head_ptr = q + (size_t)batch_idx * gridDim.y * padded_dim
+                         + (size_t)head_idx * padded_dim;
+
+    float v[VEC];
+    #pragma unroll
+    for (int i = 0; i < VEC; i++) {
+        int d = tx * VEC + i;
+        v[i] = __half2float(head_ptr[d]) * signs[d];
+    }
+
+    // Local FWHT stages (within-thread butterfly)
+    #pragma unroll
+    for (int h = 1; h < VEC; h <<= 1) {
+        #pragma unroll
+        for (int i = 0; i < VEC; i += 2 * h) {
+            #pragma unroll
+            for (int k = 0; k < h; k++) {
+                float a = v[i + k], b = v[i + k + h];
+                v[i + k] = a + b;
+                v[i + k + h] = a - b;
+            }
+        }
+    }
+
+    // Cross-thread FWHT stages (warp shuffle butterfly)
+    #pragma unroll
+    for (int delta = 1; delta < 32; delta <<= 1) {
+        #pragma unroll
+        for (int i = 0; i < VEC; i++) {
+            float partner = __shfl_xor_sync(0xFFFFFFFF, v[i], delta);
+            if (tx & delta)
+                v[i] = partner - v[i];
+            else
+                v[i] = v[i] + partner;
+        }
+    }
+
+    // Scale and store
+    #pragma unroll
+    for (int i = 0; i < VEC; i++) {
+        int d = tx * VEC + i;
+        head_ptr[d] = __float2half(v[i] * hadamard_scale);
+    }
+}
+
+// ---- Gather kernel: paged NHD → contiguous HND --------------------------------
+// Copies quant bytes + norms from paged kv_cache into flat contiguous buffers
+// matching ContiguousTurboQuantDecodeParams layout.
+__global__ void gather_paged_to_contiguous(
+    const uint8_t* __restrict__ kv_slab,  // [num_blocks, block_size, num_heads, ebs]
+    uint8_t* __restrict__ cont_quant,     // [batch, num_heads, max_len, qbytes]
+    __half* __restrict__ cont_norms,      // [batch, num_heads, max_len, dim_chunks]
+    const int32_t* __restrict__ indices,
+    const int32_t* __restrict__ indptr,
+    const int32_t* __restrict__ seq_lens,
+    int block_size, int num_heads, int qbytes, int dim_chunks,
+    int ebs, int max_len
+) {
+    int batch_idx = blockIdx.x;
+    int head_idx = blockIdx.y;
+    int seq_len = seq_lens[batch_idx];
+    int base_page = indptr[batch_idx];
+
+    for (int t = threadIdx.x; t < seq_len; t += blockDim.x) {
+        int page_iter = base_page + t / block_size;
+        int entry = t % block_size;
+        int page_idx = indices[page_iter];
+
+        // Source in paged NHD: [page_idx, entry, head_idx, :]
+        const uint8_t* src = kv_slab
+            + (size_t)page_idx * block_size * num_heads * ebs
+            + (size_t)entry * num_heads * ebs
+            + (size_t)head_idx * ebs;
+
+        // Dest in contiguous HND: [batch, head, t, :]
+        size_t dst_off = (size_t)batch_idx * num_heads * max_len * qbytes
+                       + (size_t)head_idx * max_len * qbytes
+                       + (size_t)t * qbytes;
+        uint8_t* dst = cont_quant + dst_off;
+
+        // Copy quant bytes (vectorized as uint4 = 16 bytes)
+        for (int b = 0; b < qbytes; b += 16) {
+            *reinterpret_cast<uint4*>(dst + b) =
+                *reinterpret_cast<const uint4*>(src + b);
+        }
+
+        // Copy norms (dim_chunks fp16 = dim_chunks*2 bytes)
+        size_t norm_dst_off = (size_t)batch_idx * num_heads * max_len * dim_chunks
+                            + (size_t)head_idx * max_len * dim_chunks
+                            + (size_t)t * dim_chunks;
+        const __half* norm_src = (const __half*)(src + qbytes);
+        for (int c = 0; c < dim_chunks; c++) {
+            cont_norms[norm_dst_off + c] = norm_src[c];
+        }
+    }
+}
+
+// ---- decode_v5_from_cache: graph-safe paged decode via gather + v5 contiguous --
+torch::Tensor decode_v5_from_cache(
+    torch::Tensor q,              // [batch, num_qo_heads, padded_dim] fp16
+    torch::Tensor kv_cache,       // [2, num_blocks, block_size, num_heads, ebs] uint8
+    torch::Tensor indices,
+    torch::Tensor indptr,
+    torch::Tensor last_page_len,
+    torch::Tensor seq_lens,       // [batch] int32
+    int num_kv_heads,
+    int page_size,
+    int head_dim,
+    int padded_dim,
+    float sm_scale,
+    torch::Tensor hadamard_signs,
+    int qbytes,
+    int nbytes
+) {
+    TORCH_CHECK(padded_dim == 128, "v5 from_cache only supports head_dim=128");
+    int ebs = static_cast<int>(kv_cache.size(-1));
+    int block_size = static_cast<int>(kv_cache.size(2));
+    int batch_size = q.size(0);
+    int num_qo_heads = q.size(1);
+    int bdy = num_qo_heads / num_kv_heads;
+    int dim_chunks = padded_dim / 64;
+    auto stream = c10::cuda::getCurrentCUDAStream();
+    auto dev = q.device();
+
+    // Max seq_len for contiguous buffer sizing (use max from seq_lens)
+    int max_len = seq_lens.max().item<int>();
+
+    // Allocate contiguous gather buffers
+    auto k_quant_c = torch::empty({batch_size, num_kv_heads, max_len, qbytes},
+                                   torch::dtype(torch::kUInt8).device(dev));
+    auto v_quant_c = torch::empty_like(k_quant_c);
+    auto k_norms_c = torch::empty({batch_size, num_kv_heads, max_len, dim_chunks},
+                                   torch::dtype(torch::kFloat16).device(dev));
+    auto v_norms_c = torch::empty_like(k_norms_c);
+
+    auto k_half = kv_cache.select(0, 0);
+    auto v_half = kv_cache.select(0, 1);
+
+    // Gather K: paged NHD → contiguous HND
+    gather_paged_to_contiguous<<<dim3(batch_size, num_kv_heads), 256, 0, stream>>>(
+        (uint8_t*)k_half.data_ptr(),
+        k_quant_c.data_ptr<uint8_t>(),
+        (__half*)k_norms_c.data_ptr<at::Half>(),
+        indices.data_ptr<int32_t>(), indptr.data_ptr<int32_t>(),
+        seq_lens.data_ptr<int32_t>(),
+        block_size, num_kv_heads, qbytes, dim_chunks, ebs, max_len);
+
+    // Gather V
+    gather_paged_to_contiguous<<<dim3(batch_size, num_kv_heads), 256, 0, stream>>>(
+        (uint8_t*)v_half.data_ptr(),
+        v_quant_c.data_ptr<uint8_t>(),
+        (__half*)v_norms_c.data_ptr<at::Half>(),
+        indices.data_ptr<int32_t>(), indptr.data_ptr<int32_t>(),
+        seq_lens.data_ptr<int32_t>(),
+        block_size, num_kv_heads, qbytes, dim_chunks, ebs, max_len);
+
+    // Apply Hadamard rotation to Q (signs × FWHT × scale).
+    // v4 does this inside the kernel; v5 contiguous expects pre-rotated Q.
+    auto q_rot = q.clone();  // don't mutate the original
+    if (hadamard_signs.numel() > 0) {
+        float had_scale = rsqrtf(static_cast<float>(padded_dim));
+        hadamard_rotate_q_kernel<<<dim3(batch_size, num_qo_heads), 32, 0, stream>>>(
+            (__half*)q_rot.data_ptr<at::Half>(),
+            hadamard_signs.data_ptr<float>(),
+            padded_dim, had_scale);
+    }
+
+    // Call v5 contiguous decode
+    return decode_v5_tc_contiguous(
+        q_rot, k_quant_c, v_quant_c, k_norms_c, v_norms_c,
+        max_len, num_kv_heads, head_dim, padded_dim, sm_scale);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("decode_v5_tc_contiguous", &decode_v5_tc_contiguous,
           "TurboQuant v5 tensor-core contiguous decode (HYP-031)");
     m.def("decode_v5_tc_contiguous_splitkv", &decode_v5_tc_contiguous_splitkv,
           "TurboQuant v5 tensor-core contiguous decode with split-KV (HYP-031)");
+    m.def("decode_v5_from_cache", &decode_v5_from_cache,
+          "TurboQuant v5 tensor-core decode from paged kv_cache (HYP-031)");
 }
