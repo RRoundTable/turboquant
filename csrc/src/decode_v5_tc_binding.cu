@@ -382,8 +382,6 @@ torch::Tensor decode_v5_from_cache(
 
     // Build params with Hadamard signs — the v5 kernel applies the
     // rotation to Q internally (fused into the Q-load phase).
-    TORCH_CHECK(padded_dim == 128, "v5 from_cache only supports head_dim=128");
-    int bdy = num_qo_heads / num_kv_heads;
     auto o = torch::zeros_like(q);
 
     using CP = ContiguousTurboQuantDecodeParams<__half, __half, int32_t>;
