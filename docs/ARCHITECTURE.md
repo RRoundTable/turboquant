@@ -58,10 +58,12 @@ turboquant/
 │   │   ├── flashinfer_decode_turboquant_v4.cuh  # Inline dequant, no fp16 smem (BEST paged)
 │   │   ├── flashinfer_decode_turboquant_v4_contiguous.cuh  # Contiguous KV (BEST overall)
 │   │   ├── flashinfer_decode_turboquant_v5_warpspec.cuh    # Warp specialized (rejected)
+│   │   ├── flashinfer_decode_turboquant_v5_tc.cuh         # Tensor-core WMMA (HYP-031)
 │   │   └── flashinfer_decode_turboquant_combine.cuh        # Split-KV combine kernel
 │   └── src/
 │       ├── decode_v4_binding.cu            # Paged v4 + split-KV binding
 │       ├── decode_v4_contiguous_binding.cu # Contiguous v4 + split-KV binding
+│       ├── decode_v5_tc_binding.cu         # Tensor-core v5 + split-KV binding (HYP-031)
 │       └── quantize_write_binding.cu       # Write kernel binding
 ├── turboquant/                             # Python package
 │   ├── quantizer.py                        # TurboQuantMSE, TurboQuantProd
@@ -80,7 +82,8 @@ turboquant/
 │   ├── test_triton_decode.py               # Triton kernel correctness
 │   ├── bench_contiguous.py                 # Contiguous + split-KV benchmark
 │   ├── bench_write_kernel.py               # Write kernel benchmark
-│   └── bench_int4_tc.py                    # INT4 tensor core experiment
+│   ├── bench_int4_tc.py                    # INT4 tensor core experiment
+│   └── test_v5_tc.py                       # v5 tensor-core kernel test (HYP-031)
 ├── docs/
 │   ├── GOAL.md                             # Project goal + success criteria
 │   ├── ROADMAP.md                          # Phase 1-9 status
