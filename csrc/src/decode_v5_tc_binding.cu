@@ -380,21 +380,49 @@ torch::Tensor decode_v5_from_cache(
         seq_lens.data_ptr<int32_t>(),
         block_size, num_kv_heads, qbytes, dim_chunks, ebs, max_len);
 
-    // Apply Hadamard rotation to Q (signs × FWHT × scale).
-    // v4 does this inside the kernel; v5 contiguous expects pre-rotated Q.
-    auto q_rot = q.clone();  // don't mutate the original
+    // Build params with Hadamard signs — the v5 kernel applies the
+    // rotation to Q internally (fused into the Q-load phase).
+    TORCH_CHECK(padded_dim == 128, "v5 from_cache only supports head_dim=128");
+    int bdy = num_qo_heads / num_kv_heads;
+    auto o = torch::zeros_like(q);
+
+    using CP = ContiguousTurboQuantDecodeParams<__half, __half, int32_t>;
+    using V = DefaultAttention<false, false, false, false>;
+
+    CP p(
+        k_quant_c.data_ptr<uint8_t>(), v_quant_c.data_ptr<uint8_t>(),
+        (__half*)k_norms_c.data_ptr<at::Half>(), (__half*)v_norms_c.data_ptr<at::Half>(),
+        batch_size, num_kv_heads, max_len, head_dim, padded_dim,
+        (__half*)q.data_ptr<at::Half>(), (__half*)o.data_ptr<at::Half>(),
+        nullptr, sm_scale, num_qo_heads
+    );
     if (hadamard_signs.numel() > 0) {
-        float had_scale = rsqrtf(static_cast<float>(padded_dim));
-        hadamard_rotate_q_kernel<<<dim3(batch_size, num_qo_heads), 32, 0, stream>>>(
-            (__half*)q_rot.data_ptr<at::Half>(),
-            hadamard_signs.data_ptr<float>(),
-            padded_dim, had_scale);
+        p.hadamard_signs = hadamard_signs.data_ptr<float>();
+        p.hadamard_scale = rsqrtf(static_cast<float>(padded_dim));
     }
 
-    // Call v5 contiguous decode
-    return decode_v5_tc_contiguous(
-        q_rot, k_quant_c, v_quant_c, k_norms_c, v_norms_c,
-        max_len, num_kv_heads, head_dim, padded_dim, sm_scale);
+    #define LAUNCH_V5FC(BDY, NW) do { \
+        constexpr uint32_t sm = calc_smem_v5_tc<128, BDY, NW>(); \
+        auto err = cudaFuncSetAttribute( \
+            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP>, \
+            cudaFuncAttributeMaxDynamicSharedMemorySize, sm); \
+        TORCH_CHECK(err == cudaSuccess, "smem: ", cudaGetErrorString(err)); \
+        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP> \
+            <<<dim3(batch_size, num_kv_heads), dim3(32, 1, NW), sm, stream>>>(p); \
+    } while(0)
+
+    switch (bdy) {
+        case 1: LAUNCH_V5FC(1, 4); break;
+        case 2: LAUNCH_V5FC(2, 4); break;
+        case 4: LAUNCH_V5FC(4, 4); break;
+        case 8: LAUNCH_V5FC(8, 4); break;
+        default: TORCH_CHECK(false, "v5 from_cache: unsupported bdy=", bdy);
+    }
+    #undef LAUNCH_V5FC
+
+    auto cuda_err = cudaGetLastError();
+    TORCH_CHECK(cuda_err == cudaSuccess, "v5 from_cache: ", cudaGetErrorString(cuda_err));
+    return o;
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

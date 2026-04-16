@@ -72,6 +72,10 @@ struct ContiguousTurboQuantDecodeParams {
     float    logits_soft_cap;
     int32_t  window_left;
 
+    // Hadamard rotation (optional — applied to Q inside the v5 kernel)
+    const float* hadamard_signs;   // [padded_dim] or nullptr
+    float hadamard_scale;          // rsqrt(padded_dim)
+
     // Batch dispatch
     uint32_t batch_size;
 
@@ -104,6 +108,7 @@ struct ContiguousTurboQuantDecodeParams {
         seq_len(seq_len), head_dim(head_dim), padded_dim(padded_dim),
         q(q), o(o), lse(lse), sm_scale(sm_scale), num_qo_heads(num_qo_heads),
         maybe_alibi_slopes(nullptr), logits_soft_cap(0), window_left(-1),
+        hadamard_signs(nullptr), hadamard_scale(0),
         request_indices(nullptr), kv_tile_indices(nullptr),
         kv_chunk_size_ptr(nullptr), block_valid_mask(nullptr),
         partition_kv(false), partition_o(nullptr), partition_lse(nullptr)
