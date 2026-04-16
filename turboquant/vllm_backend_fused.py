@@ -128,20 +128,14 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
     def _hadamard_rotate_q(self, q):
         """Apply signs × FWHT × scale to Q in PyTorch.
         q: [batch, num_qo_heads, padded_dim] fp16 → same shape, rotated."""
-        x = q.float() * self._signs.unsqueeze(0).unsqueeze(0)
+        x = q.float() * self._signs
         n = x.shape[-1]
         h = 1
         while h < n:
-            x1 = x[..., 0::2*h, None]  # won't work — need butterfly
-            h <<= 1
-        # Iterative butterfly FWHT (in-place, last dim)
-        x = q.float() * self._signs
-        h = 1
-        while h < n:
-            # Reshape to [..., n/(2h), 2, h] and butterfly
             shape = x.shape[:-1] + (n // (2 * h), 2, h)
             x = x.view(shape)
-            a, b = x[..., 0, :], x[..., 1, :]
+            a = x[..., 0, :].clone()  # clone to avoid in-place mutation
+            b = x[..., 1, :].clone()
             x[..., 0, :] = a + b
             x[..., 1, :] = a - b
             x = x.view(*x.shape[:-3], n)
@@ -295,18 +289,18 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # v4 decode with fused Hadamard rotation (proven correct).
-            # v5 tensor-core kernel is 2.5× faster standalone but has a
-            # Hadamard thread-layout mismatch with the write kernel that
-            # produces wrong Q rotation. Using v4 until HYP-031 resolves
-            # the FWHT consistency issue (see HYP-031 doc).
-            result = torch.ops.turboquant.decode_v4_from_cache(
+            # Pre-rotate Q with Hadamard (signs × FWHT × scale) in PyTorch,
+            # then call v5 tensor-core decode with empty signs.
+            if self._signs is not None and self._signs.numel() > 0:
+                q_fp16 = self._hadamard_rotate_q(q_fp16)
+
+            result = self._v5_module.decode_v5_from_cache(
                 q_fp16, kv_cache,
                 kv_indices, kv_indptr, kv_last_page_len,
                 seq_lens,
                 self.num_kv_heads, block_size,
                 self.head_size, self._pd, self.scale,
-                self._signs,
+                torch.empty(0, device=q.device),
                 self._qbytes, self._nbytes,
             )
 
