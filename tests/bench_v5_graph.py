@@ -22,6 +22,27 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+# flashinfer-python 0.6.x requires PyTorch 2.3+ APIs that NGC pytorch:24.01
+# (torch 2.2) lacks. Shim the missing surfaces before import so the bench
+# can still run flashinfer for comparison.
+for _n, _fb in [("uint16", torch.int16), ("uint32", torch.int32),
+                ("uint64", torch.int64)]:
+    if not hasattr(torch, _n):
+        setattr(torch, _n, _fb)
+if not hasattr(torch.library, "custom_op"):
+    # `custom_op` is a decorator that registers an op. Stub it as a no-op
+    # pass-through; flashinfer only needs it importable, not functional for
+    # the BatchDecode path we use.
+    def _shim_custom_op(*_a, **_kw):
+        def deco(fn): return fn
+        return deco
+    torch.library.custom_op = _shim_custom_op
+if not hasattr(torch.library, "register_fake"):
+    def _shim_register_fake(*_a, **_kw):
+        def deco(fn): return fn
+        return deco
+    torch.library.register_fake = _shim_register_fake
+
 DEVICE = "cuda"
 
 # Qwen3-8B-ish config; bdy=4 activates the largest v5 WMMA config.
@@ -29,7 +50,7 @@ HEAD_DIM = 128
 PADDED_DIM = 128
 NUM_KV_HEADS = 8
 NUM_QO_HEADS = 32
-BATCH = 1
+BATCH = int(os.environ.get("TQ_BENCH_BATCH", "1"))
 PAGE_SIZE = 16
 TILE_DIMS = 64
 QUANT_BYTES_PER_CHUNK = 32
@@ -233,24 +254,57 @@ def _bench_fp16_sdpa(seq_len: int):
 
 
 def _bench_flashinfer(seq_len: int):
+    # flashinfer-python 0.6.8 uses torch.uint32 which was added in PyTorch 2.3.
+    # On NGC pytorch:24.01 (torch 2.2) we alias it to int32 for compat.
+    for name, fallback in [("uint32", torch.int32), ("uint64", torch.int64),
+                            ("uint16", torch.int16)]:
+        if not hasattr(torch, name):
+            setattr(torch, name, fallback)
     try:
         import flashinfer
     except ImportError:
         return {"error": "flashinfer not installed"}
-
-    # single_decode_with_kv_cache: [qo_heads, hd] × [seq, kv_heads, hd]
     torch.manual_seed(seq_len + 2)
-    q = torch.randn(NUM_QO_HEADS, HEAD_DIM, dtype=torch.float16, device=DEVICE)
-    k = torch.randn(seq_len, NUM_KV_HEADS, HEAD_DIM, dtype=torch.float16, device=DEVICE)
-    v = torch.randn(seq_len, NUM_KV_HEADS, HEAD_DIM, dtype=torch.float16, device=DEVICE)
 
-    def run():
-        flashinfer.single_decode_with_kv_cache(q, k, v, kv_layout="NHD")
+    if BATCH == 1:
+        # single_decode_with_kv_cache: [qo_heads, hd] × [seq, kv_heads, hd]
+        q = torch.randn(NUM_QO_HEADS, HEAD_DIM, dtype=torch.float16, device=DEVICE)
+        k = torch.randn(seq_len, NUM_KV_HEADS, HEAD_DIM, dtype=torch.float16, device=DEVICE)
+        v = torch.randn(seq_len, NUM_KV_HEADS, HEAD_DIM, dtype=torch.float16, device=DEVICE)
+        def run():
+            flashinfer.single_decode_with_kv_cache(q, k, v, kv_layout="NHD")
+        try:
+            return _capture_and_time(run)
+        except Exception as e:
+            return {"error": f"flashinfer call failed: {e}"}
+
+    # BatchDecodeWithPagedKVCacheWrapper for batch > 1
+    page_size = PAGE_SIZE
+    num_pages_per_seq = (seq_len + page_size - 1) // page_size
+    total_pages = BATCH * num_pages_per_seq
+    # Paged KV cache: [total_pages, 2, page_size, num_kv_heads, head_dim]
+    kv_data = torch.randn(total_pages, 2, page_size, NUM_KV_HEADS, HEAD_DIM,
+                          dtype=torch.float16, device=DEVICE)
+    # Page table
+    kv_indices = torch.arange(total_pages, dtype=torch.int32, device=DEVICE)
+    kv_indptr = torch.arange(BATCH + 1, dtype=torch.int32, device=DEVICE) * num_pages_per_seq
+    last_page_len = torch.full((BATCH,), seq_len - (num_pages_per_seq - 1) * page_size,
+                               dtype=torch.int32, device=DEVICE)
+    q = torch.randn(BATCH, NUM_QO_HEADS, HEAD_DIM, dtype=torch.float16, device=DEVICE)
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=DEVICE)
 
     try:
+        wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(workspace, "NHD")
+        wrapper.plan(kv_indptr, kv_indices, last_page_len,
+                     NUM_QO_HEADS, NUM_KV_HEADS, HEAD_DIM, page_size,
+                     q_data_type=torch.float16, kv_data_type=torch.float16)
+        def run():
+            wrapper.run(q, kv_data)
         return _capture_and_time(run)
     except Exception as e:
-        return {"error": f"flashinfer call failed: {e}"}
+        import traceback
+        return {"error": f"flashinfer BatchDecode failed: {e}",
+                "traceback": traceback.format_exc()[:500]}
 
 
 def _bench_v4_graph(seq_len: int, data: dict):
