@@ -299,17 +299,31 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # v5 tensor-core decode with fused Hadamard rotation.
-            # Kernel applies forward FWHT to Q and inverse FWHT to output.
-            result = self._v5_module.decode_v5_from_cache(
-                q_fp16, kv_cache,
-                kv_indices, kv_indptr, kv_last_page_len,
-                seq_lens,
-                self.num_kv_heads, block_size,
-                self.head_size, self._pd, self.scale,
-                self._signs if self._signs is not None else torch.empty(0, device=q.device),
-                self._qbytes, self._nbytes,
-            )
+            # v5 tensor-core decode allocates gather buffers internally,
+            # which is illegal during CUDA graph capture. Use v4 under
+            # graphs (graph-safe, no allocations) and v5 under eager
+            # (2.5× faster kernel).
+            is_capturing = torch.cuda.is_current_stream_capturing()
+            if is_capturing:
+                result = torch.ops.turboquant.decode_v4_from_cache(
+                    q_fp16, kv_cache,
+                    kv_indices, kv_indptr, kv_last_page_len,
+                    seq_lens,
+                    self.num_kv_heads, block_size,
+                    self.head_size, self._pd, self.scale,
+                    self._signs,
+                    self._qbytes, self._nbytes,
+                )
+            else:
+                result = self._v5_module.decode_v5_from_cache(
+                    q_fp16, kv_cache,
+                    kv_indices, kv_indptr, kv_last_page_len,
+                    seq_lens,
+                    self.num_kv_heads, block_size,
+                    self.head_size, self._pd, self.scale,
+                    self._signs if self._signs is not None else torch.empty(0, device=q.device),
+                    self._qbytes, self._nbytes,
+                )
 
             if self.head_size < self._pd:
                 output[:num_actual] = result[:num_actual, :, :self.head_size]
