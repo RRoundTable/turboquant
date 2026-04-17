@@ -272,9 +272,11 @@ Until merged, 4 files vendored in `docker/vllm_patches/`.
 
 ## Experiment History
 
-34 hypotheses in `docs/hypotheses/` (HYP-001 to HYP-035):
-- 15 confirmed, 14 rejected, 5 pending
-- Kernel evolved: 856μs → 110μs v5-paged-split @ seq=4096 (vs FlashInfer 41μs)
+35 hypotheses in `docs/hypotheses/` (HYP-001 to HYP-035 + HYP-032):
+- 16 confirmed, 14 rejected, 4 pending
+- Kernel evolved: 856μs → **64μs v5-paged-split @ seq=4096** (vs FlashInfer 44μs)
+- **TurboQuant beats FlashInfer at seq=512** (0.87×); within 1.47× at seq=4096
 - Key confirmed: HYP-008 (bdz=16), HYP-017 (contiguous), HYP-018 (split-KV),
   HYP-023 (CUDA graphs), HYP-029 (graph-safe ops), HYP-031 (tensor-core v5),
-  HYP-033 (v5 graph-safety), HYP-034 (v5 split-KV), HYP-035 (paged-native v5)
+  HYP-033 (v5 graph-safety), HYP-034 (v5 split-KV), HYP-035 (paged-native v5),
+  HYP-032 (warp-shuffle codebook LUT)

@@ -417,9 +417,14 @@ Priorities (see HYP-030 for sizing):
       the page table directly (like v4). Confirmed — all predictions hit.
       seq=4096: **197 → 110 μs (-44%)**, FlashInfer gap shrinks to 2.69×.
       seq=1024 is **within 1.36× of FlashInfer**. Gather workspaces dropped
-      from the hot path. The only remaining major lever is HYP-032 (Marlin
-      dequant → tensor core) which would attack the ~60 μs per-token
-      scalar-FMA dequant that dominates the residual gap.
+      from the hot path.
+- [x] **13g.** HYP-032: Register-resident codebook with warp-shuffle LUT.
+      Replaces per-nibble constant-memory lookups (serialized across warp
+      lanes) with 1-cycle `__shfl_sync` broadcasts. Confirmed, predictions
+      exceeded. seq=4096: **110 → 64 μs (-42%)**. **TurboQuant now beats
+      FlashInfer at seq=512 (0.87×)** and is within 1.47× at seq=4096 —
+      Phase 13 goal effectively achieved. Cumulative HYP-033→032 at
+      seq=4096: 1323 → 64 μs (20.6× faster).
 
 ### Phase 14: vLLM upstream PR — CLOSE-OUT
 

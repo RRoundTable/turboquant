@@ -50,13 +50,20 @@ static constexpr uint32_t V5_WMMA_K = 16;
 // Cooperative dequant: packed 4-bit bytes in staging smem -> fp16 in kv_smem.
 // 32 threads in a warp each handle total_bytes/32 packed bytes.
 // For head_dim=128: 64 bytes/token, 2 bytes/thread = 4 fp16 outputs/thread.
+//
+// HYP-032: codebook is pre-loaded into a per-lane register (cb_reg). Lane i
+// holds kCodebook4bit[i] for i in [0, 16); lanes 16..31 hold 0 (never read).
+// __shfl_sync fetches the target entry in 1 cycle instead of 4-10 cycles via
+// constant memory. `__shfl_sync` with idx in [0, 16) always hits a valid
+// source lane, so no mask gymnastics needed.
 // --------------------------------------------------------------------------
 template <uint32_t head_dim>
 __device__ __forceinline__ void dequant_row_to_fp16_v5(
     __half* kv_fp16_row,             // output: [head_dim] fp16 in smem
     const uint8_t* staging_row,      // input: packed bytes for this token in smem
     const float* smem_norms_row,     // input: [dim_chunks] norm*codebook_scale values
-    uint32_t tx                      // lane id 0..31
+    uint32_t tx,                     // lane id 0..31
+    float cb_reg                     // HYP-032: per-lane codebook entry
 ) {
     constexpr uint32_t dim_chunks = head_dim / 64;
     constexpr uint32_t bytes_per_chunk = 32;  // 64 dims x 4 bits / 8
@@ -73,11 +80,11 @@ __device__ __forceinline__ void dequant_row_to_fp16_v5(
         float ns = smem_norms_row[chunk];
         uint8_t packed = staging_row[byte_idx];
 
-        uint8_t hi_idx = (packed >> 4) & 0x0F;
-        uint8_t lo_idx = packed & 0x0F;
+        uint32_t hi_idx = (packed >> 4) & 0x0F;
+        uint32_t lo_idx = packed & 0x0F;
 
-        float hi_val = turboquant::kCodebook4bit[hi_idx] * ns;
-        float lo_val = turboquant::kCodebook4bit[lo_idx] * ns;
+        float hi_val = __shfl_sync(0xFFFFFFFF, cb_reg, hi_idx) * ns;
+        float lo_val = __shfl_sync(0xFFFFFFFF, cb_reg, lo_idx) * ns;
 
         kv_fp16_row[dim_base]     = __float2half(hi_val);
         kv_fp16_row[dim_base + 1] = __float2half(lo_val);
@@ -142,6 +149,11 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
     const uint32_t chunk_size = (chunk_end > chunk_start) ? (chunk_end - chunk_start) : 0;
 
     float codebook_scale = rsqrtf(static_cast<float>(params.padded_dim));
+
+    // HYP-032: register-resident codebook. Lane i holds kCodebook4bit[i] for
+    // i in [0, 16); lanes 16..31 hold 0 (never read — nibbles are 4-bit).
+    // Replaces per-nibble constant-memory lookups with 1-cycle warp shuffles.
+    const float cb_reg = (tx < 16) ? turboquant::kCodebook4bit[tx] : 0.0f;
 
     size_t quant_base = (size_t)batch_idx * params.quant_stride_batch
                       + (size_t)kv_head_idx * params.quant_stride_head;
@@ -388,7 +400,7 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
                     kv_smem + row * head_dim,
                     staging + row * bytes_per_row,
                     smem_norms + row * dim_chunks,
-                    tx
+                    tx, cb_reg
                 );
             } else {
                 for (uint32_t d = tx; d < head_dim; d += 32) {
@@ -571,7 +583,7 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
                     kv_smem + row * head_dim,
                     staging + row * bytes_per_row,
                     smem_norms + row * dim_chunks,
-                    tx
+                    tx, cb_reg
                 );
             } else {
                 for (uint32_t d = tx; d < head_dim; d += 32) {
