@@ -130,7 +130,82 @@ Full sweep on notebook (pod 954bf563 or fresh), seq ∈ {256, 512, 1024, 2048,
 `tests/test_v5_graph.py` cosine gate + per-call cosine in bench. Expect
 cos ≥ 0.9999 (fp16 accumulation order unchanged, just moved loads earlier).
 
-## Status: pending (probe-gated)
+## Status: rejected at probe gate (nvcuda::wmma API limitation)
+
+## Results (Forge A100 notebook, 2026-04-17)
+
+Extended the phase probe with a `5h_interleave_PIPELINED` variant exactly as
+proposed: double-buffered (a0,b0) and (a1,b1) fragments with loads for tile
+N+1 issued before the mma_sync for tile N.
+
+```
+5g interleave N=1 (baseline)  1043 cycles  (740 ns)
+5h interleave PIPELINED       1040 cycles  (738 ns)  ← same, within noise
+```
+
+**Zero speedup from software-pipelined loads.** Probe gate rejected before
+touching production.
+
+## Analysis
+
+`nvcuda::wmma::load_matrix_sync` is a **synchronous** call — it blocks the
+warp until the smem load completes. The PTX it lowers to (`ldmatrix.sync`)
+has no async variant in the WMMA path. Issuing the load earlier in source
+code doesn't let it overlap with the preceding mma_sync, because:
+
+1. The PTX `ldmatrix.sync` has a fence before it returns.
+2. The compiler serializes the load behind any prior dependent instruction.
+3. Even if the load is independent, the warp scheduler won't issue more
+   than one memory op at a time without async semantics.
+
+To get real overlap on Ampere WMMA, we'd need:
+- `ldmatrix.async` (available in PTX but NOT exposed by `nvcuda::wmma`)
+- `cp.async.bulk.tensor` (SM90+, Ampere has only cp.async.ca)
+- Drop to raw PTX `mma.sync` + manual fragment register allocation + explicit
+  scoreboard management
+
+All of which is a large kernel rewrite: hundreds of lines of inline PTX,
+handling register allocation by hand, losing the `nvcuda::wmma` portability.
+
+## Prediction verdicts
+
+| Prediction | Target | Result | Verdict |
+|-----------|--------|--------|---------|
+| Pipelined 5h ≤ 0.85 × baseline 5g (probe) | ≤ 890 cycles | 1040 cycles (0% win) | ✗ rejected |
+| End-to-end seq=4096 | 77 → ~55 μs | not tested | — |
+
+## The common thread across HYP-036, HYP-037, HYP-038 rejections
+
+All three aimed at WMMA_QK (41% of kernel), all three failed:
+
+| hyp | target | why it failed |
+|-----|--------|---------------|
+| HYP-036 | warp-butterfly softmax | Shuffle reductions slower than unrolled scalar when all lanes broadcast-read same data. |
+| HYP-037 | parallel c_frag | Real bottleneck is load→mma dep, not c_frag chain. |
+| HYP-038 | pipelined loads | `nvcuda::wmma::load_matrix_sync` is synchronous, can't pipeline. |
+
+**Root cause: the nvcuda::wmma API's abstraction level is too high for the
+optimizations that would work on this kernel.** load_matrix_sync + mma_sync
+are black boxes; we can't expose their internal pipelining to the scheduler.
+
+## Decision
+
+Stop pushing on WMMA_QK via the high-level API. Possible next moves, in
+order of effort:
+
+1. **Accept current state** (within 1.47× of FlashInfer at seq=4096, beating
+   FI at seq=512). Memory savings remain 3.8×. Ship.
+2. **Raw PTX rewrite**: ~weeks of work, uncertain payoff, loses portability.
+3. **Investigate INT4 tensor cores** (HYP-019 was rejected long ago but
+   perhaps worth revisiting with the current profile data).
+4. **Just stop here**: this is a natural stopping point for the v5_paged
+   optimization effort.
+
+Recommending option 4 for this session. The WMMA_QK bottleneck is
+addressable only through a full PTX rewrite, which is a different class of
+effort than the single-file HYPs we've been running.
+
+## References
 
 ## References
 
