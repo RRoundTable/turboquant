@@ -2,220 +2,251 @@
 
 ## Overview
 
-TurboQuant compresses LLM KV cache from FP16 to 4-bit (3.76× compression) with
-near-zero quality loss. The system has two CUDA kernels (write + decode) and a
-vLLM serving backend.
+TurboQuant compresses LLM KV cache from FP16 to 4-bit codebook quantization
+(3.2× compression on A100, 3.76× theoretical) with near-zero quality loss.
+It runs as a **vLLM plugin** — no vLLM source modification required (4 vendored
+patches until upstream PR merges).
 
-```
-Prefill:                                    Decode:
-  K,V [fp16] ──CUDA write kernel──►          Q [fp16] + KV cache [4-bit]
-    normalize → codebook quantize →            ──CUDA decode kernel──►
-    nibble pack → store 4-bit                  cp_async → inline dequant →
-                                               QK dot → softmax → V accum →
-  KV cache: [batch, heads, seq, 68B/tok]       output [fp16]
-  (vs FP16: 256B/tok = 3.76× less)
+```mermaid
+flowchart LR
+    subgraph Prefill
+        KV_fp16["K,V fp16"] --> WriteKernel["CUDA Write Kernel<br/>normalize → FWHT →<br/>codebook quantize → pack"]
+        WriteKernel --> Cache["KV Cache<br/>[2, blocks, block_size,<br/>heads, 80B/head]<br/>uint8"]
+    end
+    subgraph Decode
+        Q["Q fp16"] --> DecodeKernel
+        Cache --> Gather["Gather<br/>paged → contiguous"]
+        Gather --> DecodeKernel["CUDA Decode Kernel<br/>FWHT(Q) → cp_async →<br/>dequant → WMMA QK →<br/>softmax → V accum →<br/>FWHT⁻¹(output)"]
+        DecodeKernel --> Out["Output fp16"]
+    end
+    subgraph vLLM
+        Plugin["vllm_plugin.py<br/>entry_points"] --> Backend["TurboQuantBackend<br/>vllm_backend_fused.py"]
+        Backend --> WriteKernel
+        Backend --> DecodeKernel
+    end
 ```
 
-## Key Results (A100, 5 models validated)
+## Key Results (A100-40GB, Qwen3-8B)
 
 | Metric | Value |
 |--------|-------|
-| KV compression | 3.76× (4-bit + fp16 norms) |
-| TPOT overhead (eager) | 0-2% across 5 models |
-| TPOT overhead (CUDA graphs, seq=1024) | 2.5% |
-| TTFT overhead (CUDA write kernel) | 3.7% |
-| Quality (PPL) | 14.91 → 14.91 (0.01% loss) |
-| Correctness | 100% exact token match (12 prompts × 2 models) |
-| Throughput at max batch | ~3.6× gain |
-| Decode kernel | 856μs → 37μs (23× speedup, 23 hypotheses) |
+| KV compression | 3.2× (4-bit + fp16 norms, 80B/head vs 256B/head) |
+| KV tokens (A100-40GB) | 266K (TQ) vs 83K (FP16) vs 166K (FP8 native) |
+| TPOT @ seq=128 | 6.5 ms eager (vs FP16 3.9ms = 1.7×) |
+| TPOT @ seq=4096 | 16.0 ms eager (vs FP16 4.1ms = 3.9×) |
+| TPOT @ seq=32768 | 366 ms eager (vs FP16 20ms = 18×) |
+| Kernel standalone @ 4096 | v5: 0.82 ms (vs FlashInfer 0.21 ms = 3.8×) |
+| Kernel standalone @ 128 | v5: 0.04 ms (vs FlashInfer 0.34 ms = **TQ wins**) |
+| Quality (PPL) | 14.91 → 14.91 (0.01% loss, WikiText-2) |
+| Correctness | 100% exact token match (Qwen3-1.7B, 8B) |
+| CUDA graph capture | ✅ (v4 path, graph-safe ops) |
 
 ## Tech Stack
 
-| Layer | Choice |
-|-------|--------|
-| Decode kernel | CUDA C++ (v4 contiguous + split-KV) |
-| Write kernel | CUDA C++ (fused normalize → quantize → pack) |
-| Algorithm | Python/PyTorch (codebook, Hadamard, quantizer) |
-| Serving | vLLM v0.19.0 backend |
-| FlashInfer | Headers only (math utils, cp_async, state_t) |
-| Testing | pytest (Python), JIT compile (CUDA) |
-| Profiling | nsys (timeline), torch.profiler (timing) |
-| GPU targets | A100-SXM4-40GB (primary), DGX Spark GB10 (legacy) |
-| Experiment infra | Forge cluster (notebooks + jobs) |
+| Layer | Choice | Files |
+|-------|--------|-------|
+| Decode kernel v5 | CUDA C++ + WMMA tensor cores | `csrc/include/flashinfer_decode_turboquant_v5_tc.cuh` |
+| Decode kernel v4 | CUDA C++ scalar FMA (graph-safe) | `csrc/include/flashinfer_decode_turboquant_v4.cuh` |
+| Write kernel | CUDA C++ (fused FWHT + quantize + scatter) | `csrc/include/turboquant/quantize_write_kernel.cuh` |
+| Paged KV struct | CUDA C++ | `csrc/include/turboquant/page_turbo.cuh` |
+| Algorithm | Python/PyTorch (codebook, Hadamard, quantizer) | `turboquant/*.py` |
+| Serving | vLLM v0.19.0 plugin (entry_points) | `turboquant/vllm_plugin.py`, `vllm_backend_fused.py` |
+| FlashInfer | Headers only (math, cp_async, state_t) | pip `flashinfer-python` |
+| Docker | CUDA 12.6 + vLLM + patches | `Dockerfile`, `docker/vllm_patches/` |
+| Deployment | Forge A100 cluster / ECR | `847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant` |
 
 ## Directory Structure
 
 ```
 turboquant/
-├── csrc/
+├── turboquant/                    # Python package
+│   ├── vllm_plugin.py             # vLLM entry_points registration
+│   ├── vllm_backend_fused.py      # TurboQuantBackend + TurboQuantFusedImpl
+│   ├── decode_kernel_v4.py        # JIT compile v4 decode binding
+│   ├── write_kernel.py            # Python write kernel wrapper
+│   ├── codebook.py                # Lloyd-Max codebook centroids + boundaries
+│   ├── hadamard.py                # Hadamard rotation (Python reference)
+│   ├── quantizer.py               # Core quantize/dequantize logic
+│   ├── tile.py                    # Tile constants (TILE_DIMS=64, packing)
+│   └── kernel_config.py           # Model presets (head_dim, GQA configs)
+│
+├── csrc/                          # CUDA kernels
 │   ├── include/
-│   │   ├── turboquant/
-│   │   │   ├── page_turbo.cuh              # Paged KV cache struct + codebook constants
-│   │   │   ├── flashinfer_dequant_load.cuh # Dequant-load helpers (cp_async + LUT)
-│   │   │   └── quantize_write_kernel.cuh   # CUDA write kernel (normalize→quantize→pack)
-│   │   ├── flashinfer_decode_turboquant_v2.cuh  # FlashInfer-integrated decode (Params struct)
-│   │   ├── flashinfer_decode_turboquant_v3.cuh  # cp_async staged (rejected)
-│   │   ├── flashinfer_decode_turboquant_v4.cuh  # Inline dequant, no fp16 smem (BEST paged)
-│   │   ├── flashinfer_decode_turboquant_v4_contiguous.cuh  # Contiguous KV (BEST overall)
-│   │   ├── flashinfer_decode_turboquant_v5_warpspec.cuh    # Warp specialized (rejected)
-│   │   ├── flashinfer_decode_turboquant_v5_tc.cuh         # Tensor-core WMMA (HYP-031)
-│   │   └── flashinfer_decode_turboquant_combine.cuh        # Split-KV combine kernel
+│   │   ├── flashinfer_decode_turboquant_v5_tc.cuh  # v5 tensor-core decode (WMMA)
+│   │   ├── flashinfer_decode_turboquant_v4.cuh      # v4 scalar-FMA paged decode
+│   │   ├── flashinfer_decode_turboquant_v4_contiguous.cuh  # v4/v5 contiguous params
+│   │   ├── flashinfer_decode_turboquant_v3.cuh      # cp_async helpers
+│   │   ├── flashinfer_decode_turboquant_v2.cuh      # TurboQuantBatchDecodeParams
+│   │   ├── flashinfer_decode_turboquant_combine.cuh  # Split-KV combine kernel
+│   │   └── turboquant/
+│   │       ├── page_turbo.cuh          # paged_kv_turbo_t (KV cache struct)
+│   │       ├── quantize_write_kernel.cuh  # Write kernel (FWHT + quantize + scatter)
+│   │       ├── flashinfer_dequant_load.cuh  # Dequant load helpers
+│   │       └── hadamard.cuh            # Hadamard rotation device code
 │   └── src/
-│       ├── decode_v4_binding.cu            # Paged v4 + split-KV binding
-│       ├── decode_v4_contiguous_binding.cu # Contiguous v4 + split-KV binding
-│       ├── decode_v5_tc_binding.cu         # Tensor-core v5 + split-KV binding (HYP-031)
-│       └── quantize_write_binding.cu       # Write kernel binding
-├── turboquant/                             # Python package
-│   ├── quantizer.py                        # TurboQuantMSE, TurboQuantProd
-│   ├── codebook.py                         # Lloyd-Max codebook (4-bit, 16 levels)
-│   ├── hadamard.py                         # FWHT + RandomHadamardRotation
-│   ├── kernel_config.py                    # Model presets + kernel dispatch config
-│   ├── decode_kernel.py                    # v1 standalone kernel wrapper (legacy)
-│   ├── decode_kernel_v4.py                 # v4 kernel wrapper + contiguous dispatch
-│   ├── triton_decode.py                    # Triton port (for KernelAgent)
-│   ├── triton_decode_ref.py                # PyTorch reference for Triton
-│   └── write_kernel.py                     # Python write kernel reference
-├── vllm_backend_fused.py                   # vLLM attention backend (contiguous v4)
-├── tests/
-│   ├── test_v4_correctness.cu              # v4 paged kernel tests
-│   ├── test_v4_contiguous.cu               # v4 contiguous + split-KV + fused combine
-│   ├── test_triton_decode.py               # Triton kernel correctness
-│   ├── bench_contiguous.py                 # Contiguous + split-KV benchmark
-│   ├── bench_write_kernel.py               # Write kernel benchmark
-│   ├── bench_int4_tc.py                    # INT4 tensor core experiment
-│   └── test_v5_tc.py                       # v5 tensor-core kernel test (HYP-031)
+│       ├── decode_v4_binding.cu        # v4 PyTorch bindings (torch.ops.turboquant.*)
+│       ├── decode_v5_tc_binding.cu     # v5 bindings (decode_v5_from_cache + gather)
+│       └── quantize_write_binding.cu   # Write bindings (torch.ops.turboquant_write.*)
+│
+├── docker/
+│   └── vllm_patches/              # Vendored vLLM patches (until upstream PR merges)
+│       ├── v1/attention/backend.py         # get_kv_cache_page_size() seam
+│       ├── v1/kv_cache_interface.py        # custom_page_size field
+│       ├── v1/worker/gpu_model_runner.py   # Sub-view reshape for smaller shapes
+│       └── model_executor/layers/attention/attention.py
+│
+├── tests/                         # GPU tests + benchmarks
+│   ├── test_decode_from_cache.py  # HYP-029 byte-equivalence test
+│   ├── test_v5_tc.py              # HYP-031 v5 correctness + benchmark
+│   ├── test_decode_kernel.py      # v4 kernel correctness
+│   └── bench_*.py                 # Various benchmark scripts
+│
 ├── docs/
-│   ├── GOAL.md                             # Project goal + success criteria
-│   ├── ROADMAP.md                          # Phase 1-9 status
-│   ├── ARCHITECTURE.md                     # This file
-│   ├── SPEC.md                             # Behavioral spec
-│   ├── hypotheses/                         # 23 experiment records (HYP-001 to HYP-023)
-│   └── reference/                          # Benchmarks, comparisons, analysis docs
-└── CLAUDE.md                               # Dev workflow + profiling guide
+│   ├── GOAL.md                    # Project goal + success criteria
+│   ├── ROADMAP.md                 # Phase 1-14 roadmap
+│   ├── SPEC.md                    # Behavioral spec
+│   ├── ARCHITECTURE.md            # This file
+│   ├── hypotheses/                # 31 experiment records (HYP-001 to HYP-031)
+│   └── reference/                 # Supplementary analysis docs
+│
+├── Dockerfile                     # CUDA 12.6 + vLLM + patches + TurboQuant
+├── pyproject.toml                 # Package config + vLLM entry_points
+└── setup.py                       # data_files for csrc/ distribution
 ```
 
-## Quantization Algorithm
+## Data Flow
+
+### Prefill (write path)
 
 ```
-Write (prefill):
-  1. L2 normalize: norm = ||kv||₂, x̂ = kv / norm
-  2. (Optional) Hadamard rotate: x̃ = signs ⊙ FWHT(x̂)  →  ~N(0, 1/d)
-  3. Lloyd-Max quantize: 16-level codebook for N(0,1), find nearest centroid
-  4. Nibble pack: 2 × 4-bit indices per byte (hi << 4 | lo)
-  5. Store: packed bytes + fp16 norm per token per 64-dim chunk
-
-Read (decode):
-  1. Load packed bytes from KV cache (cp_async or global load)
-  2. Unpack nibbles: hi = (byte >> 4) & 0xF, lo = byte & 0xF
-  3. Codebook lookup: val = codebook[index] × codebook_scale × norm
-  4. Use in attention: QK dot product, softmax, V accumulate
+Input: K, V [num_tokens, num_heads, head_dim] fp16
+  ↓
+quantize_write_kv_cache (CUDA kernel, dispatcher-routed):
+  1. L2 normalize per head
+  2. Signs × FWHT (Hadamard rotation, warp shuffles)
+  3. Codebook quantize (Lloyd-Max 4-bit, 16 levels)
+  4. Nibble pack (2 dims per byte)
+  5. Scatter to kv_cache[slot] via slot_mapping
+  ↓
+Output: kv_cache [2, num_blocks, block_size, num_heads, 80B/head] uint8
+  Layout per head: [32B quant | 4B norms (fp16) | 44B padding (16-byte aligned)]
 ```
 
-Codebook (constant memory, 16 entries):
+### Decode (read path)
+
+Two kernel paths, selected at runtime:
+
+**v4 (graph-safe, used under CUDA graph capture):**
 ```
-[-2.733, -2.069, -1.618, -1.256, -0.942, -0.657, -0.388, -0.128,
-  0.128,  0.388,  0.657,  0.942,  1.256,  1.618,  2.069,  2.733]
-```
-
-Per token per head: 32 packed bytes + 2 norm bytes = 34 bytes per 64-dim chunk.
-For head_dim=128: 68 bytes (vs FP16: 256 bytes = **3.76× compression**).
-
-## Decode Kernel Architecture (v4 contiguous)
-
-The production kernel. No fp16 smem buffer — dequant happens inline during compute.
-
-```
-Grid: (batch × kv_heads × num_splits,)  — adaptive split-KV
-Block: (bdx=16, bdy=GQA_ratio, bdz=16)  — 256 threads
-
-Per tile iteration (tile_tokens = bdx × bdy × bdz / bdx × tile_per_bdx):
-  Phase 1: cp_async packed K bytes → staging smem (HW DMA)
-           + precompute K norms → smem (overlapped with cp_async)
-           + wait + sync
-  Phase 2: QK with inline dequant
-           - Each thread reads packed bytes from staging
-           - Codebook lookup → float (no fp16 intermediate)
-           - Dot product with Q, warp shuffle reduce
-           - Online softmax update
-           + sync
-  Phase 3: cp_async packed V bytes → staging + precompute V norms
-           + wait + sync
-  Phase 4: V accumulate with inline dequant
-           + sync
-
-Cross-warp merge: sync_state (FlashInfer's online softmax merge)
-Output: fp16 (normal) or float (split-KV partial)
+kv_cache → decode_v4_from_cache (torch.ops.turboquant.*):
+  1. Derive k_base/v_base/norms from kv_cache.data_ptr() (dispatcher-refreshed)
+  2. FWHT(signs × Q) in registers (fused into kernel)
+  3. Per-tile loop: cp_async 4-bit → smem staging → inline dequant → scalar FMA QK
+  4. Online softmax across tiles
+  5. V dequant + scalar FMA accumulate
+  6. FWHT(output) × signs (inverse rotation)
+  → output [batch, num_qo_heads, head_dim] fp16
 ```
 
-**Shared memory: ~7 KB** (staging + norms). vs v2's ~32 KB (fp16 K+V buffers).
-
-## Split-KV (FlashDecoding)
-
-For long sequences, partition KV across multiple blocks per (batch, kv_head):
-
+**v5 tensor-core (eager mode, 2.5× faster kernel):**
 ```
-seq=1024, 8 splits: each block handles 128 tokens
-Grid: 1 × 8 × 8 = 64 blocks (vs 8 without split)
-Combine: separate kernel merges partial results via online softmax
-
-Adaptive policy:
-  seq ≤ 256: nosplit (TQ faster than FlashInfer!)
-  seq 512-1024: 4-8 splits
-  seq 2048+: 16-24 splits
-  CUDA graph at seq ≥ 512: 26% kernel speedup
+kv_cache → decode_v5_from_cache (pybind):
+  1. gather_paged_to_contiguous (CUDA kernel): NHD paged → HND contiguous
+  2. FWHT(signs × Q) in registers (32 threads × 4 elements)
+  3. Per-tile loop:
+     a. cp_async 4-bit → smem staging
+     b. Cooperative dequant → fp16 smem buffer
+     c. wmma::load_matrix_sync + wmma::mma_sync for QK (tensor cores)
+     d. Scalar online softmax
+     e. Dequant V + scalar accumulate
+  4. Cross-warp merge (online softmax)
+  5. FWHT(output) × scale × signs (inverse rotation, smem repack)
+  → output [batch, num_qo_heads, head_dim] fp16
 ```
 
-## Write Kernel
-
-Fused CUDA kernel for prefill KV quantization:
-
-```
-Grid: (num_tokens, num_heads)
-Block: 32 threads (single warp, no syncthreads)
-
-Per (token, head):
-  1. L2 norm via warp shuffle reduction
-  2. Normalize
-  3. Binary search on 15 boundaries → 4-bit index [0..15]
-  4. Nibble pack: (idx_even << 4) | idx_odd
-  5. Store packed bytes + fp16 norm
+**Runtime selection:**
+```python
+if torch.cuda.is_current_stream_capturing():
+    # Graph capture → v4 (zero allocations, dispatcher-routed)
+else:
+    # Eager → v5 (gather + WMMA, 2.5× faster kernel)
 ```
 
-**41 μs per layer** (vs Python 424 μs = 10× faster, vs memcpy 21 μs = 2× overhead).
+## Module Boundaries
 
-## Key Design Decisions (from 23 experiments)
+**Dependency direction:** `vllm_backend_fused` → `decode_kernel_v4` / `v5_tc_binding` → `page_turbo.cuh` / `quantize_write_kernel.cuh`
 
-| Decision | Rationale | Evidence |
-|----------|-----------|---------|
-| **Inline dequant (no fp16 smem)** | 4× less smem traffic, no half↔float conversion | HYP-006: 22-33% faster than v2 |
-| **Contiguous KV layout** | Eliminates 32μs paging overhead (divmod + indirect load) | HYP-017: beats FlashInfer at seq≤256 |
-| **Split-KV for long seq** | Distributes work across SMs (8 blocks → 64+) | HYP-018: flat 47μs at seq=1024-4096 |
-| **bdz=16** | Occupancy is #1 bottleneck, not compute | HYP-008: 3.3× speedup |
-| **CUDA graph capture** | 26% kernel speedup from eliminating launch overhead | HYP-023: 2.5% TPOT overhead |
-| **Scalar FMA (no tensor cores)** | Rank-1 decode underutilizes M16 MMA tile | HYP-007a, HYP-019: TC slower at bdy≤2 |
-| **Separate combine kernel** | __threadfence in fused version costs more than kernel launch | HYP-022: fused 8% slower |
-| **No pipelining** | Compute:load ratio is 10:1, nothing to overlap | HYP-005, HYP-020: both rejected |
+```
+vllm_plugin.py          ← vLLM entry_points (auto-loads on import)
+    ↓
+vllm_backend_fused.py   ← TurboQuantBackend (FlashAttentionBackend subclass)
+    ↓                      TurboQuantFusedImpl (FlashAttentionImpl subclass)
+    ├── torch.ops.turboquant.decode_v4_from_cache  (graph path)
+    ├── v5_module.decode_v5_from_cache             (eager path)
+    └── torch.ops.turboquant_write.quantize_write_kv_cache  (write path)
+```
 
-## Model Support
+**Import rules:**
+- `turboquant/*.py` never imports from `vllm` at module level (deferred to method bodies)
+- CUDA kernels are JIT-compiled on first use via `torch.utils.cpp_extension.load`
+- `csrc/` has no Python imports — pure C++/CUDA
+- `docker/vllm_patches/` are standalone vLLM file overlays, not imports
 
-Generalized dispatch supports any (head_dim, GQA ratio) via `kernel_config.py`:
+## Quantization Format
 
-| Model | QO/KV | GQA | head_dim | Validated |
-|-------|-------|-----|----------|-----------|
-| Qwen3-0.6B | 16/8 | 2:1 | 64 | Correctness + TPOT |
-| Qwen3-1.7B | 16/8 | 2:1 | 128 | Full E2E + PPL |
-| Qwen3-4B | 32/8 | 4:1 | 80 | Correctness + TPOT |
-| Qwen3-8B | 32/8 | 4:1 | 128 | Full E2E + PPL |
-| Mistral-7B | 32/8 | 4:1 | 128 | Correctness + TPOT |
-| Llama-2-7B | 32/32 | 1:1 | 128 | Kernel only |
-| Llama-3-8B | 32/8 | 4:1 | 128 | Kernel only |
-| Llama-3-70B | 64/8 | 8:1 | 128 | Kernel only |
+Per token per head (hd=128, 2 dim_chunks of 64):
 
-## Constraints
+| Field | Bytes | Content |
+|-------|-------|---------|
+| Quantized data | 64 | 128 dims × 4 bits, nibble-packed |
+| L2 norms | 4 | 2 × fp16 (one per 64-dim chunk) |
+| Padding | 12 | Zero (16-byte alignment for cp_async) |
+| **Total** | **80** | vs FP16: 256B (3.2× compression) |
 
-- GPU only — no CPU device support
-- head_dim must be multiple of 64 (padded if not)
-- GQA ratio must be integer (bdy = num_qo_heads / num_kv_heads)
-- Lloyd-Max codebook assumes Hadamard-rotated vectors follow ~N(0,1/d)
-- Contiguous layout requires pre-allocated max_seq (no dynamic paging)
-- CUDA graph capture requires fixed seq_len per graph (re-capture on change)
+Codebook: Lloyd-Max optimal for N(0,1), 16 levels (4-bit), stored in `__constant__` memory.
+
+Hadamard rotation (FWHT) applied to both K/V at write time and Q/output at decode time
+ensures the quantization error is uniformly distributed across dimensions (near-optimal
+distortion rate, arXiv:2504.19874).
+
+## CUDA Graph Support
+
+Three bugs blocked graph replay (HYP-027/028/029, all fixed):
+
+1. **Read path**: `cache_u8 = kv_cache.view(uint8)` baked placeholder ptr → fixed by
+   `decode_v4_from_cache` taking `kv_cache` as a Tensor arg through the dispatcher.
+2. **Write path**: Python scatter baked ptr → fixed by `quantize_write_kv_cache` op.
+3. **Alignment**: `cp_async.ca` 128-bit loads need 16-byte aligned src → `bytes_per_head`
+   padded to `align(qbytes+nbytes, 16)`.
+4. **get_length**: strided indptr gave wrong seq_len → `paged_kv_turbo_t` takes `seq_lens` directly.
+
+v5 is NOT graph-safe (allocates gather buffers inside the op). Falls back to v4 during capture.
+
+## Deployment
+
+```
+Dockerfile → tq-hyp029:v2 (Forge) → ECR (847366387031)
+  - CUDA 12.6 + vLLM 0.19.0 + FlashInfer + TurboQuant
+  - docker/vllm_patches/ applied at build time
+  - TURBOQUANT_CSRC=/opt/turboquant/csrc for JIT
+
+Launch:
+  vllm serve Qwen/Qwen3-8B --dtype float16 \
+    --attention-backend CUSTOM --kv-cache-dtype fp8 \
+    --gpu-memory-utilization 0.85
+```
+
+## Upstream vLLM PR
+
+Draft PR: https://github.com/vllm-project/vllm/pull/39868
+
+Adds `custom_page_size` seam so plugin backends can declare per-block byte size.
+Until merged, 4 files vendored in `docker/vllm_patches/`.
+
+## Experiment History
+
+31 hypotheses in `docs/hypotheses/` (HYP-001 to HYP-031):
+- 12 confirmed, 14 rejected, 5 pending
+- Kernel evolved: 856μs → 37μs (v4 graph) → 0.82ms v5 standalone @ seq=4096
+- Key confirmed: HYP-008 (bdz=16), HYP-017 (contiguous), HYP-018 (split-KV),
+  HYP-023 (CUDA graphs), HYP-029 (graph-safe ops), HYP-031 (tensor-core v5)
