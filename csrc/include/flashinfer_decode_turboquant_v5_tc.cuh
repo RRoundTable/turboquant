@@ -414,10 +414,16 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
         // A = Q: [16, head_dim] row-major, loaded 16x16 at a time along K
         // B = K^T: kv_smem [16, head_dim] row-major, loaded as col_major = transposed
         // -----------------------------------------------------------------
+        // HYP-037 REJECTED: parallel c_frag (N=4) gave 3× on mma-only probe
+        // but 0% in the real kernel — load→mma data dependency is the critical
+        // path (1044 cycles integrated vs 193 cycles mma-only). c_frag fanout
+        // doesn't help when mmas wait for freshly-loaded a/b fragments.
+        // Next attempt: software-pipelined loads (HYP-038).
+        //
         // Explicit ::nvcuda::wmma:: qualification — the enclosing
         // `using namespace nvcuda::wmma` is resolved differently by older
-        // nvcc (NGC 24.01 / CUDA 12.3) vs newer, breaking compile on some
-        // images. Fully-qualified calls are portable.
+        // nvcc (NGC 24.01 / CUDA 12.3) vs newer. Fully-qualified calls are
+        // portable.
         ::nvcuda::wmma::fragment<::nvcuda::wmma::matrix_a, V5_WMMA_M, V5_WMMA_N, V5_WMMA_K,
                                __half, ::nvcuda::wmma::row_major> a_frag;
         ::nvcuda::wmma::fragment<::nvcuda::wmma::matrix_b, V5_WMMA_M, V5_WMMA_N, V5_WMMA_K,
