@@ -383,7 +383,6 @@ torch::Tensor decode_v5_from_cache(
     // Build params with Hadamard signs — the v5 kernel applies
     // forward rotation to Q and inverse rotation to output.
     auto o = torch::zeros_like(q);
-    int num_qo_heads = q.size(1);
 
     using CP = ContiguousTurboQuantDecodeParams<__half, __half, int32_t>;
     using V = DefaultAttention<false, false, false, false>;
