@@ -423,6 +423,169 @@ torch::Tensor decode_v5_from_cache(
     return o;
 }
 
+// ---- decode_v5_from_cache_ws: GRAPH-SAFE variant (HYP-033) -------------------
+// Pre-allocated workspace variant: caller passes gather buffers + output tensor
+// + static max_len, so the op performs zero allocations and no host sync. This
+// is the path vLLM uses under CUDA graph capture (`torch.ops.turboquant_v5.*`).
+//
+// Workspace layout must match decode_v5_from_cache's internal layout:
+//   k_quant_ws, v_quant_ws : [batch, num_kv_heads, max_len, qbytes]    uint8
+//   k_norms_ws, v_norms_ws : [batch, num_kv_heads, max_len, dim_chunks] fp16
+//   o_ws                   : [batch, num_qo_heads, padded_dim]          fp16
+// max_len must be >= the true max seq_len in seq_lens; typically bucketed to the
+// next power of two by the caller so the captured graph is shape-specialized.
+//
+// Trailing positions [seq_lens[b], max_len) are zeroed via cudaMemsetAsync so
+// stale data from previous replays can't leak into the attention sum.
+torch::Tensor decode_v5_from_cache_ws(
+    torch::Tensor q,              // [batch, num_qo_heads, padded_dim] fp16
+    torch::Tensor kv_cache,       // [2, num_blocks, block_size, num_heads, ebs] uint8
+    torch::Tensor indices,
+    torch::Tensor indptr,
+    torch::Tensor last_page_len,  // unused; kept for API parity with v4
+    torch::Tensor seq_lens,       // [batch] int32
+    int num_kv_heads,
+    int page_size,
+    int head_dim,
+    int padded_dim,
+    float sm_scale,
+    torch::Tensor hadamard_signs,
+    int qbytes,
+    int nbytes,
+    torch::Tensor k_quant_ws,
+    torch::Tensor v_quant_ws,
+    torch::Tensor k_norms_ws,
+    torch::Tensor v_norms_ws,
+    torch::Tensor o_ws,
+    int max_len
+) {
+    TORCH_CHECK(padded_dim == 128, "v5 from_cache_ws only supports head_dim=128");
+    TORCH_CHECK(max_len > 0, "max_len must be positive");
+
+    int ebs = static_cast<int>(kv_cache.size(-1));
+    int block_size = static_cast<int>(kv_cache.size(2));
+    int batch_size = q.size(0);
+    int num_qo_heads = q.size(1);
+    int bdy = num_qo_heads / num_kv_heads;
+    int dim_chunks = padded_dim / 64;
+    auto stream = c10::cuda::getCurrentCUDAStream();
+
+    // Shape-check workspaces. size(2) must equal max_len exactly — the gather
+    // kernel uses `max_len * qbytes` as the per-head stride, so a larger
+    // workspace would write to wrong addresses.
+    TORCH_CHECK(k_quant_ws.size(0) == batch_size && k_quant_ws.size(1) == num_kv_heads
+                    && k_quant_ws.size(2) == max_len && k_quant_ws.size(3) == qbytes,
+                "k_quant_ws shape mismatch");
+    TORCH_CHECK(v_quant_ws.sizes() == k_quant_ws.sizes(), "v_quant_ws shape mismatch");
+    TORCH_CHECK(k_norms_ws.size(0) == batch_size && k_norms_ws.size(1) == num_kv_heads
+                    && k_norms_ws.size(2) == max_len && k_norms_ws.size(3) == dim_chunks,
+                "k_norms_ws shape mismatch");
+    TORCH_CHECK(v_norms_ws.sizes() == k_norms_ws.sizes(), "v_norms_ws shape mismatch");
+    TORCH_CHECK(o_ws.size(0) == batch_size && o_ws.size(1) == num_qo_heads
+                    && o_ws.size(2) == padded_dim, "o_ws shape mismatch");
+
+    // Zero the workspaces so positions [seq_lens[b], max_len) are zero after
+    // gather. Capturable memset node; cost ~1-4μs at A100 bandwidth.
+    cudaMemsetAsync(k_quant_ws.data_ptr(), 0, k_quant_ws.nbytes(), stream);
+    cudaMemsetAsync(v_quant_ws.data_ptr(), 0, v_quant_ws.nbytes(), stream);
+    cudaMemsetAsync(k_norms_ws.data_ptr(), 0, k_norms_ws.nbytes(), stream);
+    cudaMemsetAsync(v_norms_ws.data_ptr(), 0, v_norms_ws.nbytes(), stream);
+    cudaMemsetAsync(o_ws.data_ptr(), 0, o_ws.nbytes(), stream);
+
+    auto k_half = kv_cache.select(0, 0);
+    auto v_half = kv_cache.select(0, 1);
+
+    gather_paged_to_contiguous<<<dim3(batch_size, num_kv_heads), 256, 0, stream>>>(
+        (uint8_t*)k_half.data_ptr(),
+        k_quant_ws.data_ptr<uint8_t>(),
+        (__half*)k_norms_ws.data_ptr<at::Half>(),
+        indices.data_ptr<int32_t>(), indptr.data_ptr<int32_t>(),
+        seq_lens.data_ptr<int32_t>(),
+        block_size, num_kv_heads, qbytes, dim_chunks, ebs, max_len);
+
+    gather_paged_to_contiguous<<<dim3(batch_size, num_kv_heads), 256, 0, stream>>>(
+        (uint8_t*)v_half.data_ptr(),
+        v_quant_ws.data_ptr<uint8_t>(),
+        (__half*)v_norms_ws.data_ptr<at::Half>(),
+        indices.data_ptr<int32_t>(), indptr.data_ptr<int32_t>(),
+        seq_lens.data_ptr<int32_t>(),
+        block_size, num_kv_heads, qbytes, dim_chunks, ebs, max_len);
+
+    using CP = ContiguousTurboQuantDecodeParams<__half, __half, int32_t>;
+    using V = DefaultAttention<false, false, false, false>;
+
+    CP p(
+        k_quant_ws.data_ptr<uint8_t>(), v_quant_ws.data_ptr<uint8_t>(),
+        (__half*)k_norms_ws.data_ptr<at::Half>(), (__half*)v_norms_ws.data_ptr<at::Half>(),
+        batch_size, num_kv_heads, max_len, head_dim, padded_dim,
+        (__half*)q.data_ptr<at::Half>(), (__half*)o_ws.data_ptr<at::Half>(),
+        nullptr, sm_scale, num_qo_heads
+    );
+    if (hadamard_signs.numel() > 0) {
+        p.hadamard_signs = hadamard_signs.data_ptr<float>();
+        p.hadamard_scale = rsqrtf(static_cast<float>(padded_dim));
+    }
+
+    #define LAUNCH_V5FCWS(BDY, NW) do { \
+        constexpr uint32_t sm = calc_smem_v5_tc<128, BDY, NW>(); \
+        auto err = cudaFuncSetAttribute( \
+            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP>, \
+            cudaFuncAttributeMaxDynamicSharedMemorySize, sm); \
+        TORCH_CHECK(err == cudaSuccess, "smem: ", cudaGetErrorString(err)); \
+        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP> \
+            <<<dim3(batch_size, num_kv_heads), dim3(32, 1, NW), sm, stream>>>(p); \
+    } while(0)
+
+    switch (bdy) {
+        case 1: LAUNCH_V5FCWS(1, 4); break;
+        case 2: LAUNCH_V5FCWS(2, 4); break;
+        case 4: LAUNCH_V5FCWS(4, 4); break;
+        case 8: LAUNCH_V5FCWS(8, 4); break;
+        default: TORCH_CHECK(false, "v5 from_cache_ws: unsupported bdy=", bdy);
+    }
+    #undef LAUNCH_V5FCWS
+
+    auto cuda_err = cudaGetLastError();
+    TORCH_CHECK(cuda_err == cudaSuccess, "v5 from_cache_ws: ", cudaGetErrorString(cuda_err));
+    return o_ws;
+}
+
+// ─── torch.library wrapper + registration (graph-replay-safe dispatch) ────────
+// Uses a separate library name `turboquant_v5` because `turboquant` is owned
+// by decode_v4_binding.cu. torch.library requires int64_t / double schema types.
+static torch::Tensor turboquant_decode_v5_from_cache_ws_op(
+    torch::Tensor q, torch::Tensor kv_cache,
+    torch::Tensor indices, torch::Tensor indptr, torch::Tensor last_page_len,
+    torch::Tensor seq_lens,
+    int64_t num_kv_heads, int64_t page_size, int64_t head_dim, int64_t padded_dim,
+    double sm_scale, torch::Tensor hadamard_signs,
+    int64_t qbytes, int64_t nbytes,
+    torch::Tensor k_quant_ws, torch::Tensor v_quant_ws,
+    torch::Tensor k_norms_ws, torch::Tensor v_norms_ws,
+    torch::Tensor o_ws,
+    int64_t max_len) {
+    return decode_v5_from_cache_ws(
+        q, kv_cache, indices, indptr, last_page_len, seq_lens,
+        (int)num_kv_heads, (int)page_size, (int)head_dim, (int)padded_dim,
+        (float)sm_scale, hadamard_signs, (int)qbytes, (int)nbytes,
+        k_quant_ws, v_quant_ws, k_norms_ws, v_norms_ws, o_ws,
+        (int)max_len);
+}
+
+TORCH_LIBRARY(turboquant_v5, m) {
+    m.def(
+        "decode_v5_from_cache_ws(Tensor q, Tensor kv_cache, Tensor indices, "
+        "Tensor indptr, Tensor last_page_len, Tensor seq_lens, "
+        "int num_kv_heads, int page_size, int head_dim, int padded_dim, "
+        "float sm_scale, Tensor hadamard_signs, int qbytes, int nbytes, "
+        "Tensor k_quant_ws, Tensor v_quant_ws, Tensor k_norms_ws, "
+        "Tensor v_norms_ws, Tensor o_ws, int max_len) -> Tensor");
+}
+
+TORCH_LIBRARY_IMPL(turboquant_v5, CUDA, m) {
+    m.impl("decode_v5_from_cache_ws", &turboquant_decode_v5_from_cache_ws_op);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("decode_v5_tc_contiguous", &decode_v5_tc_contiguous,
           "TurboQuant v5 tensor-core contiguous decode (HYP-031)");
@@ -430,4 +593,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "TurboQuant v5 tensor-core contiguous decode with split-KV (HYP-031)");
     m.def("decode_v5_from_cache", &decode_v5_from_cache,
           "TurboQuant v5 tensor-core decode from paged kv_cache (HYP-031)");
+    m.def("decode_v5_from_cache_ws", &decode_v5_from_cache_ws,
+          "TurboQuant v5 graph-safe decode with pre-allocated workspace (HYP-033)");
 }

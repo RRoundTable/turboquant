@@ -220,7 +220,11 @@ Three bugs blocked graph replay (HYP-027/028/029, all fixed):
    padded to `align(qbytes+nbytes, 16)`.
 4. **get_length**: strided indptr gave wrong seq_len → `paged_kv_turbo_t` takes `seq_lens` directly.
 
-v5 is NOT graph-safe (allocates gather buffers inside the op). Falls back to v4 during capture.
+v5 graph-safety (HYP-033): `decode_v5_from_cache_ws` takes a pre-allocated workspace
+(k_quant_ws, v_quant_ws, k_norms_ws, v_norms_ws, o_ws) and a static `max_len` int,
+so the op does no allocations and no host sync. Registered under `torch.ops.turboquant_v5.*`.
+The backend caches workspace by `(batch_size, max_pages)` keyed on vLLM's shape
+buckets; the original `decode_v5_from_cache` stays in place for eager callers.
 
 ## Deployment
 
@@ -245,8 +249,9 @@ Until merged, 4 files vendored in `docker/vllm_patches/`.
 
 ## Experiment History
 
-31 hypotheses in `docs/hypotheses/` (HYP-001 to HYP-031):
-- 12 confirmed, 14 rejected, 5 pending
+32 hypotheses in `docs/hypotheses/` (HYP-001 to HYP-033):
+- 12 confirmed, 14 rejected, 6 pending
 - Kernel evolved: 856μs → 37μs (v4 graph) → 0.82ms v5 standalone @ seq=4096
 - Key confirmed: HYP-008 (bdz=16), HYP-017 (contiguous), HYP-018 (split-KV),
   HYP-023 (CUDA graphs), HYP-029 (graph-safe ops), HYP-031 (tensor-core v5)
+- In flight: HYP-033 (v5 graph-safe via pre-allocated workspace)

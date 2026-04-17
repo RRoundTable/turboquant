@@ -115,6 +115,38 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         self._decode_module = None
         self._write_module = None
         self._is_fp8 = kv_cache_dtype in ("fp8", "fp8_e4m3")
+        # (batch_size, max_pages_per_seq) -> dict of workspace tensors for v5
+        self._v5_ws_cache: dict[tuple[int, int], dict[str, torch.Tensor]] = {}
+
+    def _get_v5_ws(self, batch_size: int, max_pages: int, block_size: int,
+                   device: torch.device) -> tuple[dict[str, torch.Tensor], int]:
+        """Lazily allocate and cache v5 gather workspace + output buffer.
+
+        Keyed by (batch_size, max_pages). vLLM captures CUDA graphs per batch
+        bucket, and each bucket's block_table has a fixed second dim, so the
+        max_len upper bound (max_pages * block_size) is constant per key.
+        Allocation happens on the first call for a bucket (during vLLM warmup,
+        before graph capture), so replay never hits a cudaMalloc.
+        """
+        key = (batch_size, max_pages)
+        ws = self._v5_ws_cache.get(key)
+        max_len = max_pages * block_size
+        if ws is None:
+            dim_chunks = self._pd // TILE_DIMS
+            ws = {
+                "k_quant": torch.empty((batch_size, self.num_kv_heads, max_len, self._qbytes),
+                                       dtype=torch.uint8, device=device),
+                "v_quant": torch.empty((batch_size, self.num_kv_heads, max_len, self._qbytes),
+                                       dtype=torch.uint8, device=device),
+                "k_norms": torch.empty((batch_size, self.num_kv_heads, max_len, dim_chunks),
+                                       dtype=torch.float16, device=device),
+                "v_norms": torch.empty((batch_size, self.num_kv_heads, max_len, dim_chunks),
+                                       dtype=torch.float16, device=device),
+                "o":       torch.empty((batch_size, self.num_heads, self._pd),
+                                       dtype=torch.float16, device=device),
+            }
+            self._v5_ws_cache[key] = ws
+        return ws, max_len
 
     def _ensure(self, dev):
         if self._signs is not None:
@@ -299,31 +331,24 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # v5 tensor-core decode allocates gather buffers internally,
-            # which is illegal during CUDA graph capture. Use v4 under
-            # graphs (graph-safe, no allocations) and v5 under eager
-            # (2.5× faster kernel).
-            is_capturing = torch.cuda.is_current_stream_capturing()
-            if is_capturing:
-                result = torch.ops.turboquant.decode_v4_from_cache(
-                    q_fp16, kv_cache,
-                    kv_indices, kv_indptr, kv_last_page_len,
-                    seq_lens,
-                    self.num_kv_heads, block_size,
-                    self.head_size, self._pd, self.scale,
-                    self._signs,
-                    self._qbytes, self._nbytes,
-                )
-            else:
-                result = self._v5_module.decode_v5_from_cache(
-                    q_fp16, kv_cache,
-                    kv_indices, kv_indptr, kv_last_page_len,
-                    seq_lens,
-                    self.num_kv_heads, block_size,
-                    self.head_size, self._pd, self.scale,
-                    self._signs if self._signs is not None else torch.empty(0, device=q.device),
-                    self._qbytes, self._nbytes,
-                )
+            # v5 tensor-core decode via the graph-safe workspace variant (HYP-033).
+            # The _ws op takes pre-allocated gather buffers + output + static
+            # max_len, so it records cleanly into a CUDA graph. Workspace is
+            # keyed by (batch_size, max_pages); vLLM captures a fixed set of
+            # shape buckets, so the cache size is bounded.
+            batch_size = q_fp16.shape[0]
+            ws, max_len = self._get_v5_ws(batch_size, max_pages, block_size, q.device)
+            result = torch.ops.turboquant_v5.decode_v5_from_cache_ws(
+                q_fp16, kv_cache,
+                kv_indices, kv_indptr, kv_last_page_len,
+                seq_lens,
+                self.num_kv_heads, block_size,
+                self.head_size, self._pd, self.scale,
+                self._signs if self._signs is not None else torch.empty(0, device=q.device),
+                self._qbytes, self._nbytes,
+                ws["k_quant"], ws["v_quant"], ws["k_norms"], ws["v_norms"], ws["o"],
+                max_len,
+            )
 
             if self.head_size < self._pd:
                 output[:num_actual] = result[:num_actual, :, :self.head_size]

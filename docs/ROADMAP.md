@@ -402,6 +402,11 @@ Priorities (see HYP-030 for sizing):
       (Phase 9b candidate, never implemented). Target: 1.5–2× on compute,
       closes the scalar-FMA gap without giving up the Lloyd-Max codebook.
       Effort: ~weeks.
+- [ ] **13d.** HYP-033: Make v5 tensor-core decode CUDA-graph-safe via a
+      pre-allocated workspace op (`decode_v5_from_cache_ws` under
+      `torch.ops.turboquant_v5.*`). Removes the v4 fallback during graph
+      capture so vLLM runs v5's WMMA path in production. Expected to cut the
+      seq=4096 gap from 4.58× to ≤1.5× vs FP16 FA.
 
 ### Phase 14: vLLM upstream PR — CLOSE-OUT
 
