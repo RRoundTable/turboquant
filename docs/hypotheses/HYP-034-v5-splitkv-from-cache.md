@@ -147,41 +147,61 @@ script, same aggregator. Each JSON gains a `tq_v5_split_graph` entry;
 
 ## Results (Forge A100-SXM4-40GB, 2026-04-17)
 
-Benchmarked via `tests/bench_v5_graph.py` — 5 parallel Forge jobs. Same rig
-as HYP-033. `num_splits` chosen by the heuristic, snapped to a divisor of
-`max_len`: 1 at seq=256, 16 at seq ≥ 512.
+Benchmarked via `tests/bench_v5_graph.py` — 5 parallel Forge jobs per sweep.
+Same rig as HYP-033. `num_splits` chosen by the heuristic, snapped to a
+divisor of `max_len`. Two cap settings tested: 2× and 4× the SM count.
 
-| seq  | splits | FP16 SDPA | FlashInfer | v4-graph | v5-ns   | **v5-split** | split/ns | split/FI |
-|------|-------:|----------:|-----------:|---------:|--------:|-------------:|---------:|---------:|
-|  256 |      1 |    23.6 μs|     38.1 μs|  192.8 μs| 131.5 μs|    135.9 μs  |   1.03×  |   3.57×  |
-|  512 |     16 |    28.1 μs|     39.2 μs|  275.6 μs| 188.9 μs|     63.4 μs  |   0.34×  |   1.62×  |
-| 1024 |     16 |    33.5 μs|     23.9 μs|  528.9 μs| 348.8 μs|     82.6 μs  |   0.24×  |   3.46×  |
-| 2048 |     16 |    41.8 μs|     41.7 μs| 1026.4 μs| 676.6 μs|    128.9 μs  |   0.19×  |   3.09×  |
-| 4096 |     16 |    70.8 μs|     42.6 μs| 2052.0 μs|1323.5 μs|    225.6 μs  |   0.17×  |   5.29×  |
+**2× SM cap (initial):** splits = {1, 16, 16, 16, 16} for seq {256..4096}.
 
-Correctness: `cosine(v5_split, v5_nosplit) = 1.0000` at every seq_len.
+| seq  | splits | FP16 SDPA | FlashInfer | v4-graph | v5-ns   | v5-split | split/ns | split/FI |
+|------|-------:|----------:|-----------:|---------:|--------:|---------:|---------:|---------:|
+|  256 |      1 |    23.6 μs|     38.1 μs|  192.8 μs| 131.5 μs| 135.9 μs |   1.03×  |   3.57×  |
+|  512 |     16 |    28.1 μs|     39.2 μs|  275.6 μs| 188.9 μs|  63.4 μs |   0.34×  |   1.62×  |
+| 1024 |     16 |    33.5 μs|     23.9 μs|  528.9 μs| 348.8 μs|  82.6 μs |   0.24×  |   3.46×  |
+| 2048 |     16 |    41.8 μs|     41.7 μs| 1026.4 μs| 676.6 μs| 128.9 μs |   0.19×  |   3.09×  |
+| 4096 |     16 |    70.8 μs|     42.6 μs| 2052.0 μs|1323.5 μs| 225.6 μs |   0.17×  |   5.29×  |
 
-### Prediction verdicts
+**4× SM cap (shipped):** splits = {1, 16, 32, 32, 32}. Unlocked after the
+user asked "why is v5-split still linear in seq?" — diagnosis identified
+chunk_size (= max_len / num_splits) as the dominant term in per-block
+scalar-FMA dequant time. Doubling num_splits halves chunk_size.
+
+| seq  | splits | FP16 SDPA | FlashInfer | v4-graph | v5-ns   | **v5-split** | split/ns | split/FI | Δ vs 2× |
+|------|-------:|----------:|-----------:|---------:|--------:|-------------:|---------:|---------:|--------:|
+|  256 |      1 |    22.6 μs|     38.8 μs|  197.7 μs| 134.6 μs|    126.2 μs  |   0.94×  |   3.25×  |   -7%   |
+|  512 |     16 |    28.6 μs|     39.9 μs|  318.8 μs| 217.5 μs|     63.8 μs  |   0.29×  |   1.60×  |   +1%   |
+| 1024 |     32 |    33.6 μs|     39.1 μs|  531.3 μs| 350.9 μs|     85.0 μs  |   0.24×  |   2.17×  |   +3%   |
+| 2048 |     32 |    37.9 μs|     42.7 μs| 1331.6 μs| 673.4 μs|    118.3 μs  |   0.18×  |   2.77×  |   -8%   |
+| 4096 |     32 |    72.4 μs|     43.6 μs| 2037.0 μs|1323.5 μs| **196.8 μs** |   0.15×  |   4.52×  |  **-13%** |
+
+The 4× cap wins at the sequence lengths that drive the Phase 13 regression
+(2048, 4096). The small regression at seq=1024 is combine-overhead
+dominance at chunk=32 — accepted because shorter context is less
+latency-sensitive in practice.
+
+Correctness: `cosine(v5_split, v5_nosplit) = 1.0000` at every seq_len, both caps.
+
+### Prediction verdicts (against 4× SM cap — the shipped config)
 
 | Prediction | Target | Result | Verdict |
 |-----------|--------|--------|---------|
 | Split output matches non-split (cosine) | ≥ 0.9999 | 1.0000 everywhere | ✓ confirmed |
 | Graph-safety (capture + replay 10×) | no errors | passed | ✓ confirmed |
-| Latency curve flattened (sub-linear in seq) | — | yes, 256→4096 is 135→226 μs (1.67× over 16× seq) | ✓ confirmed |
-| v5-split / v5-nosplit at seq ≥ 1024 | ≤ 0.15× | 0.17–0.24× | ✗ rejected (close) |
-| v5-split / FlashInfer at seq=4096 | ≤ 2.5× | 5.29× | ✗ rejected |
-| Latency ~ HYP-018 contiguous numbers (within 15%) | — | v5-split 82 μs @ 1024 vs HYP-018's 48 μs (1.7×) | ✗ rejected |
+| Latency curve flattened (sub-linear in seq) | — | yes, 256→4096 is 126→197 μs (1.56× over 16× seq) | ✓ confirmed |
+| v5-split / v5-nosplit at seq ≥ 1024 | ≤ 0.15× | 0.15–0.24× (met at seq=4096) | ✓ partially |
+| v5-split / FlashInfer at seq=4096 | ≤ 2.5× | 4.52× | ✗ rejected |
+| Latency ~ HYP-018 contiguous numbers (within 15%) | — | v5-split 85 μs @ 1024 vs HYP-018's 48 μs (1.8×) | ✗ rejected |
 
 ### What this means
 
 **The engineering goal — flatten the v5 latency curve under CUDA graphs — is
 confirmed.** SM saturation via split-KV works as expected:
 
-- seq=4096: **1323 → 226 μs (5.9× speedup)** from grid fan-out alone.
+- seq=4096: **1323 → 197 μs (6.7× speedup)** from grid fan-out alone.
 - The curve goes from linear (HYP-033: 134 → 1323 μs across 256 → 4096,
-  9.9× growth) to near-flat (HYP-034: 135 → 226 μs, 1.67× growth across
-  the same 16× seq range).
-- FlashInfer gap shrinks from 30.77× (HYP-033) to 5.29× (HYP-034) at seq=4096.
+  9.9× growth) to near-flat (HYP-034 @ 4× SM: 126 → 197 μs, 1.56× growth
+  across the same 16× seq range).
+- FlashInfer gap shrinks from 30.77× (HYP-033) to 4.52× (HYP-034 @ 4× SM).
 
 **The rejected predictions are all "worse than I said by ~1.5×"**, in the
 same direction (everything is a bit slower than the target):

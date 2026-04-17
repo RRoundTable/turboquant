@@ -145,7 +145,7 @@ def _choose_num_splits(max_len: int) -> int:
     if max_len < 512:
         return 1
     sm_count = torch.cuda.get_device_properties(0).multi_processor_count
-    splits_by_sm = max(1, (2 * sm_count) // (BATCH * NUM_KV_HEADS))
+    splits_by_sm = max(1, (4 * sm_count) // (BATCH * NUM_KV_HEADS))
     splits_by_work = max(1, max_len // 32)
     target = min(splits_by_sm, splits_by_work)
     best = 1
