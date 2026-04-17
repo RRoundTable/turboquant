@@ -133,11 +133,12 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         if max_len < 512:
             return 1
         sm_count = torch.cuda.get_device_properties(device).multi_processor_count
-        # 4× SM oversubscription: empirically helps v5-split at long seq because
-        # per-block work is scalar-FMA dequant bound, so halving chunk_size
-        # ~halves per-block latency — worth more than the 1.5× scheduler tail.
+        # 4× SM oversubscription: empirical sweet spot (HYP-032 long-context
+        # sweep showed target_chunk=128 over-splits at seq≥16k — per-block
+        # fixed overhead from Q load + softmax init dominates once grid gets
+        # much larger than ~2-3× SM count).
         splits_by_sm = max(1, (4 * sm_count) // (batch_size * num_kv_heads))
-        splits_by_work = max(1, max_len // 32)  # ≥ 2 KV tiles per split
+        splits_by_work = max(1, max_len // 32)
         target = min(splits_by_sm, splits_by_work)
         best = 1
         for d in range(2, target + 1):

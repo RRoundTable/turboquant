@@ -162,19 +162,75 @@ cycle, so a 1.3–1.8× prediction undershot by 2–3×.
 
 **20.6× end-to-end speedup** from the sequence of four hypotheses.
 
+### Long-context profile (addendum, 2026-04-17)
+
+Extended the sweep to seq ∈ {8k, 16k, 32k} to see how the curve behaves
+beyond the paper's target range.
+
+| seq   | splits | FI      | v5-paged | paged/FI | notes |
+|-------|-------:|--------:|---------:|---------:|:------|
+| 4096  |     32 | 43.6 μs |  64.1 μs |   1.47×  | Phase 13 target |
+| 8192  |     32 | 46.5 μs | 103.0 μs |   2.21×  | curve re-opens |
+| 16384 |     32 | 67.7 μs | 173.2 μs |   2.56×  | |
+| 32768 |     32 |122.8 μs | 313.7 μs |   2.56×  | |
+
+**At seq ≥ 8k the linear-in-seq growth returns**, because `num_splits` saps
+at 32 (biggest pow2 divisor ≤ `4×SM/(batch×kv_heads)` = 54). Chunk_size then
+grows linearly with seq: 4k→128, 8k→256, 16k→512, 32k→1024. Per-block
+dequant+WMMA work grows with chunk_size, so does wall time.
+
+FlashInfer also grows at long context but shallower (its own split logic
+scales more aggressively).
+
+**Tested: `target_chunk=128` heuristic** — let `num_splits` scale with
+seq_len to keep per-block work bounded. Result:
+
+| seq   | splits (old→new) | v5-paged (old→new) | Δ |
+|-------|-----------------:|-------------------:|--:|
+| 4096  | 32 → 32          |   64.1 → 64.5 μs  | ~0% |
+| 8192  | 32 → 64          |  103.0 → 110.5 μs | +7% |
+| 16384 | 32 → 128         |  173.2 → 181.1 μs | +5% |
+| 32768 | 32 → 256         |  313.7 → 388.4 μs | **+24%** |
+
+Worse across the board at long seq. **Rejected.** Per-block fixed overhead
+(Q smem load, softmax init, warp-level FWHT, cross-warp merge) dominates once
+the grid gets much larger than ~3× SM count. The `4× SM cap` heuristic was
+already near-optimal — reverted.
+
+**Diagnosis of the long-seq growth:** At seq=32k with 32 splits × 8 kv_heads
+= 256 blocks, each SM runs ~2.4 blocks. Per-block time is compute-bound on
+chunk_size × scalar-FMA-dequant + WMMA_tile_count. With chunk=1024 at
+seq=32k, per-block work is ~8× what it is at seq=4k (chunk=128). Wall time
+grows linearly because the compute doesn't parallelize further on 108 SMs.
+
+**What would flatten the 8k+ curve:**
+- Kernel-side reduction of per-block fixed overhead (smaller Q smem layout,
+  tighter softmax state, persistent warp specialization). Non-trivial
+  redesign — each of those tricks is a separate hypothesis.
+- Dequant+WMMA pipelining (HYP-031 Phase 9b): actively overlapping
+  CUDA-core dequant with tensor-core WMMA would halve compute-bound
+  per-block time, pushing the 32k latency from 314 μs toward ~180 μs
+  (within 1.5× of FI at 32k). Biggest available lever.
+- Reducing the WMMA tile count per block: `head_dim=128` requires 8 k-tiles
+  per WMMA pass; larger tile shapes (m16n8k32) could halve this.
+
+**Memory is still the winning story.** At seq=32k, batch=1:
+- FP16 KV cache: 32768 × 8 × 2 × 128 × 2 = **134 MB**
+- TQ 4-bit KV: 32768 × 8 × 2 × 68 = **35 MB**
+- **3.8× memory savings preserved.** Latency cost at seq=32k is 2.56× FI,
+  but serving throughput (requests-per-GPU) still favors TQ at this context
+  length because memory, not latency, is the throughput bottleneck.
+
 ### Next
 
-No obvious large lever remaining. Candidates for follow-up:
-
 - **Dequant+WMMA pipelining** (the "full Marlin" from HYP-031/Phase 9b):
-  overlap CUDA-core dequant with tensor-core WMMA. Expected: maybe 1.1–1.3×
-  more. Not obviously worth the kernel-redesign effort once we're within
-  1.5× of FlashInfer.
-- **Short-seq optimization** (seq=256 still at 2.11×): combine-less nosplit
-  path has its own fixed floor. Investigate whether num_splits=1 can be
-  further tightened.
-- **Higher batch sizes**: the sweet-spot crossover at seq=512 should extend
-  further as batch grows; verify with a batch sweep.
+  overlap CUDA-core dequant with tensor-core WMMA. Expected: 1.3–1.5× more
+  at long seq where per-block compute dominates. Worth it now that we've
+  exhausted easy wins.
+- **Short-seq optimization** (seq=256 still at 2.11×): the num_splits=1
+  path has its own fixed floor.
+- **Higher batch sizes**: the seq=512 crossover where TQ beats FI should
+  extend further as batch grows; verify with a batch sweep.
 
 ## References
 
