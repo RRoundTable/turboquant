@@ -143,7 +143,75 @@ job per seq_len, 1 GPU each, 5 GPUs parallel (48 quota). Same entrypoint
 script, same aggregator. Each JSON gains a `tq_v5_split_graph` entry;
 `scripts/aggregate_bench.py` already tolerates missing keys.
 
-## Status: pending
+## Status: confirmed (engineering goal + curve shape); magnitudes over-predicted
+
+## Results (Forge A100-SXM4-40GB, 2026-04-17)
+
+Benchmarked via `tests/bench_v5_graph.py` — 5 parallel Forge jobs. Same rig
+as HYP-033. `num_splits` chosen by the heuristic, snapped to a divisor of
+`max_len`: 1 at seq=256, 16 at seq ≥ 512.
+
+| seq  | splits | FP16 SDPA | FlashInfer | v4-graph | v5-ns   | **v5-split** | split/ns | split/FI |
+|------|-------:|----------:|-----------:|---------:|--------:|-------------:|---------:|---------:|
+|  256 |      1 |    23.6 μs|     38.1 μs|  192.8 μs| 131.5 μs|    135.9 μs  |   1.03×  |   3.57×  |
+|  512 |     16 |    28.1 μs|     39.2 μs|  275.6 μs| 188.9 μs|     63.4 μs  |   0.34×  |   1.62×  |
+| 1024 |     16 |    33.5 μs|     23.9 μs|  528.9 μs| 348.8 μs|     82.6 μs  |   0.24×  |   3.46×  |
+| 2048 |     16 |    41.8 μs|     41.7 μs| 1026.4 μs| 676.6 μs|    128.9 μs  |   0.19×  |   3.09×  |
+| 4096 |     16 |    70.8 μs|     42.6 μs| 2052.0 μs|1323.5 μs|    225.6 μs  |   0.17×  |   5.29×  |
+
+Correctness: `cosine(v5_split, v5_nosplit) = 1.0000` at every seq_len.
+
+### Prediction verdicts
+
+| Prediction | Target | Result | Verdict |
+|-----------|--------|--------|---------|
+| Split output matches non-split (cosine) | ≥ 0.9999 | 1.0000 everywhere | ✓ confirmed |
+| Graph-safety (capture + replay 10×) | no errors | passed | ✓ confirmed |
+| Latency curve flattened (sub-linear in seq) | — | yes, 256→4096 is 135→226 μs (1.67× over 16× seq) | ✓ confirmed |
+| v5-split / v5-nosplit at seq ≥ 1024 | ≤ 0.15× | 0.17–0.24× | ✗ rejected (close) |
+| v5-split / FlashInfer at seq=4096 | ≤ 2.5× | 5.29× | ✗ rejected |
+| Latency ~ HYP-018 contiguous numbers (within 15%) | — | v5-split 82 μs @ 1024 vs HYP-018's 48 μs (1.7×) | ✗ rejected |
+
+### What this means
+
+**The engineering goal — flatten the v5 latency curve under CUDA graphs — is
+confirmed.** SM saturation via split-KV works as expected:
+
+- seq=4096: **1323 → 226 μs (5.9× speedup)** from grid fan-out alone.
+- The curve goes from linear (HYP-033: 134 → 1323 μs across 256 → 4096,
+  9.9× growth) to near-flat (HYP-034: 135 → 226 μs, 1.67× growth across
+  the same 16× seq range).
+- FlashInfer gap shrinks from 30.77× (HYP-033) to 5.29× (HYP-034) at seq=4096.
+
+**The rejected predictions are all "worse than I said by ~1.5×"**, in the
+same direction (everything is a bit slower than the target):
+
+- `split/ns ≤ 0.15×` actually 0.17–0.24×. The combine kernel + `mark_empty_splits`
+  overhead is ~40 μs per call, and the split-KV kernel itself has some
+  per-split setup cost that a single-block kernel doesn't pay. At seq=4096,
+  a 16× theoretical speedup becomes 5.9× after these fixed costs.
+- v5-split at seq=1024 is 82 μs vs HYP-018's 48 μs for v4 contiguous+split.
+  The ~35 μs gap is the paged→contiguous gather + workspace memset (not
+  present in HYP-018's eager contig path). Confirmed the "gather is ~1–2%"
+  estimate from earlier triage was wrong at long seq — gather is more like
+  ~15–40% of the v5-split latency because the rest got so much faster.
+- 5.29× to FlashInfer remains because FlashInfer's QK/PV use tensor cores
+  for dequant AND matmul; v5 still dequants via scalar FMA. That gap is
+  HYP-032's scope.
+
+**Ship decision: merge.** This is a real, shape-changing improvement — the
+decode TPOT curve no longer grows linearly with context length, which is
+what matters for production serving. The over-optimistic magnitudes don't
+change that verdict. vLLM backend now dispatches to the split variant
+automatically once `max_len ≥ 512` (`_choose_num_splits` heuristic).
+
+### Next-step candidates (not this hypothesis)
+
+- HYP-035 (potential): fuse the gather into the split-KV kernel's load phase
+  to eliminate the ~25–40 μs gather overhead. Expected: v5-split drops from
+  82 μs @ 1024 → closer to HYP-018's 48 μs.
+- HYP-032 (pending): Marlin-style dequant→fp16→tensor-core. Expected: cuts
+  the remaining 3–5× FlashInfer gap by eliminating scalar-FMA dequant.
 
 ## References
 

@@ -115,6 +115,46 @@ def _alloc_v5_workspace(max_len: int, qbytes: int, dim_chunks: int):
     }
 
 
+def _alloc_v5_split_workspace(max_len: int, qbytes: int, dim_chunks: int, num_splits: int):
+    """Pre-allocate v5 split-KV workspace (HYP-034).
+
+    All split-index scratch is pre-filled here — pure function of
+    (BATCH, num_splits, max_len), safe to do outside capture.
+    """
+    ws = _alloc_v5_workspace(max_len, qbytes, dim_chunks)
+    padded_batch = BATCH * num_splits
+    arange = torch.arange(padded_batch, dtype=torch.int32, device=DEVICE)
+    ws["partition_o"]    = torch.empty((padded_batch, NUM_QO_HEADS, PADDED_DIM),
+                                       dtype=torch.float32, device=DEVICE)
+    ws["partition_lse"]  = torch.empty((padded_batch, NUM_QO_HEADS),
+                                       dtype=torch.float32, device=DEVICE)
+    ws["request_indices"] = (arange // num_splits).to(torch.int32)
+    ws["kv_tile_indices"] = (arange % num_splits).to(torch.int32)
+    ws["split_indptr"]    = (torch.arange(BATCH + 1, dtype=torch.int32, device=DEVICE)
+                             * num_splits)
+    ws["kv_chunk_size"]   = torch.tensor(
+        [(max_len + num_splits - 1) // num_splits],
+        dtype=torch.int32, device=DEVICE)
+    return ws
+
+
+def _choose_num_splits(max_len: int) -> int:
+    """Same heuristic as TurboQuantFusedImpl._choose_num_splits, inlined for the
+    standalone benchmark. Snaps to the largest divisor of max_len ≤ target so
+    chunk_size * num_splits == max_len (no overshoot)."""
+    if max_len < 512:
+        return 1
+    sm_count = torch.cuda.get_device_properties(0).multi_processor_count
+    splits_by_sm = max(1, (2 * sm_count) // (BATCH * NUM_KV_HEADS))
+    splits_by_work = max(1, max_len // 32)
+    target = min(splits_by_sm, splits_by_work)
+    best = 1
+    for d in range(2, target + 1):
+        if max_len % d == 0:
+            best = d
+    return best
+
+
 def _capture_and_time(fn, warmup_replays=50, timed_replays=200):
     """Capture `fn` into a CUDA graph and return (p50_us, p99_us, mean_us).
 
@@ -241,6 +281,26 @@ def _bench_v5_graph(seq_len: int, data: dict, ws: dict):
     return _capture_and_time(run)
 
 
+def _bench_v5_split_graph(seq_len: int, data: dict, ws_split: dict, num_splits: int):
+    def run():
+        torch.ops.turboquant_v5.decode_v5_from_cache_splitkv_ws(
+            data["q"], data["cache"],
+            data["indices"], data["indptr"],
+            data["last_page_len"], data["seq_lens"],
+            NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, PADDED_DIM,
+            data["sm_scale"], data["signs"],
+            data["qbytes"], data["nbytes"],
+            ws_split["k_quant"], ws_split["v_quant"],
+            ws_split["k_norms"], ws_split["v_norms"], ws_split["o"],
+            data["max_len"],
+            ws_split["partition_o"], ws_split["partition_lse"],
+            ws_split["request_indices"], ws_split["kv_tile_indices"],
+            ws_split["split_indptr"], ws_split["kv_chunk_size"],
+            num_splits,
+        )
+    return _capture_and_time(run)
+
+
 def _check_correctness(data: dict, ws: dict, v5_module):
     """Assert v5-ws (graph-safe) matches v5-eager (reference) bitwise-ish."""
     out_eager = v5_module.decode_v5_from_cache(
@@ -304,30 +364,66 @@ def main():
     print(f"[bench_v5_graph] building inputs...", flush=True)
     data = _make_tq_inputs(args.seq_len)
     ws = _alloc_v5_workspace(data["max_len"], data["qbytes"], data["dim_chunks"])
+    num_splits = _choose_num_splits(data["max_len"])
+    ws_split = _alloc_v5_split_workspace(data["max_len"], data["qbytes"],
+                                         data["dim_chunks"], num_splits)
+    print(f"[bench_v5_graph] num_splits (HYP-034 heuristic) = {num_splits}", flush=True)
 
     print(f"[bench_v5_graph] correctness check (v5-ws vs v5-eager)...", flush=True)
     corr = _check_correctness(data, ws, v5_module)
     print(f"  max_abs={corr['max_abs']:.6f}  cosine={corr['cosine']:.6f}", flush=True)
-
-    # Don't hard-fail on correctness drift (bench should still report numbers),
-    # but flag it in the JSON so the aggregator can surface it.
     corr["passed"] = bool(corr["max_abs"] < 1e-2)
+
+    # HYP-034 correctness: split-KV output should match non-split within cosine.
+    split_out = torch.ops.turboquant_v5.decode_v5_from_cache_splitkv_ws(
+        data["q"], data["cache"], data["indices"], data["indptr"],
+        data["last_page_len"], data["seq_lens"],
+        NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, PADDED_DIM,
+        data["sm_scale"], data["signs"], data["qbytes"], data["nbytes"],
+        ws_split["k_quant"], ws_split["v_quant"],
+        ws_split["k_norms"], ws_split["v_norms"], ws_split["o"],
+        data["max_len"],
+        ws_split["partition_o"], ws_split["partition_lse"],
+        ws_split["request_indices"], ws_split["kv_tile_indices"],
+        ws_split["split_indptr"], ws_split["kv_chunk_size"],
+        num_splits)
+    torch.cuda.synchronize()
+    nosplit_out = v5_module.decode_v5_from_cache(
+        data["q"], data["cache"], data["indices"], data["indptr"],
+        data["last_page_len"], data["seq_lens"],
+        NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, PADDED_DIM,
+        data["sm_scale"], data["signs"], data["qbytes"], data["nbytes"])
+    torch.cuda.synchronize()
+    split_corr_cos = F.cosine_similarity(
+        split_out.flatten().float().unsqueeze(0),
+        nosplit_out.flatten().float().unsqueeze(0)).item()
+    split_corr_maxabs = (split_out.float() - nosplit_out.float()).abs().max().item()
+    print(f"  split vs nosplit: cosine={split_corr_cos:.6f}  max_abs={split_corr_maxabs:.6f}",
+          flush=True)
 
     results = {
         "seq_len": args.seq_len,
+        "num_splits": num_splits,
         "config": {
             "batch": BATCH, "num_kv_heads": NUM_KV_HEADS,
             "num_qo_heads": NUM_QO_HEADS, "head_dim": HEAD_DIM,
             "page_size": PAGE_SIZE,
         },
         "correctness": corr,
+        "split_correctness": {
+            "cosine": split_corr_cos,
+            "max_abs": split_corr_maxabs,
+            "passed": bool(split_corr_cos >= 0.9999),
+        },
     }
 
     for name, fn in [
-        ("fp16_sdpa",   lambda: _bench_fp16_sdpa(args.seq_len)),
-        ("flashinfer",  lambda: _bench_flashinfer(args.seq_len)),
-        ("tq_v4_graph", lambda: _bench_v4_graph(args.seq_len, data)),
-        ("tq_v5_graph", lambda: _bench_v5_graph(args.seq_len, data, ws)),
+        ("fp16_sdpa",         lambda: _bench_fp16_sdpa(args.seq_len)),
+        ("flashinfer",        lambda: _bench_flashinfer(args.seq_len)),
+        ("tq_v4_graph",       lambda: _bench_v4_graph(args.seq_len, data)),
+        ("tq_v5_graph",       lambda: _bench_v5_graph(args.seq_len, data, ws)),
+        ("tq_v5_split_graph", lambda: _bench_v5_split_graph(args.seq_len, data,
+                                                            ws_split, num_splits)),
     ]:
         print(f"[bench_v5_graph] timing {name}...", flush=True)
         try:

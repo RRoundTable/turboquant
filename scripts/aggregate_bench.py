@@ -29,9 +29,9 @@ def main():
         sys.exit(1)
 
     # Header
-    cols = ["seq", "fp16_sdpa", "flashinfer", "tq_v4", "tq_v5",
-            "v5/v4", "v5/fp16", "v5/fi", "corr_max_abs"]
-    widths = [6, 10, 11, 9, 9, 7, 7, 7, 12]
+    cols = ["seq", "splits", "fp16_sdpa", "flashinfer", "tq_v4", "tq_v5", "tq_v5_split",
+            "split/v5", "split/fi", "corr"]
+    widths = [6, 7, 10, 11, 9, 9, 11, 9, 9, 10]
     hdr = "  ".join(f"{c:>{w}}" for c, w in zip(cols, widths))
     print(hdr)
     print("-" * len(hdr))
@@ -39,18 +39,19 @@ def main():
     for f in files:
         d = json.loads(f.read_text())
         seq = d["seq_len"]
+        splits = d.get("num_splits", "?")
         sdpa = d.get("fp16_sdpa", {})
         flash = d.get("flashinfer", {})
         v4 = d.get("tq_v4_graph", {})
         v5 = d.get("tq_v5_graph", {})
+        v5s = d.get("tq_v5_split_graph", {})
         corr = d.get("correctness", {}).get("max_abs", float("nan"))
 
         def p50(x):
             return x.get("p50_us", float("nan")) if isinstance(x, dict) else float("nan")
 
         v5_us = p50(v5)
-        v4_us = p50(v4)
-        sdpa_us = p50(sdpa)
+        v5s_us = p50(v5s)
         fi_us = p50(flash)
 
         def ratio(num, den):
@@ -60,39 +61,48 @@ def main():
 
         row = [
             f"{seq:>6}",
+            str(splits).rjust(7),
             _fmt_us(sdpa).rjust(10),
             _fmt_us(flash).rjust(11),
             _fmt_us(v4).rjust(9),
             _fmt_us(v5).rjust(9),
-            ratio(v5_us, v4_us).rjust(7),
-            ratio(v5_us, sdpa_us).rjust(7),
-            ratio(v5_us, fi_us).rjust(7),
-            f"{corr:.2e}".rjust(12),
+            _fmt_us(v5s).rjust(11),
+            ratio(v5s_us, v5_us).rjust(9),
+            ratio(v5s_us, fi_us).rjust(9),
+            f"{corr:.1e}".rjust(10),
         ]
         print("  ".join(row))
 
     print()
-    # HYP-033 verdict
+    # HYP-034 verdicts (focus on split-KV wins over non-split + FI gap)
     verdicts = []
     for f in files:
         d = json.loads(f.read_text())
         seq = d["seq_len"]
         v5 = d.get("tq_v5_graph", {}).get("p50_us", float("nan"))
-        v4 = d.get("tq_v4_graph", {}).get("p50_us", float("nan"))
-        sdpa = d.get("fp16_sdpa", {}).get("p50_us", float("nan"))
+        v5s = d.get("tq_v5_split_graph", {}).get("p50_us", float("nan"))
         fi = d.get("flashinfer", {}).get("p50_us", float("nan"))
-        if v5 == v5 and v4 == v4 and seq >= 1024:
-            verdicts.append(("v5/v4 @ seq=" + str(seq), v5/v4, 0.5, "≤ 0.5"))
-        if v5 == v5 and sdpa == sdpa and seq == 4096:
-            verdicts.append(("v5/fp16 @ seq=4096", v5/sdpa, 1.5, "≤ 1.5"))
-        if v5 == v5 and fi == fi and seq == 4096:
-            verdicts.append(("v5/flashinfer @ seq=4096", v5/fi, 2.0, "≤ 2.0"))
+        split_cos = d.get("split_correctness", {}).get("cosine", float("nan"))
+
+        if v5 == v5 and v5s == v5s and seq >= 1024:
+            verdicts.append((f"v5_split/v5_nosplit @ seq={seq}", v5s/v5, 0.15,
+                             "≤ 0.15"))
+        if v5s == v5s and fi == fi and seq == 4096:
+            verdicts.append(("v5_split/flashinfer @ seq=4096", v5s/fi, 2.5,
+                             "≤ 2.5"))
+        if split_cos == split_cos and seq >= 256:
+            verdicts.append((f"split correctness cos @ seq={seq}", split_cos, 0.9999,
+                             "≥ 0.9999"))
 
     if verdicts:
-        print("HYP-033 prediction checks:")
+        print("HYP-034 prediction checks:")
         for name, actual, threshold, desc in verdicts:
-            status = "PASS" if actual <= threshold else "FAIL"
-            print(f"  [{status}] {name} = {actual:.2f}x (target: {desc})")
+            if "correctness" in name:
+                passed = actual >= threshold
+            else:
+                passed = actual <= threshold
+            status = "PASS" if passed else "FAIL"
+            print(f"  [{status}] {name} = {actual:.4f} (target: {desc})")
 
 
 if __name__ == "__main__":

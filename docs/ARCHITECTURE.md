@@ -226,6 +226,17 @@ so the op does no allocations and no host sync. Registered under `torch.ops.turb
 The backend caches workspace by `(batch_size, max_pages)` keyed on vLLM's shape
 buckets; the original `decode_v5_from_cache` stays in place for eager callers.
 
+v5 split-KV (HYP-034): `decode_v5_from_cache_splitkv_ws` launches grid
+`(batch × num_splits, num_kv_heads)` instead of `(batch, num_kv_heads)`, so
+the kernel saturates SMs at long seq. num_splits is chosen per shape bucket
+from an SM-saturation heuristic and snapped to a divisor of max_len; split
+indices and `kv_chunk_size` are pre-filled in Python during warmup so the
+captured graph has no dynamic state. A small post-kernel `mark_empty_splits_v5`
+sets LSE to the -1e30 sentinel for splits entirely past `seq_lens[b]`, which
+`SplitKVCombineKernel` already treats as "skip". The backend auto-dispatches
+to the split variant once `max_len ≥ 512`; below that, combine-kernel overhead
+outweighs the fan-out benefit (HYP-018).
+
 ## Deployment
 
 ```
@@ -249,9 +260,9 @@ Until merged, 4 files vendored in `docker/vllm_patches/`.
 
 ## Experiment History
 
-32 hypotheses in `docs/hypotheses/` (HYP-001 to HYP-033):
-- 12 confirmed, 14 rejected, 6 pending
-- Kernel evolved: 856μs → 37μs (v4 graph) → 0.82ms v5 standalone @ seq=4096
+33 hypotheses in `docs/hypotheses/` (HYP-001 to HYP-034):
+- 14 confirmed, 14 rejected, 5 pending
+- Kernel evolved: 856μs → 37μs (v4 graph) → 226μs v5-split-graph @ seq=4096
 - Key confirmed: HYP-008 (bdz=16), HYP-017 (contiguous), HYP-018 (split-KV),
-  HYP-023 (CUDA graphs), HYP-029 (graph-safe ops), HYP-031 (tensor-core v5)
-- In flight: HYP-033 (v5 graph-safe via pre-allocated workspace)
+  HYP-023 (CUDA graphs), HYP-029 (graph-safe ops), HYP-031 (tensor-core v5),
+  HYP-033 (v5 graph-safety), HYP-034 (v5 split-KV under graphs)

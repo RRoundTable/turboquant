@@ -118,21 +118,52 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         # (batch_size, max_pages_per_seq) -> dict of workspace tensors for v5
         self._v5_ws_cache: dict[tuple[int, int], dict[str, torch.Tensor]] = {}
 
+    @staticmethod
+    def _choose_num_splits(batch_size: int, max_len: int, num_kv_heads: int,
+                           device: torch.device) -> int:
+        """Pick num_splits at workspace-creation time (HYP-034).
+
+        Static per shape bucket, so the captured graph has a fixed grid. Below
+        max_len=512 the combine-kernel overhead outweighs the fan-out benefit
+        (HYP-018), so stay at num_splits=1. Result is snapped to the largest
+        divisor of max_len ≤ target so chunk_size * num_splits == max_len
+        exactly — avoids overshooting workspace bounds even if the underlying
+        kernel didn't already clamp at seq_len.
+        """
+        if max_len < 512:
+            return 1
+        sm_count = torch.cuda.get_device_properties(device).multi_processor_count
+        splits_by_sm = max(1, (2 * sm_count) // (batch_size * num_kv_heads))
+        splits_by_work = max(1, max_len // 32)  # ≥ 2 KV tiles per split
+        target = min(splits_by_sm, splits_by_work)
+        best = 1
+        for d in range(2, target + 1):
+            if max_len % d == 0:
+                best = d
+        return best
+
     def _get_v5_ws(self, batch_size: int, max_pages: int, block_size: int,
-                   device: torch.device) -> tuple[dict[str, torch.Tensor], int]:
-        """Lazily allocate and cache v5 gather workspace + output buffer.
+                   device: torch.device) -> tuple[dict[str, torch.Tensor], int, int]:
+        """Lazily allocate and cache v5 gather + split-KV workspace.
 
         Keyed by (batch_size, max_pages). vLLM captures CUDA graphs per batch
         bucket, and each bucket's block_table has a fixed second dim, so the
         max_len upper bound (max_pages * block_size) is constant per key.
-        Allocation happens on the first call for a bucket (during vLLM warmup,
-        before graph capture), so replay never hits a cudaMalloc.
+        num_splits is chosen once per bucket from the SM-saturation heuristic
+        and baked into the captured graph. Allocation happens on the first
+        call for a bucket (during vLLM warmup, before graph capture), so
+        replay never hits a cudaMalloc.
+
+        Returns (ws_dict, max_len, num_splits).
         """
         key = (batch_size, max_pages)
         ws = self._v5_ws_cache.get(key)
         max_len = max_pages * block_size
         if ws is None:
             dim_chunks = self._pd // TILE_DIMS
+            num_splits = self._choose_num_splits(batch_size, max_len,
+                                                 self.num_kv_heads, device)
+            padded_batch = batch_size * num_splits
             ws = {
                 "k_quant": torch.empty((batch_size, self.num_kv_heads, max_len, self._qbytes),
                                        dtype=torch.uint8, device=device),
@@ -144,9 +175,25 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                                        dtype=torch.float16, device=device),
                 "o":       torch.empty((batch_size, self.num_heads, self._pd),
                                        dtype=torch.float16, device=device),
+                "num_splits": num_splits,
             }
+            if num_splits > 1:
+                # Split-KV scratch. Pre-filled split indices are pure functions
+                # of (batch_size, num_splits) — safe to compute once here.
+                arange = torch.arange(padded_batch, dtype=torch.int32, device=device)
+                ws["partition_o"]    = torch.empty((padded_batch, self.num_heads, self._pd),
+                                                   dtype=torch.float32, device=device)
+                ws["partition_lse"]  = torch.empty((padded_batch, self.num_heads),
+                                                   dtype=torch.float32, device=device)
+                ws["request_indices"] = (arange // num_splits).to(torch.int32)
+                ws["kv_tile_indices"] = (arange % num_splits).to(torch.int32)
+                ws["split_indptr"]    = (torch.arange(batch_size + 1, dtype=torch.int32,
+                                                      device=device) * num_splits)
+                ws["kv_chunk_size"]   = torch.tensor(
+                    [(max_len + num_splits - 1) // num_splits],
+                    dtype=torch.int32, device=device)
             self._v5_ws_cache[key] = ws
-        return ws, max_len
+        return ws, max_len, ws["num_splits"]
 
     def _ensure(self, dev):
         if self._signs is not None:
@@ -331,24 +378,40 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
             if self.head_size < self._pd:
                 q_fp16 = F.pad(q_fp16, (0, self._pd - self.head_size))
 
-            # v5 tensor-core decode via the graph-safe workspace variant (HYP-033).
-            # The _ws op takes pre-allocated gather buffers + output + static
-            # max_len, so it records cleanly into a CUDA graph. Workspace is
-            # keyed by (batch_size, max_pages); vLLM captures a fixed set of
-            # shape buckets, so the cache size is bounded.
+            # v5 tensor-core decode via the graph-safe workspace variant.
+            # HYP-033: workspace + static max_len for capture safety.
+            # HYP-034: split-KV fan-out when max_len is large enough to benefit
+            #          from SM saturation; otherwise fall back to non-split.
+            # Workspace is keyed by (batch_size, max_pages); vLLM captures a
+            # fixed set of shape buckets, so the cache size is bounded.
             batch_size = q_fp16.shape[0]
-            ws, max_len = self._get_v5_ws(batch_size, max_pages, block_size, q.device)
-            result = torch.ops.turboquant_v5.decode_v5_from_cache_ws(
-                q_fp16, kv_cache,
-                kv_indices, kv_indptr, kv_last_page_len,
-                seq_lens,
-                self.num_kv_heads, block_size,
-                self.head_size, self._pd, self.scale,
-                self._signs if self._signs is not None else torch.empty(0, device=q.device),
-                self._qbytes, self._nbytes,
-                ws["k_quant"], ws["v_quant"], ws["k_norms"], ws["v_norms"], ws["o"],
-                max_len,
-            )
+            ws, max_len, num_splits = self._get_v5_ws(
+                batch_size, max_pages, block_size, q.device)
+            signs = self._signs if self._signs is not None else torch.empty(0, device=q.device)
+            if num_splits > 1:
+                result = torch.ops.turboquant_v5.decode_v5_from_cache_splitkv_ws(
+                    q_fp16, kv_cache,
+                    kv_indices, kv_indptr, kv_last_page_len, seq_lens,
+                    self.num_kv_heads, block_size,
+                    self.head_size, self._pd, self.scale,
+                    signs, self._qbytes, self._nbytes,
+                    ws["k_quant"], ws["v_quant"], ws["k_norms"], ws["v_norms"], ws["o"],
+                    max_len,
+                    ws["partition_o"], ws["partition_lse"],
+                    ws["request_indices"], ws["kv_tile_indices"],
+                    ws["split_indptr"], ws["kv_chunk_size"],
+                    num_splits,
+                )
+            else:
+                result = torch.ops.turboquant_v5.decode_v5_from_cache_ws(
+                    q_fp16, kv_cache,
+                    kv_indices, kv_indptr, kv_last_page_len, seq_lens,
+                    self.num_kv_heads, block_size,
+                    self.head_size, self._pd, self.scale,
+                    signs, self._qbytes, self._nbytes,
+                    ws["k_quant"], ws["v_quant"], ws["k_norms"], ws["v_norms"], ws["o"],
+                    max_len,
+                )
 
             if self.head_size < self._pd:
                 output[:num_actual] = result[:num_actual, :, :self.head_size]

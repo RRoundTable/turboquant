@@ -93,6 +93,24 @@ def _build_inputs(seq_len: int):
     }
 
 
+def _alloc_split_workspace(ws_core, batch, num_qo_heads, padded_dim, max_len, num_splits):
+    padded_batch = batch * num_splits
+    arange = torch.arange(padded_batch, dtype=torch.int32, device=DEVICE)
+    return {
+        **ws_core,
+        "partition_o":    torch.empty((padded_batch, num_qo_heads, padded_dim),
+                                      dtype=torch.float32, device=DEVICE),
+        "partition_lse":  torch.empty((padded_batch, num_qo_heads),
+                                      dtype=torch.float32, device=DEVICE),
+        "request_indices": (arange // num_splits).to(torch.int32),
+        "kv_tile_indices": (arange % num_splits).to(torch.int32),
+        "split_indptr":    (torch.arange(batch + 1, dtype=torch.int32, device=DEVICE)
+                            * num_splits),
+        "kv_chunk_size":   torch.tensor([(max_len + num_splits - 1) // num_splits],
+                                        dtype=torch.int32, device=DEVICE),
+    }
+
+
 @pytest.mark.parametrize("seq_len", [64, 256, 1024])
 def test_v5_ws_graph_capture_matches_eager(v5_module, seq_len):
     d = _build_inputs(seq_len)
@@ -145,3 +163,64 @@ def test_v5_ws_graph_capture_matches_eager(v5_module, seq_len):
     assert max_abs < 1e-2, (
         f"Graph replay output diverged from eager reference: "
         f"max_abs={max_abs:.6f} at seq_len={seq_len}")
+
+
+@pytest.mark.parametrize("seq_len,num_splits", [(512, 4), (1024, 8), (4096, 16)])
+def test_v5_split_graph_matches_nosplit(v5_module, seq_len, num_splits):
+    """HYP-034: split-KV output should match non-split under graph capture,
+    within cosine 0.9999 (log-sum-exp reduction reorders accumulation)."""
+    d = _build_inputs(seq_len)
+    ws_split = _alloc_split_workspace(d["ws"], BATCH, NUM_QO_HEADS, PADDED_DIM,
+                                      d["max_len"], num_splits)
+
+    ref = v5_module.decode_v5_from_cache(
+        d["q"], d["cache"], d["indices"], d["indptr"],
+        d["last_page_len"], d["seq_lens"],
+        NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, PADDED_DIM,
+        d["sm_scale"], d["signs"], d["qbytes"], d["nbytes"])
+    torch.cuda.synchronize()
+
+    # Capture + replay the split-KV op.
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        for _ in range(2):
+            torch.ops.turboquant_v5.decode_v5_from_cache_splitkv_ws(
+                d["q"], d["cache"], d["indices"], d["indptr"],
+                d["last_page_len"], d["seq_lens"],
+                NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, PADDED_DIM,
+                d["sm_scale"], d["signs"], d["qbytes"], d["nbytes"],
+                ws_split["k_quant"], ws_split["v_quant"],
+                ws_split["k_norms"], ws_split["v_norms"], ws_split["o"],
+                d["max_len"],
+                ws_split["partition_o"], ws_split["partition_lse"],
+                ws_split["request_indices"], ws_split["kv_tile_indices"],
+                ws_split["split_indptr"], ws_split["kv_chunk_size"],
+                num_splits)
+    torch.cuda.current_stream().wait_stream(s)
+
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        torch.ops.turboquant_v5.decode_v5_from_cache_splitkv_ws(
+            d["q"], d["cache"], d["indices"], d["indptr"],
+            d["last_page_len"], d["seq_lens"],
+            NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, PADDED_DIM,
+            d["sm_scale"], d["signs"], d["qbytes"], d["nbytes"],
+            ws_split["k_quant"], ws_split["v_quant"],
+            ws_split["k_norms"], ws_split["v_norms"], ws_split["o"],
+            d["max_len"],
+            ws_split["partition_o"], ws_split["partition_lse"],
+            ws_split["request_indices"], ws_split["kv_tile_indices"],
+            ws_split["split_indptr"], ws_split["kv_chunk_size"],
+            num_splits)
+
+    for _ in range(10):
+        g.replay()
+    torch.cuda.synchronize()
+
+    import torch.nn.functional as F
+    cos = F.cosine_similarity(ref.flatten().float().unsqueeze(0),
+                              ws_split["o"].flatten().float().unsqueeze(0)).item()
+    assert cos >= 0.9999, (
+        f"split-KV output diverged from non-split reference: "
+        f"cosine={cos:.6f} at seq_len={seq_len}, num_splits={num_splits}")

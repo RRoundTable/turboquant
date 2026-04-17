@@ -550,6 +550,200 @@ torch::Tensor decode_v5_from_cache_ws(
     return o_ws;
 }
 
+// ---- mark_empty_splits_v5 (HYP-034): post-kernel LSE correction --------------
+// The main kernel writes LSE for every (b, s) block launched, including splits
+// whose KV range is entirely beyond seq_lens[b]. Those splits have partition_o
+// = 0 but LSE = log(kv_chunk_size) (finite), which would inflate the combine
+// denominator. This kernel resets those LSEs to the -1e30 sentinel that
+// SplitKVCombineKernel treats as "skip this split".
+//
+// Grid: (batch, num_splits). Block: (num_qo_heads,).
+__global__ void mark_empty_splits_v5(
+    float* __restrict__ partition_lse,      // [batch * num_splits, num_qo_heads]
+    const int32_t* __restrict__ seq_lens,   // [batch]
+    int num_splits,
+    int num_qo_heads,
+    int kv_chunk_size
+) {
+    int b = blockIdx.x;
+    int s = blockIdx.y;
+    int qo_head = threadIdx.x;
+    if (qo_head >= num_qo_heads) return;
+
+    int sl = seq_lens[b];
+    if (s * kv_chunk_size >= sl) {
+        partition_lse[(b * num_splits + s) * num_qo_heads + qo_head] = -1e30f;
+    }
+}
+
+// ---- decode_v5_from_cache_splitkv_ws: GRAPH-SAFE split-KV variant (HYP-034) --
+// Same flow as decode_v5_from_cache_ws, but launches `num_splits` blocks per
+// (batch, kv_head) and reduces via SplitKVCombineKernel. All scratch tensors
+// are caller-provided; all integers that drive the grid are static. Split
+// indices (request_indices, kv_tile_indices, split_indptr) and kv_chunk_size
+// are pre-filled by the Python caller during workspace creation (outside
+// capture) — they are pure functions of (batch_size, num_splits, max_len).
+torch::Tensor decode_v5_from_cache_splitkv_ws(
+    torch::Tensor q,
+    torch::Tensor kv_cache,
+    torch::Tensor indices,
+    torch::Tensor indptr,
+    torch::Tensor last_page_len,
+    torch::Tensor seq_lens,
+    int num_kv_heads,
+    int page_size,
+    int head_dim,
+    int padded_dim,
+    float sm_scale,
+    torch::Tensor hadamard_signs,
+    int qbytes,
+    int nbytes,
+    torch::Tensor k_quant_ws,
+    torch::Tensor v_quant_ws,
+    torch::Tensor k_norms_ws,
+    torch::Tensor v_norms_ws,
+    torch::Tensor o_ws,
+    int max_len,
+    torch::Tensor partition_o_ws,    // [batch * num_splits, num_qo_heads, padded_dim] fp32
+    torch::Tensor partition_lse_ws,  // [batch * num_splits, num_qo_heads]             fp32
+    torch::Tensor request_indices,   // [batch * num_splits] int32
+    torch::Tensor kv_tile_indices,   // [batch * num_splits] int32
+    torch::Tensor split_indptr,      // [batch + 1]          int32
+    torch::Tensor kv_chunk_size_t,   // [1]                  int32
+    int num_splits
+) {
+    TORCH_CHECK(padded_dim == 128, "v5 splitkv_ws only supports head_dim=128");
+    TORCH_CHECK(max_len > 0, "max_len must be positive");
+    TORCH_CHECK(num_splits >= 1, "num_splits must be >= 1");
+
+    int ebs = static_cast<int>(kv_cache.size(-1));
+    int block_size = static_cast<int>(kv_cache.size(2));
+    int batch_size = q.size(0);
+    int num_qo_heads = q.size(1);
+    int bdy = num_qo_heads / num_kv_heads;
+    int dim_chunks = padded_dim / 64;
+    int padded_batch = batch_size * num_splits;
+    auto stream = c10::cuda::getCurrentCUDAStream();
+
+    // Shape checks.
+    TORCH_CHECK(k_quant_ws.size(0) == batch_size && k_quant_ws.size(1) == num_kv_heads
+                    && k_quant_ws.size(2) == max_len && k_quant_ws.size(3) == qbytes,
+                "k_quant_ws shape mismatch");
+    TORCH_CHECK(v_quant_ws.sizes() == k_quant_ws.sizes(), "v_quant_ws shape mismatch");
+    TORCH_CHECK(k_norms_ws.size(0) == batch_size && k_norms_ws.size(1) == num_kv_heads
+                    && k_norms_ws.size(2) == max_len && k_norms_ws.size(3) == dim_chunks,
+                "k_norms_ws shape mismatch");
+    TORCH_CHECK(v_norms_ws.sizes() == k_norms_ws.sizes(), "v_norms_ws shape mismatch");
+    TORCH_CHECK(o_ws.size(0) == batch_size && o_ws.size(1) == num_qo_heads
+                    && o_ws.size(2) == padded_dim, "o_ws shape mismatch");
+    TORCH_CHECK(partition_o_ws.size(0) == padded_batch
+                    && partition_o_ws.size(1) == num_qo_heads
+                    && partition_o_ws.size(2) == padded_dim
+                    && partition_o_ws.scalar_type() == at::kFloat,
+                "partition_o_ws shape/dtype mismatch");
+    TORCH_CHECK(partition_lse_ws.size(0) == padded_batch
+                    && partition_lse_ws.size(1) == num_qo_heads
+                    && partition_lse_ws.scalar_type() == at::kFloat,
+                "partition_lse_ws shape/dtype mismatch");
+    TORCH_CHECK(request_indices.size(0) == padded_batch, "request_indices shape mismatch");
+    TORCH_CHECK(kv_tile_indices.size(0) == padded_batch, "kv_tile_indices shape mismatch");
+    TORCH_CHECK(split_indptr.size(0) == batch_size + 1, "split_indptr shape mismatch");
+    TORCH_CHECK(kv_chunk_size_t.numel() == 1, "kv_chunk_size_t must be scalar int32");
+
+    // Zero the gather workspaces (capturable memset nodes).
+    cudaMemsetAsync(k_quant_ws.data_ptr(), 0, k_quant_ws.nbytes(), stream);
+    cudaMemsetAsync(v_quant_ws.data_ptr(), 0, v_quant_ws.nbytes(), stream);
+    cudaMemsetAsync(k_norms_ws.data_ptr(), 0, k_norms_ws.nbytes(), stream);
+    cudaMemsetAsync(v_norms_ws.data_ptr(), 0, v_norms_ws.nbytes(), stream);
+    cudaMemsetAsync(o_ws.data_ptr(), 0, o_ws.nbytes(), stream);
+    // partition_o / partition_lse are fully written by the main kernel; no init
+    // needed. mark_empty_splits_v5 then replaces the LSE of empty splits with
+    // the -1e30 sentinel.
+
+    auto k_half = kv_cache.select(0, 0);
+    auto v_half = kv_cache.select(0, 1);
+
+    gather_paged_to_contiguous<<<dim3(batch_size, num_kv_heads), 256, 0, stream>>>(
+        (uint8_t*)k_half.data_ptr(),
+        k_quant_ws.data_ptr<uint8_t>(),
+        (__half*)k_norms_ws.data_ptr<at::Half>(),
+        indices.data_ptr<int32_t>(), indptr.data_ptr<int32_t>(),
+        seq_lens.data_ptr<int32_t>(),
+        block_size, num_kv_heads, qbytes, dim_chunks, ebs, max_len);
+
+    gather_paged_to_contiguous<<<dim3(batch_size, num_kv_heads), 256, 0, stream>>>(
+        (uint8_t*)v_half.data_ptr(),
+        v_quant_ws.data_ptr<uint8_t>(),
+        (__half*)v_norms_ws.data_ptr<at::Half>(),
+        indices.data_ptr<int32_t>(), indptr.data_ptr<int32_t>(),
+        seq_lens.data_ptr<int32_t>(),
+        block_size, num_kv_heads, qbytes, dim_chunks, ebs, max_len);
+
+    // Main kernel: partition_kv = true, grid = (padded_batch, num_kv_heads).
+    using CP = ContiguousTurboQuantDecodeParams<__half, __half, int32_t>;
+    using V = DefaultAttention<false, false, false, false>;
+
+    CP p(
+        k_quant_ws.data_ptr<uint8_t>(), v_quant_ws.data_ptr<uint8_t>(),
+        (__half*)k_norms_ws.data_ptr<at::Half>(), (__half*)v_norms_ws.data_ptr<at::Half>(),
+        batch_size, num_kv_heads, max_len, head_dim, padded_dim,
+        (__half*)q.data_ptr<at::Half>(), nullptr, nullptr,
+        sm_scale, num_qo_heads
+    );
+    if (hadamard_signs.numel() > 0) {
+        p.hadamard_signs = hadamard_signs.data_ptr<float>();
+        p.hadamard_scale = rsqrtf(static_cast<float>(padded_dim));
+    }
+    p.partition_kv = true;
+    p.request_indices = request_indices.data_ptr<int32_t>();
+    p.kv_tile_indices = kv_tile_indices.data_ptr<int32_t>();
+    p.kv_chunk_size_ptr = kv_chunk_size_t.data_ptr<int32_t>();
+    p.block_valid_mask = nullptr;
+    p.partition_o = partition_o_ws.data_ptr<float>();
+    p.partition_lse = partition_lse_ws.data_ptr<float>();
+
+    #define LAUNCH_V5FCSWS(BDY, NW) do { \
+        constexpr uint32_t sm = calc_smem_v5_tc<128, BDY, NW>(); \
+        auto err = cudaFuncSetAttribute( \
+            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP>, \
+            cudaFuncAttributeMaxDynamicSharedMemorySize, sm); \
+        TORCH_CHECK(err == cudaSuccess, "smem: ", cudaGetErrorString(err)); \
+        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP> \
+            <<<dim3(padded_batch, num_kv_heads), dim3(32, 1, NW), sm, stream>>>(p); \
+    } while(0)
+
+    switch (bdy) {
+        case 1: LAUNCH_V5FCSWS(1, 4); break;
+        case 2: LAUNCH_V5FCSWS(2, 4); break;
+        case 4: LAUNCH_V5FCSWS(4, 4); break;
+        case 8: LAUNCH_V5FCSWS(8, 4); break;
+        default: TORCH_CHECK(false, "v5 splitkv_ws: unsupported bdy=", bdy);
+    }
+    #undef LAUNCH_V5FCSWS
+
+    // Post-kernel: set LSE=-1e30 for splits whose KV range lies entirely past
+    // seq_lens[b]. kv_chunk_size is static per capture, so pass as int arg.
+    // ceil(max_len / num_splits) matches the pre-filled kv_chunk_size_t value.
+    int kv_chunk_size = (max_len + num_splits - 1) / num_splits;
+    mark_empty_splits_v5<<<dim3(batch_size, num_splits), num_qo_heads, 0, stream>>>(
+        partition_lse_ws.data_ptr<float>(),
+        seq_lens.data_ptr<int32_t>(),
+        num_splits, num_qo_heads, kv_chunk_size);
+
+    // Combine splits into o_ws.
+    SplitKVCombineKernel<__half><<<dim3(batch_size, num_qo_heads), padded_dim, 0, stream>>>(
+        partition_o_ws.data_ptr<float>(),
+        partition_lse_ws.data_ptr<float>(),
+        (__half*)o_ws.data_ptr<at::Half>(),
+        nullptr,
+        split_indptr.data_ptr<int32_t>(),
+        num_qo_heads, padded_dim);
+
+    auto cuda_err = cudaGetLastError();
+    TORCH_CHECK(cuda_err == cudaSuccess, "v5 splitkv_ws: ", cudaGetErrorString(cuda_err));
+    return o_ws;
+}
+
 // ─── torch.library wrapper + registration (graph-replay-safe dispatch) ────────
 // Uses a separate library name `turboquant_v5` because `turboquant` is owned
 // by decode_v4_binding.cu. torch.library requires int64_t / double schema types.
@@ -572,6 +766,32 @@ static torch::Tensor turboquant_decode_v5_from_cache_ws_op(
         (int)max_len);
 }
 
+static torch::Tensor turboquant_decode_v5_from_cache_splitkv_ws_op(
+    torch::Tensor q, torch::Tensor kv_cache,
+    torch::Tensor indices, torch::Tensor indptr, torch::Tensor last_page_len,
+    torch::Tensor seq_lens,
+    int64_t num_kv_heads, int64_t page_size, int64_t head_dim, int64_t padded_dim,
+    double sm_scale, torch::Tensor hadamard_signs,
+    int64_t qbytes, int64_t nbytes,
+    torch::Tensor k_quant_ws, torch::Tensor v_quant_ws,
+    torch::Tensor k_norms_ws, torch::Tensor v_norms_ws,
+    torch::Tensor o_ws,
+    int64_t max_len,
+    torch::Tensor partition_o_ws, torch::Tensor partition_lse_ws,
+    torch::Tensor request_indices, torch::Tensor kv_tile_indices,
+    torch::Tensor split_indptr, torch::Tensor kv_chunk_size_t,
+    int64_t num_splits) {
+    return decode_v5_from_cache_splitkv_ws(
+        q, kv_cache, indices, indptr, last_page_len, seq_lens,
+        (int)num_kv_heads, (int)page_size, (int)head_dim, (int)padded_dim,
+        (float)sm_scale, hadamard_signs, (int)qbytes, (int)nbytes,
+        k_quant_ws, v_quant_ws, k_norms_ws, v_norms_ws, o_ws,
+        (int)max_len,
+        partition_o_ws, partition_lse_ws,
+        request_indices, kv_tile_indices, split_indptr, kv_chunk_size_t,
+        (int)num_splits);
+}
+
 TORCH_LIBRARY(turboquant_v5, m) {
     m.def(
         "decode_v5_from_cache_ws(Tensor q, Tensor kv_cache, Tensor indices, "
@@ -580,10 +800,21 @@ TORCH_LIBRARY(turboquant_v5, m) {
         "float sm_scale, Tensor hadamard_signs, int qbytes, int nbytes, "
         "Tensor k_quant_ws, Tensor v_quant_ws, Tensor k_norms_ws, "
         "Tensor v_norms_ws, Tensor o_ws, int max_len) -> Tensor");
+    m.def(
+        "decode_v5_from_cache_splitkv_ws(Tensor q, Tensor kv_cache, Tensor indices, "
+        "Tensor indptr, Tensor last_page_len, Tensor seq_lens, "
+        "int num_kv_heads, int page_size, int head_dim, int padded_dim, "
+        "float sm_scale, Tensor hadamard_signs, int qbytes, int nbytes, "
+        "Tensor k_quant_ws, Tensor v_quant_ws, Tensor k_norms_ws, "
+        "Tensor v_norms_ws, Tensor o_ws, int max_len, "
+        "Tensor partition_o_ws, Tensor partition_lse_ws, "
+        "Tensor request_indices, Tensor kv_tile_indices, "
+        "Tensor split_indptr, Tensor kv_chunk_size_t, int num_splits) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(turboquant_v5, CUDA, m) {
     m.impl("decode_v5_from_cache_ws", &turboquant_decode_v5_from_cache_ws_op);
+    m.impl("decode_v5_from_cache_splitkv_ws", &turboquant_decode_v5_from_cache_splitkv_ws_op);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -595,4 +826,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "TurboQuant v5 tensor-core decode from paged kv_cache (HYP-031)");
     m.def("decode_v5_from_cache_ws", &decode_v5_from_cache_ws,
           "TurboQuant v5 graph-safe decode with pre-allocated workspace (HYP-033)");
+    m.def("decode_v5_from_cache_splitkv_ws", &decode_v5_from_cache_splitkv_ws,
+          "TurboQuant v5 graph-safe split-KV decode with pre-allocated workspace (HYP-034)");
 }

@@ -402,11 +402,17 @@ Priorities (see HYP-030 for sizing):
       (Phase 9b candidate, never implemented). Target: 1.5–2× on compute,
       closes the scalar-FMA gap without giving up the Lloyd-Max codebook.
       Effort: ~weeks.
-- [ ] **13d.** HYP-033: Make v5 tensor-core decode CUDA-graph-safe via a
+- [x] **13d.** HYP-033: Make v5 tensor-core decode CUDA-graph-safe via a
       pre-allocated workspace op (`decode_v5_from_cache_ws` under
-      `torch.ops.turboquant_v5.*`). Removes the v4 fallback during graph
-      capture so vLLM runs v5's WMMA path in production. Expected to cut the
-      seq=4096 gap from 4.58× to ≤1.5× vs FP16 FA.
+      `torch.ops.turboquant_v5.*`). Confirmed (engineering). v5 runs under
+      full graphs with bit-exact correctness; 1.5–1.9× faster than v4-graph.
+      FP16 gap at seq=4096 stays wide because the kernel still dequants via
+      scalar FMA.
+- [x] **13e.** HYP-034: Port split-KV into `decode_v5_from_cache_splitkv_ws`
+      so grid saturates SMs at long seq. Confirmed (engineering). **5.9×
+      speedup at seq=4096** (1323 → 226 μs); FlashInfer gap shrinks from
+      30.77× (HYP-033) to 5.29×. vLLM backend auto-dispatches to the split
+      variant when `max_len ≥ 512`.
 
 ### Phase 14: vLLM upstream PR — CLOSE-OUT
 
