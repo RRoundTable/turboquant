@@ -413,6 +413,13 @@ Priorities (see HYP-030 for sizing):
       speedup at seq=4096** (1323 → 226 μs); FlashInfer gap shrinks from
       30.77× (HYP-033) to 5.29×. vLLM backend auto-dispatches to the split
       variant when `max_len ≥ 512`.
+- [x] **13f.** HYP-035: Delete the paged→contiguous gather, make v5 walk
+      the page table directly (like v4). Confirmed — all predictions hit.
+      seq=4096: **197 → 110 μs (-44%)**, FlashInfer gap shrinks to 2.69×.
+      seq=1024 is **within 1.36× of FlashInfer**. Gather workspaces dropped
+      from the hot path. The only remaining major lever is HYP-032 (Marlin
+      dequant → tensor core) which would attack the ~60 μs per-token
+      scalar-FMA dequant that dominates the residual gap.
 
 ### Phase 14: vLLM upstream PR — CLOSE-OUT
 

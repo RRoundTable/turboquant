@@ -29,9 +29,9 @@ def main():
         sys.exit(1)
 
     # Header
-    cols = ["seq", "splits", "fp16_sdpa", "flashinfer", "tq_v4", "tq_v5", "tq_v5_split",
-            "split/v5", "split/fi", "corr"]
-    widths = [6, 7, 10, 11, 9, 9, 11, 9, 9, 10]
+    cols = ["seq", "splits", "fi", "v5_ns", "v5_gather", "v5_paged",
+            "paged/gather", "paged/fi"]
+    widths = [6, 7, 8, 9, 10, 10, 13, 10]
     hdr = "  ".join(f"{c:>{w}}" for c, w in zip(cols, widths))
     print(hdr)
     print("-" * len(hdr))
@@ -40,18 +40,16 @@ def main():
         d = json.loads(f.read_text())
         seq = d["seq_len"]
         splits = d.get("num_splits", "?")
-        sdpa = d.get("fp16_sdpa", {})
         flash = d.get("flashinfer", {})
-        v4 = d.get("tq_v4_graph", {})
         v5 = d.get("tq_v5_graph", {})
-        v5s = d.get("tq_v5_split_graph", {})
-        corr = d.get("correctness", {}).get("max_abs", float("nan"))
+        v5s = d.get("tq_v5_split_graph", {})   # HYP-034 gather+split
+        v5p = d.get("tq_v5_paged_split_graph", {})  # HYP-035 paged
 
         def p50(x):
             return x.get("p50_us", float("nan")) if isinstance(x, dict) else float("nan")
 
-        v5_us = p50(v5)
         v5s_us = p50(v5s)
+        v5p_us = p50(v5p)
         fi_us = p50(flash)
 
         def ratio(num, den):
@@ -62,40 +60,36 @@ def main():
         row = [
             f"{seq:>6}",
             str(splits).rjust(7),
-            _fmt_us(sdpa).rjust(10),
-            _fmt_us(flash).rjust(11),
-            _fmt_us(v4).rjust(9),
+            _fmt_us(flash).rjust(8),
             _fmt_us(v5).rjust(9),
-            _fmt_us(v5s).rjust(11),
-            ratio(v5s_us, v5_us).rjust(9),
-            ratio(v5s_us, fi_us).rjust(9),
-            f"{corr:.1e}".rjust(10),
+            _fmt_us(v5s).rjust(10),
+            _fmt_us(v5p).rjust(10),
+            ratio(v5p_us, v5s_us).rjust(13),
+            ratio(v5p_us, fi_us).rjust(10),
         ]
         print("  ".join(row))
 
     print()
-    # HYP-034 verdicts (focus on split-KV wins over non-split + FI gap)
+    # HYP-035 verdicts (paged-native vs gather-based split)
     verdicts = []
     for f in files:
         d = json.loads(f.read_text())
         seq = d["seq_len"]
-        v5 = d.get("tq_v5_graph", {}).get("p50_us", float("nan"))
         v5s = d.get("tq_v5_split_graph", {}).get("p50_us", float("nan"))
+        v5p = d.get("tq_v5_paged_split_graph", {}).get("p50_us", float("nan"))
         fi = d.get("flashinfer", {}).get("p50_us", float("nan"))
-        split_cos = d.get("split_correctness", {}).get("cosine", float("nan"))
+        paged_cos = d.get("paged_correctness", {}).get("cosine", float("nan"))
 
-        if v5 == v5 and v5s == v5s and seq >= 1024:
-            verdicts.append((f"v5_split/v5_nosplit @ seq={seq}", v5s/v5, 0.15,
-                             "≤ 0.15"))
-        if v5s == v5s and fi == fi and seq == 4096:
-            verdicts.append(("v5_split/flashinfer @ seq=4096", v5s/fi, 2.5,
-                             "≤ 2.5"))
-        if split_cos == split_cos and seq >= 256:
-            verdicts.append((f"split correctness cos @ seq={seq}", split_cos, 0.9999,
+        if v5s == v5s and v5p == v5p and seq >= 1024:
+            verdicts.append((f"paged/gather @ seq={seq}", v5p/v5s, 0.8, "≤ 0.80"))
+        if v5p == v5p and fi == fi and seq == 4096:
+            verdicts.append(("paged/flashinfer @ seq=4096", v5p/fi, 3.0, "≤ 3.0"))
+        if paged_cos == paged_cos and seq >= 256:
+            verdicts.append((f"paged correctness cos @ seq={seq}", paged_cos, 0.9999,
                              "≥ 0.9999"))
 
     if verdicts:
-        print("HYP-034 prediction checks:")
+        print("HYP-035 prediction checks:")
         for name, actual, threshold, desc in verdicts:
             if "correctness" in name:
                 passed = actual >= threshold

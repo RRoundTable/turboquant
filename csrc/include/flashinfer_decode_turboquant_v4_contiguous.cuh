@@ -88,6 +88,18 @@ struct ContiguousTurboQuantDecodeParams {
     float*   partition_o;    // [padded_batch, num_qo_heads, head_dim] float32
     float*   partition_lse;  // [padded_batch, num_qo_heads] float32
 
+    // HYP-035: optional paged-source fields. When set, the v5 kernel
+    // (compiled with paged=true) walks the page table per tile instead of
+    // reading from k_quant/v_quant as a contiguous buffer. In this mode
+    // k_quant/v_quant are re-interpreted as the kv_slab base pointers for
+    // K and V respectively.
+    IdType*  indices;        // [total_pages]   page table
+    IdType*  indptr;         // [batch + 1]     CSR offsets
+    IdType*  seq_lens_ptr;   // [batch]         per-batch real KV length
+    uint32_t block_size;     // page_size (tokens per page)
+    uint32_t ebs;            // entry byte stride per head (quant + norm bytes, 16-aligned)
+    uint32_t qbytes;         // quant bytes per token per head (dim_chunks * 32)
+
     __host__ __device__ ContiguousTurboQuantDecodeParams() {}
 
     __host__ __device__ __forceinline__ int32_t get_qo_len(int32_t batch_idx) const { return 1; }
@@ -111,7 +123,9 @@ struct ContiguousTurboQuantDecodeParams {
         hadamard_signs(nullptr), hadamard_scale(0),
         request_indices(nullptr), kv_tile_indices(nullptr),
         kv_chunk_size_ptr(nullptr), block_valid_mask(nullptr),
-        partition_kv(false), partition_o(nullptr), partition_lse(nullptr)
+        partition_kv(false), partition_o(nullptr), partition_lse(nullptr),
+        indices(nullptr), indptr(nullptr), seq_lens_ptr(nullptr),
+        block_size(0), ebs(0), qbytes(0)
     {
         dim_chunks = padded_dim / 64;
         uint32_t bytes_per_token = dim_chunks * 32;

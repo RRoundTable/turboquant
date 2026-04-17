@@ -392,14 +392,18 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 batch_size, max_pages, block_size, q.device)
             signs = self._signs if self._signs is not None else torch.empty(0, device=q.device)
             if num_splits > 1:
-                result = torch.ops.turboquant_v5.decode_v5_from_cache_splitkv_ws(
+                # HYP-035: paged-native split-KV — no gather, no workspace copy.
+                # The kernel walks kv_cache's page table directly in its load
+                # prolog. Gather buffers (ws["k_quant"]..) are left unused in
+                # this path but stay allocated for backward-compat with the
+                # older _splitkv_ws op if it's ever re-enabled.
+                result = torch.ops.turboquant_v5.decode_v5_from_cache_paged_splitkv_ws(
                     q_fp16, kv_cache,
                     kv_indices, kv_indptr, kv_last_page_len, seq_lens,
                     self.num_kv_heads, block_size,
                     self.head_size, self._pd, self.scale,
                     signs, self._qbytes, self._nbytes,
-                    ws["k_quant"], ws["v_quant"], ws["k_norms"], ws["v_norms"], ws["o"],
-                    max_len,
+                    ws["o"], max_len,
                     ws["partition_o"], ws["partition_lse"],
                     ws["request_indices"], ws["kv_tile_indices"],
                     ws["split_indptr"], ws["kv_chunk_size"],

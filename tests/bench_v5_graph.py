@@ -301,6 +301,26 @@ def _bench_v5_split_graph(seq_len: int, data: dict, ws_split: dict, num_splits: 
     return _capture_and_time(run)
 
 
+def _bench_v5_paged_split_graph(seq_len: int, data: dict, ws_split: dict, num_splits: int):
+    """HYP-035: paged-native split-KV. Kernel walks page table directly —
+    ws["k_quant"/"v_quant"/"k_norms"/"v_norms"] are unused."""
+    def run():
+        torch.ops.turboquant_v5.decode_v5_from_cache_paged_splitkv_ws(
+            data["q"], data["cache"],
+            data["indices"], data["indptr"],
+            data["last_page_len"], data["seq_lens"],
+            NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, PADDED_DIM,
+            data["sm_scale"], data["signs"],
+            data["qbytes"], data["nbytes"],
+            ws_split["o"], data["max_len"],
+            ws_split["partition_o"], ws_split["partition_lse"],
+            ws_split["request_indices"], ws_split["kv_tile_indices"],
+            ws_split["split_indptr"], ws_split["kv_chunk_size"],
+            num_splits,
+        )
+    return _capture_and_time(run)
+
+
 def _check_correctness(data: dict, ws: dict, v5_module):
     """Assert v5-ws (graph-safe) matches v5-eager (reference) bitwise-ish."""
     out_eager = v5_module.decode_v5_from_cache(
@@ -417,13 +437,39 @@ def main():
         },
     }
 
+    # HYP-035 correctness: paged-native split output should match non-split eager.
+    paged_out = torch.ops.turboquant_v5.decode_v5_from_cache_paged_splitkv_ws(
+        data["q"], data["cache"], data["indices"], data["indptr"],
+        data["last_page_len"], data["seq_lens"],
+        NUM_KV_HEADS, PAGE_SIZE, HEAD_DIM, PADDED_DIM,
+        data["sm_scale"], data["signs"], data["qbytes"], data["nbytes"],
+        ws_split["o"], data["max_len"],
+        ws_split["partition_o"], ws_split["partition_lse"],
+        ws_split["request_indices"], ws_split["kv_tile_indices"],
+        ws_split["split_indptr"], ws_split["kv_chunk_size"],
+        num_splits)
+    torch.cuda.synchronize()
+    paged_corr_cos = F.cosine_similarity(
+        paged_out.flatten().float().unsqueeze(0),
+        nosplit_out.flatten().float().unsqueeze(0)).item()
+    paged_corr_maxabs = (paged_out.float() - nosplit_out.float()).abs().max().item()
+    print(f"  paged vs nosplit: cosine={paged_corr_cos:.6f}  max_abs={paged_corr_maxabs:.6f}",
+          flush=True)
+    results["paged_correctness"] = {
+        "cosine": paged_corr_cos,
+        "max_abs": paged_corr_maxabs,
+        "passed": bool(paged_corr_cos >= 0.9999),
+    }
+
     for name, fn in [
-        ("fp16_sdpa",         lambda: _bench_fp16_sdpa(args.seq_len)),
-        ("flashinfer",        lambda: _bench_flashinfer(args.seq_len)),
-        ("tq_v4_graph",       lambda: _bench_v4_graph(args.seq_len, data)),
-        ("tq_v5_graph",       lambda: _bench_v5_graph(args.seq_len, data, ws)),
-        ("tq_v5_split_graph", lambda: _bench_v5_split_graph(args.seq_len, data,
-                                                            ws_split, num_splits)),
+        ("fp16_sdpa",               lambda: _bench_fp16_sdpa(args.seq_len)),
+        ("flashinfer",              lambda: _bench_flashinfer(args.seq_len)),
+        ("tq_v4_graph",             lambda: _bench_v4_graph(args.seq_len, data)),
+        ("tq_v5_graph",             lambda: _bench_v5_graph(args.seq_len, data, ws)),
+        ("tq_v5_split_graph",       lambda: _bench_v5_split_graph(args.seq_len, data,
+                                                                  ws_split, num_splits)),
+        ("tq_v5_paged_split_graph", lambda: _bench_v5_paged_split_graph(args.seq_len, data,
+                                                                        ws_split, num_splits)),
     ]:
         print(f"[bench_v5_graph] timing {name}...", flush=True)
         try:

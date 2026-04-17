@@ -100,6 +100,7 @@ template <uint32_t tile_n,          // KV tokens per WMMA tile = 16
           uint32_t head_dim,        // must be multiple of 16
           uint32_t bdy,             // GQA ratio (template, not thread dim)
           uint32_t num_warps,       // number of parallel warps over KV
+          bool paged,               // HYP-035: true = walk page table per tile
           typename AttentionVariant, typename Params>
 __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
     const Params& params,
@@ -127,10 +128,18 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
     if (params.block_valid_mask && !params.block_valid_mask[bx]) return;
 
     const uint32_t kv_chunk_size_val = params.partition_kv ? *(params.kv_chunk_size_ptr) : seq_len;
+    // HYP-035 paged mode: the kernel reads page table indices directly, so we
+    // must clamp to the real per-batch seq_len (no zero-padded workspace to
+    // absorb out-of-range reads). In contiguous mode, workspace is pre-zeroed
+    // beyond seq_lens[b], so clamping to `seq_len` = max_len is still correct.
+    const uint32_t effective_seq_len = paged
+        ? static_cast<uint32_t>(params.seq_lens_ptr[batch_idx])
+        : seq_len;
     const uint32_t chunk_start = params.partition_kv ? kv_tile_idx * kv_chunk_size_val : 0;
-    const uint32_t chunk_end = params.partition_kv ?
-        min((kv_tile_idx + 1) * kv_chunk_size_val, seq_len) : seq_len;
-    const uint32_t chunk_size = chunk_end - chunk_start;
+    const uint32_t chunk_end = params.partition_kv
+        ? min((kv_tile_idx + 1) * kv_chunk_size_val, effective_seq_len)
+        : effective_seq_len;
+    const uint32_t chunk_size = (chunk_end > chunk_start) ? (chunk_end - chunk_start) : 0;
 
     float codebook_scale = rsqrtf(static_cast<float>(params.padded_dim));
 
@@ -305,9 +314,25 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
                 const uint8_t* src = params.k_quant;  // default (invalid)
                 if (valid) {
                     uint32_t token_idx = tile_start_abs + row;
-                    src = params.k_quant + quant_base
-                          + (size_t)token_idx * params.quant_stride_token
-                          + seg_in_row * 16;
+                    if constexpr (paged) {
+                        // HYP-035: walk page table per token. kv_slab layout:
+                        // [num_blocks, block_size, num_kv_heads, ebs]. k_quant
+                        // holds the K slab base pointer in paged mode.
+                        uint32_t page_iter = params.indptr[batch_idx]
+                                             + token_idx / params.block_size;
+                        uint32_t entry_idx = token_idx % params.block_size;
+                        uint32_t page_idx  = params.indices[page_iter];
+                        src = params.k_quant
+                              + (size_t)page_idx * params.block_size
+                                    * params.num_kv_heads * params.ebs
+                              + (size_t)entry_idx * params.num_kv_heads * params.ebs
+                              + (size_t)kv_head_idx * params.ebs
+                              + seg_in_row * 16;
+                    } else {
+                        src = params.k_quant + quant_base
+                              + (size_t)token_idx * params.quant_stride_token
+                              + seg_in_row * 16;
+                    }
                 }
                 uint8_t* dst = staging + row * bytes_per_row + seg_in_row * 16;
                 cp_async::pred_load<128, cp_async::PrefetchMode::kPrefetch,
@@ -326,8 +351,26 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
                 float ns = 0.0f;
                 if (row < tile_valid) {
                     uint32_t token_idx = tile_start_abs + row;
-                    size_t n_off = norm_base + (size_t)token_idx * params.norm_stride_token + chunk;
-                    ns = codebook_scale * __half2float(params.k_norms[n_off]);
+                    if constexpr (paged) {
+                        // Norms live at offset `qbytes` within each entry.
+                        uint32_t page_iter = params.indptr[batch_idx]
+                                             + token_idx / params.block_size;
+                        uint32_t entry_idx = token_idx % params.block_size;
+                        uint32_t page_idx  = params.indices[page_iter];
+                        const __half* norm_ptr = (const __half*)(
+                            params.k_quant
+                            + (size_t)page_idx * params.block_size
+                                  * params.num_kv_heads * params.ebs
+                            + (size_t)entry_idx * params.num_kv_heads * params.ebs
+                            + (size_t)kv_head_idx * params.ebs
+                            + params.qbytes);
+                        ns = codebook_scale * __half2float(norm_ptr[chunk]);
+                    } else {
+                        size_t n_off = norm_base
+                                       + (size_t)token_idx * params.norm_stride_token
+                                       + chunk;
+                        ns = codebook_scale * __half2float(params.k_norms[n_off]);
+                    }
                 }
                 smem_norms[row * dim_chunks + chunk] = ns;
             }
@@ -460,9 +503,22 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
                 const uint8_t* src = params.v_quant;
                 if (valid) {
                     uint32_t token_idx = tile_start_abs + row;
-                    src = params.v_quant + quant_base
-                          + (size_t)token_idx * params.quant_stride_token
-                          + seg_in_row * 16;
+                    if constexpr (paged) {
+                        uint32_t page_iter = params.indptr[batch_idx]
+                                             + token_idx / params.block_size;
+                        uint32_t entry_idx = token_idx % params.block_size;
+                        uint32_t page_idx  = params.indices[page_iter];
+                        src = params.v_quant
+                              + (size_t)page_idx * params.block_size
+                                    * params.num_kv_heads * params.ebs
+                              + (size_t)entry_idx * params.num_kv_heads * params.ebs
+                              + (size_t)kv_head_idx * params.ebs
+                              + seg_in_row * 16;
+                    } else {
+                        src = params.v_quant + quant_base
+                              + (size_t)token_idx * params.quant_stride_token
+                              + seg_in_row * 16;
+                    }
                 }
                 uint8_t* dst = staging + row * bytes_per_row + seg_in_row * 16;
                 cp_async::pred_load<128, cp_async::PrefetchMode::kPrefetch,
@@ -481,8 +537,25 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
                 float ns = 0.0f;
                 if (row < tile_valid) {
                     uint32_t token_idx = tile_start_abs + row;
-                    size_t n_off = norm_base + (size_t)token_idx * params.norm_stride_token + chunk;
-                    ns = codebook_scale * __half2float(params.v_norms[n_off]);
+                    if constexpr (paged) {
+                        uint32_t page_iter = params.indptr[batch_idx]
+                                             + token_idx / params.block_size;
+                        uint32_t entry_idx = token_idx % params.block_size;
+                        uint32_t page_idx  = params.indices[page_iter];
+                        const __half* norm_ptr = (const __half*)(
+                            params.v_quant
+                            + (size_t)page_idx * params.block_size
+                                  * params.num_kv_heads * params.ebs
+                            + (size_t)entry_idx * params.num_kv_heads * params.ebs
+                            + (size_t)kv_head_idx * params.ebs
+                            + params.qbytes);
+                        ns = codebook_scale * __half2float(norm_ptr[chunk]);
+                    } else {
+                        size_t n_off = norm_base
+                                       + (size_t)token_idx * params.norm_stride_token
+                                       + chunk;
+                        ns = codebook_scale * __half2float(params.v_norms[n_off]);
+                    }
                 }
                 smem_norms[row * dim_chunks + chunk] = ns;
             }
@@ -719,13 +792,14 @@ constexpr uint32_t calc_smem_v5_tc() {
 // Kernel wrapper
 // --------------------------------------------------------------------------
 template <uint32_t head_dim, uint32_t bdy, uint32_t num_warps,
+          bool paged,
           typename AttentionVariant, typename Params>
 __global__ void TurboQuantContiguousDecodeKernelV5TC(
     const __grid_constant__ Params params
 ) {
     extern __shared__ uint8_t smem[];
     TurboQuantContiguousDecodeDeviceV5TC<V5_TILE_N, head_dim, bdy, num_warps,
-                                         AttentionVariant, Params>(
+                                         paged, AttentionVariant, Params>(
         params, smem);
 }
 

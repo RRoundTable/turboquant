@@ -59,10 +59,10 @@ torch::Tensor decode_v5_tc_contiguous(
     #define LAUNCH_V5TC(HD, BDY, NW) do { \
         constexpr uint32_t sm = calc_smem_v5_tc<HD, BDY, NW>(); \
         auto err = cudaFuncSetAttribute( \
-            TurboQuantContiguousDecodeKernelV5TC<HD, BDY, NW, V, CP>, \
+            TurboQuantContiguousDecodeKernelV5TC<HD, BDY, NW, false, V, CP>, \
             cudaFuncAttributeMaxDynamicSharedMemorySize, sm); \
         TORCH_CHECK(err == cudaSuccess, "Failed to set smem size: ", cudaGetErrorString(err)); \
-        TurboQuantContiguousDecodeKernelV5TC<HD, BDY, NW, V, CP> \
+        TurboQuantContiguousDecodeKernelV5TC<HD, BDY, NW, false, V, CP> \
             <<<dim3(bs, num_kv_heads), dim3(32, 1, NW), sm, stream>>>(p); \
     } while(0)
 
@@ -170,10 +170,10 @@ torch::Tensor decode_v5_tc_contiguous_splitkv(
     #define LAUNCH_V5TC_SPLIT(HD, BDY, NW) do { \
         constexpr uint32_t sm = calc_smem_v5_tc<HD, BDY, NW>(); \
         auto err = cudaFuncSetAttribute( \
-            TurboQuantContiguousDecodeKernelV5TC<HD, BDY, NW, V, CP>, \
+            TurboQuantContiguousDecodeKernelV5TC<HD, BDY, NW, false, V, CP>, \
             cudaFuncAttributeMaxDynamicSharedMemorySize, sm); \
         TORCH_CHECK(err == cudaSuccess, "Failed to set smem size: ", cudaGetErrorString(err)); \
-        TurboQuantContiguousDecodeKernelV5TC<HD, BDY, NW, V, CP> \
+        TurboQuantContiguousDecodeKernelV5TC<HD, BDY, NW, false, V, CP> \
             <<<dim3(padded_batch, num_kv_heads), dim3(32, 1, NW), sm, stream>>>(p); \
     } while(0)
 
@@ -402,10 +402,10 @@ torch::Tensor decode_v5_from_cache(
     #define LAUNCH_V5FC(BDY, NW) do { \
         constexpr uint32_t sm = calc_smem_v5_tc<128, BDY, NW>(); \
         auto err = cudaFuncSetAttribute( \
-            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP>, \
+            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, false, V, CP>, \
             cudaFuncAttributeMaxDynamicSharedMemorySize, sm); \
         TORCH_CHECK(err == cudaSuccess, "smem: ", cudaGetErrorString(err)); \
-        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP> \
+        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, false, V, CP> \
             <<<dim3(batch_size, num_kv_heads), dim3(32, 1, NW), sm, stream>>>(p); \
     } while(0)
 
@@ -529,10 +529,10 @@ torch::Tensor decode_v5_from_cache_ws(
     #define LAUNCH_V5FCWS(BDY, NW) do { \
         constexpr uint32_t sm = calc_smem_v5_tc<128, BDY, NW>(); \
         auto err = cudaFuncSetAttribute( \
-            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP>, \
+            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, false, V, CP>, \
             cudaFuncAttributeMaxDynamicSharedMemorySize, sm); \
         TORCH_CHECK(err == cudaSuccess, "smem: ", cudaGetErrorString(err)); \
-        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP> \
+        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, false, V, CP> \
             <<<dim3(batch_size, num_kv_heads), dim3(32, 1, NW), sm, stream>>>(p); \
     } while(0)
 
@@ -705,10 +705,10 @@ torch::Tensor decode_v5_from_cache_splitkv_ws(
     #define LAUNCH_V5FCSWS(BDY, NW) do { \
         constexpr uint32_t sm = calc_smem_v5_tc<128, BDY, NW>(); \
         auto err = cudaFuncSetAttribute( \
-            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP>, \
+            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, false, V, CP>, \
             cudaFuncAttributeMaxDynamicSharedMemorySize, sm); \
         TORCH_CHECK(err == cudaSuccess, "smem: ", cudaGetErrorString(err)); \
-        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, V, CP> \
+        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, false, V, CP> \
             <<<dim3(padded_batch, num_kv_heads), dim3(32, 1, NW), sm, stream>>>(p); \
     } while(0)
 
@@ -741,6 +741,135 @@ torch::Tensor decode_v5_from_cache_splitkv_ws(
 
     auto cuda_err = cudaGetLastError();
     TORCH_CHECK(cuda_err == cudaSuccess, "v5 splitkv_ws: ", cudaGetErrorString(cuda_err));
+    return o_ws;
+}
+
+// ---- decode_v5_from_cache_paged_splitkv_ws (HYP-035) -------------------------
+// Paged-native split-KV: the kernel walks the page table in its load prolog,
+// so we delete the gather + memset of gather workspaces + mark_empty_splits
+// kernel entirely. Workspace shrinks to partition_o + partition_lse + split
+// indices + o (final output). The kernel relies on per-batch seq_lens to clamp
+// its inner loop, so splits entirely past seq_lens[b] write LSE = -inf and
+// combine skips them.
+torch::Tensor decode_v5_from_cache_paged_splitkv_ws(
+    torch::Tensor q,
+    torch::Tensor kv_cache,
+    torch::Tensor indices,
+    torch::Tensor indptr,
+    torch::Tensor last_page_len,
+    torch::Tensor seq_lens,
+    int num_kv_heads,
+    int page_size,
+    int head_dim,
+    int padded_dim,
+    float sm_scale,
+    torch::Tensor hadamard_signs,
+    int qbytes,
+    int nbytes,
+    torch::Tensor o_ws,
+    int max_len,
+    torch::Tensor partition_o_ws,
+    torch::Tensor partition_lse_ws,
+    torch::Tensor request_indices,
+    torch::Tensor kv_tile_indices,
+    torch::Tensor split_indptr,
+    torch::Tensor kv_chunk_size_t,
+    int num_splits
+) {
+    TORCH_CHECK(padded_dim == 128, "v5 paged_splitkv_ws only supports head_dim=128");
+    TORCH_CHECK(max_len > 0, "max_len must be positive");
+    TORCH_CHECK(num_splits >= 1, "num_splits must be >= 1");
+
+    int ebs = static_cast<int>(kv_cache.size(-1));
+    int block_size = static_cast<int>(kv_cache.size(2));
+    int batch_size = q.size(0);
+    int num_qo_heads = q.size(1);
+    int bdy = num_qo_heads / num_kv_heads;
+    int padded_batch = batch_size * num_splits;
+    auto stream = c10::cuda::getCurrentCUDAStream();
+
+    // Shape checks (only scratch tensors; kv_cache is the actual paged storage).
+    TORCH_CHECK(o_ws.size(0) == batch_size && o_ws.size(1) == num_qo_heads
+                    && o_ws.size(2) == padded_dim, "o_ws shape mismatch");
+    TORCH_CHECK(partition_o_ws.size(0) == padded_batch
+                    && partition_o_ws.size(1) == num_qo_heads
+                    && partition_o_ws.size(2) == padded_dim
+                    && partition_o_ws.scalar_type() == at::kFloat,
+                "partition_o_ws shape/dtype mismatch");
+    TORCH_CHECK(partition_lse_ws.size(0) == padded_batch
+                    && partition_lse_ws.size(1) == num_qo_heads
+                    && partition_lse_ws.scalar_type() == at::kFloat,
+                "partition_lse_ws shape/dtype mismatch");
+
+    // Output buffer zero (capturable).
+    cudaMemsetAsync(o_ws.data_ptr(), 0, o_ws.nbytes(), stream);
+
+    auto k_half = kv_cache.select(0, 0);
+    auto v_half = kv_cache.select(0, 1);
+
+    using CP = ContiguousTurboQuantDecodeParams<__half, __half, int32_t>;
+    using V = DefaultAttention<false, false, false, false>;
+
+    CP p(
+        // k_quant/v_quant repurposed as kv_slab base pointers in paged mode.
+        (uint8_t*)k_half.data_ptr(), (uint8_t*)v_half.data_ptr(),
+        nullptr, nullptr,
+        batch_size, num_kv_heads, max_len, head_dim, padded_dim,
+        (__half*)q.data_ptr<at::Half>(), nullptr, nullptr,
+        sm_scale, num_qo_heads
+    );
+    if (hadamard_signs.numel() > 0) {
+        p.hadamard_signs = hadamard_signs.data_ptr<float>();
+        p.hadamard_scale = rsqrtf(static_cast<float>(padded_dim));
+    }
+    p.partition_kv = true;
+    p.request_indices = request_indices.data_ptr<int32_t>();
+    p.kv_tile_indices = kv_tile_indices.data_ptr<int32_t>();
+    p.kv_chunk_size_ptr = kv_chunk_size_t.data_ptr<int32_t>();
+    p.block_valid_mask = nullptr;
+    p.partition_o = partition_o_ws.data_ptr<float>();
+    p.partition_lse = partition_lse_ws.data_ptr<float>();
+    // HYP-035 paged fields
+    p.indices = indices.data_ptr<int32_t>();
+    p.indptr = indptr.data_ptr<int32_t>();
+    p.seq_lens_ptr = seq_lens.data_ptr<int32_t>();
+    p.block_size = block_size;
+    p.ebs = ebs;
+    p.qbytes = qbytes;
+
+    #define LAUNCH_V5FCP(BDY, NW) do { \
+        constexpr uint32_t sm = calc_smem_v5_tc<128, BDY, NW>(); \
+        auto err = cudaFuncSetAttribute( \
+            TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, true, V, CP>, \
+            cudaFuncAttributeMaxDynamicSharedMemorySize, sm); \
+        TORCH_CHECK(err == cudaSuccess, "smem: ", cudaGetErrorString(err)); \
+        TurboQuantContiguousDecodeKernelV5TC<128, BDY, NW, true, V, CP> \
+            <<<dim3(padded_batch, num_kv_heads), dim3(32, 1, NW), sm, stream>>>(p); \
+    } while(0)
+
+    switch (bdy) {
+        case 1: LAUNCH_V5FCP(1, 4); break;
+        case 2: LAUNCH_V5FCP(2, 4); break;
+        case 4: LAUNCH_V5FCP(4, 4); break;
+        case 8: LAUNCH_V5FCP(8, 4); break;
+        default: TORCH_CHECK(false, "v5 paged_splitkv_ws: unsupported bdy=", bdy);
+    }
+    #undef LAUNCH_V5FCP
+
+    // Combine partitions. Empty splits carry LSE = -inf (main kernel leaves
+    // m_merged at -math::inf and d_merged at 0 when chunk_size=0) — combine
+    // kernel's `m_s <= -1e29f` sentinel skips them. No separate
+    // mark_empty_splits kernel needed.
+    SplitKVCombineKernel<__half><<<dim3(batch_size, num_qo_heads), padded_dim, 0, stream>>>(
+        partition_o_ws.data_ptr<float>(),
+        partition_lse_ws.data_ptr<float>(),
+        (__half*)o_ws.data_ptr<at::Half>(),
+        nullptr,
+        split_indptr.data_ptr<int32_t>(),
+        num_qo_heads, padded_dim);
+
+    auto cuda_err = cudaGetLastError();
+    TORCH_CHECK(cuda_err == cudaSuccess, "v5 paged_splitkv_ws: ", cudaGetErrorString(cuda_err));
     return o_ws;
 }
 
@@ -792,6 +921,29 @@ static torch::Tensor turboquant_decode_v5_from_cache_splitkv_ws_op(
         (int)num_splits);
 }
 
+static torch::Tensor turboquant_decode_v5_from_cache_paged_splitkv_ws_op(
+    torch::Tensor q, torch::Tensor kv_cache,
+    torch::Tensor indices, torch::Tensor indptr, torch::Tensor last_page_len,
+    torch::Tensor seq_lens,
+    int64_t num_kv_heads, int64_t page_size, int64_t head_dim, int64_t padded_dim,
+    double sm_scale, torch::Tensor hadamard_signs,
+    int64_t qbytes, int64_t nbytes,
+    torch::Tensor o_ws,
+    int64_t max_len,
+    torch::Tensor partition_o_ws, torch::Tensor partition_lse_ws,
+    torch::Tensor request_indices, torch::Tensor kv_tile_indices,
+    torch::Tensor split_indptr, torch::Tensor kv_chunk_size_t,
+    int64_t num_splits) {
+    return decode_v5_from_cache_paged_splitkv_ws(
+        q, kv_cache, indices, indptr, last_page_len, seq_lens,
+        (int)num_kv_heads, (int)page_size, (int)head_dim, (int)padded_dim,
+        (float)sm_scale, hadamard_signs, (int)qbytes, (int)nbytes,
+        o_ws, (int)max_len,
+        partition_o_ws, partition_lse_ws,
+        request_indices, kv_tile_indices, split_indptr, kv_chunk_size_t,
+        (int)num_splits);
+}
+
 TORCH_LIBRARY(turboquant_v5, m) {
     m.def(
         "decode_v5_from_cache_ws(Tensor q, Tensor kv_cache, Tensor indices, "
@@ -810,11 +962,22 @@ TORCH_LIBRARY(turboquant_v5, m) {
         "Tensor partition_o_ws, Tensor partition_lse_ws, "
         "Tensor request_indices, Tensor kv_tile_indices, "
         "Tensor split_indptr, Tensor kv_chunk_size_t, int num_splits) -> Tensor");
+    m.def(
+        "decode_v5_from_cache_paged_splitkv_ws(Tensor q, Tensor kv_cache, "
+        "Tensor indices, Tensor indptr, Tensor last_page_len, Tensor seq_lens, "
+        "int num_kv_heads, int page_size, int head_dim, int padded_dim, "
+        "float sm_scale, Tensor hadamard_signs, int qbytes, int nbytes, "
+        "Tensor o_ws, int max_len, "
+        "Tensor partition_o_ws, Tensor partition_lse_ws, "
+        "Tensor request_indices, Tensor kv_tile_indices, "
+        "Tensor split_indptr, Tensor kv_chunk_size_t, int num_splits) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(turboquant_v5, CUDA, m) {
     m.impl("decode_v5_from_cache_ws", &turboquant_decode_v5_from_cache_ws_op);
     m.impl("decode_v5_from_cache_splitkv_ws", &turboquant_decode_v5_from_cache_splitkv_ws_op);
+    m.impl("decode_v5_from_cache_paged_splitkv_ws",
+           &turboquant_decode_v5_from_cache_paged_splitkv_ws_op);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -828,4 +991,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "TurboQuant v5 graph-safe decode with pre-allocated workspace (HYP-033)");
     m.def("decode_v5_from_cache_splitkv_ws", &decode_v5_from_cache_splitkv_ws,
           "TurboQuant v5 graph-safe split-KV decode with pre-allocated workspace (HYP-034)");
+    m.def("decode_v5_from_cache_paged_splitkv_ws", &decode_v5_from_cache_paged_splitkv_ws,
+          "TurboQuant v5 paged-native graph-safe split-KV decode (HYP-035)");
 }

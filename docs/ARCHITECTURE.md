@@ -237,6 +237,18 @@ sets LSE to the -1e30 sentinel for splits entirely past `seq_lens[b]`, which
 to the split variant once `max_len ≥ 512`; below that, combine-kernel overhead
 outweighs the fan-out benefit (HYP-018).
 
+v5 paged-native (HYP-035): `decode_v5_from_cache_paged_splitkv_ws` templates
+the WMMA kernel on `bool paged`; in paged mode the load prolog walks the page
+table per token (mirrors v4's `paged_kv_turbo_t` pattern), reading from
+`kv_cache[page_idx, entry, head, :]` directly. Deletes the
+`gather_paged_to_contiguous` launches, the five workspace `cudaMemsetAsync`
+calls, and the `mark_empty_splits_v5` post-kernel (empty splits naturally get
+LSE = -∞ since the kernel skips their main loop via per-batch `seq_lens`
+clamping). Gather workspaces remain allocated only for backward-compat with
+the HYP-034 op, which stays exported but is no longer on the hot path.
+Kernel internally branches via `if constexpr (paged)` — single kernel binary
+supports both layouts.
+
 ## Deployment
 
 ```
@@ -260,9 +272,9 @@ Until merged, 4 files vendored in `docker/vllm_patches/`.
 
 ## Experiment History
 
-33 hypotheses in `docs/hypotheses/` (HYP-001 to HYP-034):
-- 14 confirmed, 14 rejected, 5 pending
-- Kernel evolved: 856μs → 37μs (v4 graph) → 226μs v5-split-graph @ seq=4096
+34 hypotheses in `docs/hypotheses/` (HYP-001 to HYP-035):
+- 15 confirmed, 14 rejected, 5 pending
+- Kernel evolved: 856μs → 110μs v5-paged-split @ seq=4096 (vs FlashInfer 41μs)
 - Key confirmed: HYP-008 (bdz=16), HYP-017 (contiguous), HYP-018 (split-KV),
   HYP-023 (CUDA graphs), HYP-029 (graph-safe ops), HYP-031 (tensor-core v5),
-  HYP-033 (v5 graph-safety), HYP-034 (v5 split-KV under graphs)
+  HYP-033 (v5 graph-safety), HYP-034 (v5 split-KV), HYP-035 (paged-native v5)

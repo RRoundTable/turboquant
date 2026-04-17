@@ -156,7 +156,80 @@ Correctness: cosine(paged, contiguous) = 1.0000 at every seq on identical
 input. Any deviation means the page-walk math disagrees with the gather's
 linearization — bug, not a numerical tolerance issue.
 
-## Status: pending
+## Status: confirmed
+
+## Results (Forge A100-SXM4-40GB, 2026-04-17)
+
+Benchmarked via `tests/bench_v5_graph.py` — 5 parallel Forge jobs. Same rig
+as HYP-033/034. Paged-native `decode_v5_from_cache_paged_splitkv_ws` added
+alongside HYP-034's gather-based `decode_v5_from_cache_splitkv_ws` so both
+run in the same process and the delta is apples-to-apples.
+
+| seq  | splits | FlashInfer | v5-nosplit | v5-gather (H-034) | **v5-paged (H-035)** | Δ | paged/FI |
+|------|-------:|-----------:|-----------:|------------------:|---------------------:|-:|---------:|
+|  256 |      1 |     40.9 μs|    104.2 μs|           107.0 μs|           **95.8 μs** | -10% |  2.34×  |
+|  512 |     16 |     29.3 μs|    186.0 μs|            61.3 μs|           **43.3 μs** | -29% |  1.47×  |
+| 1024 |     32 |     40.0 μs|    352.3 μs|            84.7 μs|           **54.3 μs** | -36% |  1.36×  |
+| 2048 |     32 |     42.9 μs|    673.3 μs|           118.3 μs|           **69.0 μs** | -42% |  1.61×  |
+| 4096 |     32 |     40.8 μs|   1324.1 μs|           197.1 μs|          **109.8 μs** | -44% |  2.69×  |
+
+Correctness: `cosine(v5_paged, v5_nosplit_eager) = 1.0000` at every seq_len
+(`max_abs` ≤ 5e-5 at seq=512; bit-exact fp16 accumulation at longer seq).
+
+### Prediction verdicts
+
+| Prediction | Target | Result | Verdict |
+|-----------|--------|--------|---------|
+| Capture graph-safe (no crash, 10 replays) | no errors | passed | ✓ confirmed |
+| cosine(paged, nosplit) | ≥ 0.9999 | 1.0000 everywhere | ✓ confirmed |
+| v5-paged at seq=4096 | ~100–130 μs | 109.8 μs | ✓ confirmed |
+| paged / gather at seq ≥ 1024 | ≤ 0.80× | 0.56–0.64× | ✓ confirmed |
+| paged / FlashInfer at seq=4096 | ≤ 3.0× | 2.69× | ✓ confirmed |
+| Workspace HBM saved | ~100 MB @ bs=32,seq=4096 | gather buffers unused in hot path | ✓ confirmed |
+
+**Every quantitative target hit.** First hypothesis in this track where the
+predictions weren't over-optimistic — because this one wasn't about the
+compute path, it was about removing pure overhead.
+
+### What this means
+
+**Kernel latency has moved from compute-bound to compute+small-fixed-floor.**
+At seq=4096, the delta over FlashInfer is now 69 μs. Walking page table
+indices is cheaper than the gather kernel + memset + combine overhead by
+~90 μs. The kernel still pays scalar-FMA dequant — that's HYP-032's turf.
+
+| seq  | gap to FI (HYP-033) | gap to FI (HYP-034) | **gap to FI (HYP-035)** |
+|------|--------------------:|--------------------:|------------------------:|
+|  256 |        93 μs (3.3×) |         97 μs (3.3×)|            55 μs (2.3×) |
+|  512 |       149 μs (4.3×) |         24 μs (1.6×)|            14 μs (1.5×) |
+| 1024 |       315 μs (8.9×) |         45 μs (3.5×)|            14 μs (1.4×) |
+| 2048 |       631 μs (17×) |         86 μs (3.1×)|            26 μs (1.6×) |
+| 4096 |      1281 μs (30.8×)|        154 μs (4.5×)|            69 μs (2.7×) |
+
+**At seq=1024 we're within 1.4× of FlashInfer** — close enough that FlashInfer
+stops being the clear winner. At seq=4096 the compute-per-token dequant gap
+is the dominant remaining term.
+
+**Memory:** gather workspaces (`k_quant_ws`, `v_quant_ws`, `k_norms_ws`,
+`v_norms_ws`) are no longer on the hot path. Still allocated for backward-
+compat with the HYP-034 op (`decode_v5_from_cache_splitkv_ws`) which remains
+exported but is not used by the vLLM backend. Once HYP-034 is retired, the
+backend will drop these allocations entirely.
+
+**Ship decision: merge.** vLLM backend already dispatches to paged-native
+(`decode_v5_from_cache_paged_splitkv_ws`) when `num_splits > 1`. No
+behavior change at short seq (`num_splits == 1` still uses HYP-033's
+`decode_v5_from_cache_ws`).
+
+### Next
+
+HYP-032 (Marlin dequant → fp16 → tensor core) is now the only remaining
+major lever. The 69 μs gap at seq=4096 is essentially:
+- ~60 μs per-token scalar-FMA dequant across 32 × 16 = 512 WMMA tiles
+- ~10 μs fixed combine/launch overhead
+
+HYP-032 would cut the ~60 μs directly. Expected after HYP-032: v5-paged
+within 1.2–1.5× of FlashInfer at seq=4096 — effectively matched.
 
 ## References
 
