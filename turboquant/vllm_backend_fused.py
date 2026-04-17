@@ -117,6 +117,13 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
         self._is_fp8 = kv_cache_dtype in ("fp8", "fp8_e4m3")
         # (batch_size, max_pages_per_seq) -> dict of workspace tensors for v5
         self._v5_ws_cache: dict[tuple[int, int], dict[str, torch.Tensor]] = {}
+        # Phase 15a dispatcher: resolve the best decode op for this GPU once.
+        # Today returns v5 on SM80+ (same as the previous hardcoded call);
+        # slot in v6/v7 later without touching forward(). Deferred until
+        # after _ensure_kernels_loaded() since torch.ops.turboquant_v5.* only
+        # registers when the v5 module is loaded.
+        self._decode_op = None
+        self._decode_op_name = None
 
     @staticmethod
     def _choose_num_splits(batch_size: int, max_len: int, num_kv_heads: int,
@@ -267,6 +274,14 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                     "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__"],
                 verbose=False)
 
+        # Phase 15a dispatcher: pick the best decode op for this GPU's
+        # compute capability. torch.ops.turboquant_v5.* is registered by
+        # the v5 module load above, so resolution must happen here (after
+        # load), not in __init__. Cached per-instance for hot-path reuse.
+        if self._decode_op is None:
+            from turboquant.decoder_dispatch import pick_decode_op
+            self._decode_op, self._decode_op_name = pick_decode_op()
+
     def _write_to_cache(self, key, value, kv_cache, slot_mapping):
         """Quantize K,V and scatter into kv_cache via dispatcher-routed op so
         the storage pointer is refreshed on CUDA graph replay (not baked in
@@ -393,12 +408,12 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                 batch_size, max_pages, block_size, q.device)
             signs = self._signs if self._signs is not None else torch.empty(0, device=q.device)
             if num_splits > 1:
-                # HYP-035: paged-native split-KV — no gather, no workspace copy.
-                # The kernel walks kv_cache's page table directly in its load
-                # prolog. Gather buffers (ws["k_quant"]..) are left unused in
-                # this path but stay allocated for backward-compat with the
-                # older _splitkv_ws op if it's ever re-enabled.
-                result = torch.ops.turboquant_v5.decode_v5_from_cache_paged_splitkv_ws(
+                # HYP-035 (paged-native split-KV) via the Phase 15a dispatcher.
+                # `self._decode_op` was resolved in _ensure_kernels_loaded;
+                # today on SM80 it's v5, on SM90+ it will be v6/v7 when those
+                # kernels are implemented. Signature is identical across
+                # versions by design.
+                result = self._decode_op(
                     q_fp16, kv_cache,
                     kv_indices, kv_indptr, kv_last_page_len, seq_lens,
                     self.num_kv_heads, block_size,
@@ -411,6 +426,11 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                     num_splits,
                 )
             else:
+                # Phase 15a scope: dispatcher covers the split-KV path only.
+                # Non-split uses a different op signature (no partition
+                # scratch). When v6/v7 land, add a sibling op + extend
+                # pick_decode_op() to return a pair. For now, direct v5 call
+                # — still graph-safe, still SM80-only.
                 result = torch.ops.turboquant_v5.decode_v5_from_cache_ws(
                     q_fp16, kv_cache,
                     kv_indices, kv_indptr, kv_last_page_len, seq_lens,
