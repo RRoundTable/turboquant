@@ -434,6 +434,105 @@ Priorities (see HYP-030 for sizing):
       pinned vLLM version in `Dockerfile`
 - [ ] **14c.** Announce in README + hypothesis docs
 
+### Phase 15: Multi-architecture support — NOW
+
+HYP-040 proved v5 is at A100's architectural ceiling (~1040 cycles
+WMMA_QK floor from synchronous `ldmatrix.sync`, no async variant on
+SM80). Hopper (SM90) exposes `cp.async.bulk.tensor` (TMA) and
+`wgmma` warpgroup mma with async semantics; Blackwell (SM100) adds
+native FP4 tensor cores that could eliminate our dequant step
+entirely. Close the long-context latency gap to FlashInfer by porting
+to these newer primitives while keeping A100 as the baseline.
+
+Projected at seq=32k, batch=1 (rough, see
+`results/profile_v5_paged/batch-sweep.md` for A100 ground truth):
+
+| GPU          | v5 as-is | v6 rewritten | FlashInfer | v6/FI gap |
+|--------------|---------:|-------------:|-----------:|----------:|
+| A100 (now)   |   328 μs |  — (blocked) |    123 μs  |   2.56×   |
+| H100         | ~240 μs  |   ~100 μs    |    ~55 μs  |   ~1.8×   |
+| H200         | ~220 μs  |    ~90 μs    |    ~50 μs  |   ~1.8×   |
+| B200 + FP4   | ~150 μs  |    ~60 μs    |    ~25 μs  |   ~2.4×   |
+
+Memory-compression serving-throughput win (~1.5-1.7× requests/GPU)
+is **preserved on every platform** — it's driven by the 3.76×
+compression ratio, not the compute specifics.
+
+#### 15a. Dispatcher refactor (SM80 only, zero behavior change)
+
+- [ ] `turboquant/decoder_dispatch.py`: `pick_decode_op(device)` returns
+      the best op for the current compute capability. Current behavior:
+      always pick v5 on SM80+, v4 otherwise. Sets the seam for 15b/15c.
+- [ ] `vllm_backend_fused.py`: replace hardcoded
+      `torch.ops.turboquant_v5.decode_v5_from_cache_paged_splitkv_ws(...)`
+      call with `pick_decode_op()(...)`.
+- [ ] `TQ_FORCE_KERNEL=v4|v5|v6|v7` env var for testing / A/B.
+- [ ] Parameterized correctness test
+      `test_decode_correctness.py::test_output_matches_reference[kernel]`
+      that runs against the chosen kernel and compares to scalar v4
+      reference.
+
+Effort: ~1 day. Ship before any new-arch work so future HYPs slot in
+cleanly.
+
+#### 15b. Hopper port (v6_wgmma) — when H100/H200 access arrives
+
+- [ ] `csrc/include/flashinfer_decode_turboquant_v6_wgmma.cuh`: WMMA_QK
+      phase using `wgmma.mma_async.m64n256k16` with producer/consumer
+      warpgroup pattern. K/V loads via `cp.async.bulk.tensor` (TMA).
+- [ ] `csrc/src/decode_v6_wgmma_binding.cu`: op signature identical to
+      v5's `_paged_splitkv_ws` so workspace + dispatch stay compatible.
+      Guard with `#if __CUDA_ARCH__ >= 900`.
+- [ ] `setup.py`: compile with `-gencode arch=compute_90,code=sm_90`
+      when `TORCH_CUDA_ARCH_LIST` includes 9.0.
+- [ ] HYP-041 (writeup + Forge H100 benchmark): verify async ldmatrix +
+      wgmma actually closes the 688-cycle load→mma stall we measured
+      on A100. Target: seq=32k TPOT ≤ 120 μs; FI gap ≤ 2.0×.
+- [ ] Decision gate: if H100 v6 doesn't reach ≤ 2× FI at seq=32k,
+      revisit block structure (HYP-020 warp-specialization was
+      rejected on A100 — may work on H100 with TMA).
+
+Effort: ~2–3 weeks after H100 access.
+
+#### 15c. Blackwell + FP4 port (v7_fp4) — when B200 access arrives
+
+- [ ] Investigate FP4 layout: map our 4-bit Lloyd-Max codebook indices
+      directly into FP4 tensor-core operand layout, eliminating the
+      dequant phase entirely (currently 10% of kernel). May require
+      a new KV cache format (pending ADR).
+- [ ] `csrc/include/flashinfer_decode_turboquant_v7_fp4.cuh` using
+      `mma.sync.m16n8k32.f16.e4m3.e4m3.f16` or the FP4 equivalent.
+- [ ] HYP-042: measure whether FP4-native dequant fuses with the
+      mma instruction (would be a fundamental architectural win —
+      could flip TQ from "FI-trailing at long context" to
+      "FI-beating").
+
+Effort: ~1–2 months after B200 access (research + implementation).
+ADR required before starting (possible second KV cache format).
+
+#### 15d. Build system + CI
+
+- [ ] `setup.py`: honour `TORCH_CUDA_ARCH_LIST` env, emit correct
+      `-gencode` flags per arch, embed fatbin for all listed archs.
+      Default for production image: `"8.0;9.0;10.0"` (A100+H100+B200).
+- [ ] `Dockerfile` / Forge image build: `tq-multiarch:<tag>` with all
+      three archs compiled. Accept the ~2× build-time cost on
+      release builds; dev stays single-arch via
+      `TORCH_CUDA_ARCH_LIST=8.0`.
+- [ ] CI matrix entry: A100 correctness always; H100/B200 when GPUs
+      are available. Gate releases on "tests pass on every listed
+      arch in the fatbin".
+
+Effort: ~1 week for 15d alone, independent of 15b/15c.
+
+#### 15e. Cross-arch throughput benchmark
+
+- [ ] Once 15b lands: run the batch × seq sweep
+      (`results/profile_v5_paged/batch-sweep.md` format) on H100 and
+      A100 head-to-head. Confirm that the memory-throughput win (1.5–1.7×
+      requests/GPU vs FlashInfer) is preserved and quantify absolute
+      latency deltas.
+
 ## Next
 
 ### Memory savings roadmap
@@ -466,3 +565,11 @@ Upstream PR requirements:
 - [ ] Speculative decoding compatibility
 - [ ] Multi-node distributed (TP across nodes via NCCL)
 - [ ] Continuous batching with dynamic KV cache growth
+- [ ] **Cross-arch KV cache format decision (ADR)**: single format
+      that works for SM80+SM90+SM100, or per-arch formats with
+      transparent repacking? Blocks phase 15c when B200 support
+      starts. Tradeoffs: single format = simpler vLLM integration
+      + model portability; per-arch = best perf on each HW but
+      model-checkpoints become HW-tied.
+- [ ] **Forge H100/H200/B200 access procurement** — prerequisite for
+      phase 15b/15c. Currently A100-only on our team quota.
