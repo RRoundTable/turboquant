@@ -147,7 +147,101 @@ validates the prediction at the phase level, not just end-to-end.
 - `tests/test_v5_graph.py` cosine gate (≥ 0.9999 vs eager) catches any drift.
 - `tests/bench_v5_graph.py` runs a cos vs eager check per call.
 
-## Status: pending
+## Status: rejected (warp-butterfly softmax)
+
+## Results (Forge A100-SXM4-40GB, 2026-04-17)
+
+Implemented the warp-butterfly softmax first, left V-WMMA for after if softmax
+landed. Ran correctness (cosine=0.999996 ✓) and the long-context sweep.
+
+**End-to-end: slower by 7–33% across seq ∈ {256..8192}**. Example at seq=4096:
+64.1 μs (pre) → 76.1 μs (post), +19%. Curve:
+
+| seq   | pre (HYP-032) | post (HYP-036 softmax) | Δ      |
+|-------|--------------:|-----------------------:|-------:|
+|  512  |       36.0 μs |                47.8 μs | +33%   |
+| 1024  |       43.8 μs |                54.6 μs | +25%   |
+| 2048  |       46.1 μs |                58.2 μs | +26%   |
+| 4096  |       64.1 μs |                76.1 μs | +19%   |
+| 8192  |      103.0 μs |               110.4 μs |  +7%   |
+
+Phase probe confirms the regression is localized to softmax:
+
+| phase        | pre   | post   | Δ     |
+|--------------|------:|-------:|------:|
+| softmax_update | 327 ns | **1510 ns** | **+362%** |
+| (all other phases unchanged) | | | |
+
+## Analysis
+
+The warp-butterfly reduction is ~5× slower than the scalar unroll. Why:
+
+**Old scalar unroll (fast)** — all 32 lanes execute the same code:
+```cpp
+for (int j = 0; j < 16; j++) {
+    local_scores[j] = exp2f(local_scores[j] - m_vals[h]);
+    d_vals[h] += local_scores[j];
+}
+```
+The 16 iterations are *independent per lane*. The compiler unrolls, and the
+A100's 16 SFUs can issue exp2f at 16-lanes-per-cycle throughput. The 16
+serial dependencies exist only within each lane's accumulator chain, but the
+warp's SFU pipeline hides them. Effective latency ≈ 16 × ~1 cycle = 16 cycles
+for the exp2 wave across the warp.
+
+**New warp-butterfly (slow)** — serial shuffle dependency chain:
+```cpp
+float lane_max = s;
+for (int delta = 8; delta > 0; delta >>= 1) {
+    lane_max = max(lane_max, __shfl_xor_sync(0xFFFFFFFF, lane_max, delta));
+}
+```
+Each `__shfl_xor_sync` has ~6-cycle latency and the output feeds the next
+shuffle. 4 shuffles × 6 cycles = 24 cycles minimum per reduction. Two
+reductions (max + sum) = 48 cycles per bdy iteration. × 4 bdy = 192 cycles
+of pure serial shuffle latency. Plus another 32 cycles (from the ~1490 ns
+overhead) for the other overhead I can't immediately explain — likely extra
+register pressure from the shuffle state or the per-lane guard branch.
+
+**The core mistake:** I assumed "16 serial ops → 4 parallel ops" was a win.
+But the 16 ops weren't actually serial across the warp — they were
+serial *within each lane*, and the compiler + SFU pipeline already
+parallelized across lanes. Shuffle reductions only help when the data is
+already distributed across lanes (which it isn't here — all lanes
+broadcast-read the same smem addresses).
+
+## Prediction verdicts
+
+| Prediction | Target | Result | Verdict |
+|-----------|--------|--------|---------|
+| Correctness (cos ≥ 0.9999) | ≥ 0.9999 | 0.999996 | ✓ confirmed |
+| Softmax phase speedup | 327 → ~150 ns | 327 → **1510 ns** (4.6× slower) | ✗ **rejected** |
+| End-to-end seq=4096 | 64 → 54 μs | 64 → 76 μs (+19%) | ✗ **rejected** |
+
+## Decision
+
+**Reverted the softmax change.** v5_paged stays on the scalar-unroll softmax.
+The V-WMMA half of this hypothesis is NOT implemented (avoided the wasted
+effort given softmax result invalidated the framing).
+
+## Lessons
+
+1. Warp-shuffle reductions are fast when data is distributed; slow when all
+   lanes hold the same value. The access pattern in v5's softmax is
+   broadcast-read — shuffle reductions add serial latency without saving
+   compute.
+2. "Log₂(N) parallel steps vs N serial steps" is only a win if those N
+   steps are sequentially dependent in the original code. Here they were
+   parallel-independent across lanes; the compiler already got the win.
+3. Profile *after* changes, not just before. The phase probe made the
+   regression instantly obvious (327 → 1510 ns in Phase 6 alone).
+
+The actual big lever remains WMMA_QK (41% of kernel, 924 ns measured). That
+requires multi-stage cp_async pipelining (full FA-style kernel rewrite).
+Deferred to a future hypothesis when either the long-context latency gap
+starts blocking production or we have kernel-rewrite time. For now, v5_paged
+stays at its post-HYP-032 shape — within 1.47× of FlashInfer at seq=4096,
+within 0.87× at seq=512 (beating FI).
 
 ## References
 

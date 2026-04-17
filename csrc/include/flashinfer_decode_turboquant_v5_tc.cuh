@@ -115,8 +115,6 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
     const uint32_t bx = blockIdx.x,
     const uint32_t by = blockIdx.y
 ) {
-    using namespace nvcuda::wmma;
-
     const uint32_t tx = threadIdx.x;  // lane id 0..31
     const uint32_t warp_id = threadIdx.z;  // which warp 0..num_warps-1
     using IdType = typename Params::IdType;
@@ -416,26 +414,34 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
         // A = Q: [16, head_dim] row-major, loaded 16x16 at a time along K
         // B = K^T: kv_smem [16, head_dim] row-major, loaded as col_major = transposed
         // -----------------------------------------------------------------
-        fragment<matrix_a, V5_WMMA_M, V5_WMMA_N, V5_WMMA_K, __half, row_major> a_frag;
-        fragment<matrix_b, V5_WMMA_M, V5_WMMA_N, V5_WMMA_K, __half, col_major> b_frag;
-        fragment<accumulator, V5_WMMA_M, V5_WMMA_N, V5_WMMA_K, float> c_frag;
-        fill_fragment(c_frag, 0.0f);
+        // Explicit ::nvcuda::wmma:: qualification — the enclosing
+        // `using namespace nvcuda::wmma` is resolved differently by older
+        // nvcc (NGC 24.01 / CUDA 12.3) vs newer, breaking compile on some
+        // images. Fully-qualified calls are portable.
+        ::nvcuda::wmma::fragment<::nvcuda::wmma::matrix_a, V5_WMMA_M, V5_WMMA_N, V5_WMMA_K,
+                               __half, ::nvcuda::wmma::row_major> a_frag;
+        ::nvcuda::wmma::fragment<::nvcuda::wmma::matrix_b, V5_WMMA_M, V5_WMMA_N, V5_WMMA_K,
+                               __half, ::nvcuda::wmma::col_major> b_frag;
+        ::nvcuda::wmma::fragment<::nvcuda::wmma::accumulator, V5_WMMA_M, V5_WMMA_N, V5_WMMA_K,
+                               float> c_frag;
+        ::nvcuda::wmma::fill_fragment(c_frag, 0.0f);
 
         #pragma unroll
         for (uint32_t kt = 0; kt < k_tiles; kt++) {
             // A: Q[0..15, kt*16..(kt+1)*16] from q_smem
             // q_smem is row-major [16, head_dim], leading dim = head_dim
-            load_matrix_sync(a_frag, q_smem + kt * V5_WMMA_K, head_dim);
+            ::nvcuda::wmma::load_matrix_sync(a_frag, q_smem + kt * V5_WMMA_K, head_dim);
 
             // B: K^T -- kv_smem is [16, head_dim] row-major
             // Loading as col_major with ldm=head_dim gives us K^T
-            load_matrix_sync(b_frag, kv_smem + kt * V5_WMMA_K, head_dim);
+            ::nvcuda::wmma::load_matrix_sync(b_frag, kv_smem + kt * V5_WMMA_K, head_dim);
 
-            mma_sync(c_frag, a_frag, b_frag, c_frag);
+            ::nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
         }
 
         // Store C to shared memory
-        store_matrix_sync(scores_smem, c_frag, V5_WMMA_N, mem_row_major);
+        ::nvcuda::wmma::store_matrix_sync(scores_smem, c_frag, V5_WMMA_N,
+                                        ::nvcuda::wmma::mem_row_major);
         __syncwarp();
 
         // -----------------------------------------------------------------
@@ -446,6 +452,10 @@ __device__ __inline__ void TurboQuantContiguousDecodeDeviceV5TC(
         // All 32 threads in the warp read the SAME score data and update
         // their SAME per-head state. This is intentional -- the redundant
         // reads are cheap and avoid cross-lane communication for softmax.
+        // HYP-036 addendum: warp-butterfly reduction was tested (1510 ns)
+        // vs this scalar unroll (327 ns) — 4.6× slower. Kept serial unroll:
+        // compiler schedules the 16 independent fmax/exp2 in parallel across
+        // the warp SFUs; shuffle reductions add serial dependency chains.
         #pragma unroll
         for (uint32_t h = 0; h < bdy; h++) {
             float m_prev = m_vals[h];
