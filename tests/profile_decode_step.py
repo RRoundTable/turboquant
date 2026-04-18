@@ -16,7 +16,7 @@ def main():
     p.add_argument("--model", default="Qwen/Qwen3-8B")
     p.add_argument("--input-len", type=int, default=8192)
     p.add_argument("--batch", type=int, default=8)
-    p.add_argument("--output-len", type=int, default=2)  # 1 prefill + 1 decode
+    p.add_argument("--output-len", type=int, default=2)  # HYP-042b uses 128
     p.add_argument("--backend", choices=["baseline", "tq"], required=True)
     p.add_argument("--gpu-mem", type=float, default=0.85)
     args = p.parse_args()
