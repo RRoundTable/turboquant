@@ -23,20 +23,101 @@ For Qwen/Qwen3-8B on a single A100-40GB, output_len=128, eager mode
 
 ## Method
 
-Sweep grid: `seq ∈ {1024, 4096, 8192, 16384} × batch ∈ {1, 8, 32}` (12
-configs). For each, one Forge job (1 A100-40GB, image `tq-hyp029:pr` with
-current `docker/vllm_patches/` overlaid at runtime) runs:
+### Code under test
 
-1. **baseline**: `LLM(model='Qwen/Qwen3-8B', dtype=fp16, kv_cache_dtype=auto, enforce_eager=True)`
-2. **tq**: same but `kv_cache_dtype='fp8', attention_backend='CUSTOM'`,
-   `turboquant.vllm_plugin.register()` called.
+- Repo commit: `5db1d80` (`main`).
+- TurboQuant package installed via `pip install -e .` at job runtime.
+- vLLM source-overlaid at job runtime by copying current
+  `docker/vllm_patches/{v1/attention/backend.py, v1/kv_cache_interface.py,
+  v1/worker/gpu_model_runner.py, model_executor/layers/attention/attention.py}`
+  on top of vLLM's site-packages — same overlay used by `Dockerfile`.
+- TurboQuant backend explicitly registered: `turboquant.vllm_plugin.register()`
+  before `LLM(...)` construction.
 
-Same inputs (token_id `[1] * input_len` × batch). 1 warmup, 3 trials,
-median of 3. Decode tokens/s = `batch * output_len / median_s`. GPU memory
-captured from `nvidia-smi` after the engine is up.
+### Environment (per job container)
 
-Bench script: `tests/bench_vllm_serve.py`. Entrypoint: `tests/bench_entry.sh`.
-Raw JSON + aggregate in `results/v5_vs_baseline/`.
+- Forge image: `tq-hyp029:pr` (id `3e953d1f`, base `mlops-notebook`).
+- vLLM `v0.19.0`, FlashInfer (image-pinned), torch+cuda from base image.
+- 1× A100-SXM4-40GB per job, no security profile, `--shared-nfs`.
+- Code & cache mounted from `/workspace/shared/turboquant-bench/` and
+  `HF_HOME=/workspace/shared/hf-cache` (model weights pre-warmed there).
+
+### Workload
+
+- Model: `Qwen/Qwen3-8B`, `dtype=float16`. (8 KV heads, 36 layers, 128 head dim.)
+- Inputs: `prompts = [TokensPrompt(prompt_token_ids=[1]*input_len)] * batch`
+  — synthetic, no tokenizer call, identical across configs.
+- `SamplingParams(max_tokens=128, min_tokens=128, temperature=0.0, ignore_eos=True)`.
+- `output_len=128` for every config (decode-heavy: 1 prefill, 128 decode).
+- 1 warmup `LLM.generate(...)` + 3 timed trials; report **median** wall time.
+- Decode throughput = `batch * 128 / median_seconds` (counts only generated tokens).
+- GPU memory: `nvidia-smi --query-gpu=memory.used` snapshot from the bench
+  python process after generate (engine subprocess shares the device).
+
+### Per-config sweep
+
+`seq ∈ {1024, 4096, 8192, 16384} × batch ∈ {1, 8, 32}` ⇒ 12 jobs total,
+fanned out in parallel on Forge. Each job runs **baseline first, then TQ
+back-to-back** in fresh `LLM` instances. If a partial result file already
+exists on the shared NFS, that backend is skipped (lets us re-run only
+the missing TQ legs without re-running baseline).
+
+Per-engine kwargs:
+
+```python
+common = dict(
+    model="Qwen/Qwen3-8B", dtype="float16",
+    gpu_memory_utilization=0.85,
+    max_model_len=input_len + output_len + 16,
+    enforce_eager=True,                # see "constraints" below
+    disable_log_stats=True,
+)
+baseline = LLM(**common)               # kv_cache_dtype=auto, FLASHINFER backend
+tq       = LLM(**common,
+               kv_cache_dtype="fp8",
+               attention_backend="CUSTOM")
+```
+
+vLLM defaults left on for both: `enable_prefix_caching=True`,
+`enable_chunked_prefill=True`, `tensor_parallel_size=1`, `seed=0`.
+
+### Constraints (forced by the platform, not by the experiment)
+
+- `enforce_eager=True` for **both** backends. With `enforce_eager=False`
+  (cuda graphs + torch.compile), the TQ leg crashes during inductor
+  autotune with `ValueError("type fp8e4nv not supported in this
+  architecture. The supported fp8 dtypes are ('fp8e4b15', 'fp8e5')")` on
+  A100 (SM80). Setting `kv_cache_dtype="fp8_e5m2"` to dodge fp8e4nv was
+  rejected by `TurboQuantBackend.supports_kv_cache_dtype` (only `"fp8"`
+  / `"fp8_e4m3"` are accepted). Choosing eager keeps the comparison
+  apples-to-apples; H100/H200 should lift this constraint.
+- `attention_backend="CUSTOM"` is required for the TQ leg — without it,
+  vLLM auto-selects FLASHINFER even with the plugin registered, so the
+  measured backend was confirmed via the engine log line
+  `Using AttentionBackendEnum.CUSTOM backend.`
+
+### Forge jobs (for traceability)
+
+| seq×batch | job id     | result    |
+|----------:|------------|-----------|
+| 1024×1    | `c93a6950` | SUCCEEDED |
+| 1024×8    | `eb5c3215` | SUCCEEDED |
+| 1024×32   | `1ade2ce4` | SUCCEEDED |
+| 4096×1    | `e3e50205` | SUCCEEDED |
+| 4096×8    | `bab852d9` | SUCCEEDED |
+| 4096×32   | `534afd03` | TQ OOM    |
+| 8192×1    | `2748639a` | SUCCEEDED |
+| 8192×8    | `df6dd4fb` | SUCCEEDED |
+| 8192×32   | `07bae58a` | TQ OOM    |
+| 16384×1   | `946882f5` | SUCCEEDED |
+| 16384×8   | `bb8ef5c8` | TQ OOM    |
+| 16384×32  | `b8aa64c9` | TQ OOM    |
+
+### Files
+
+- Bench: `tests/bench_vllm_serve.py`
+- Per-job entrypoint: `tests/bench_entry.sh` (consumes `SEQ`, `BATCH` env vars)
+- Raw per-config JSON + `aggregate.py` + `REPORT.md`: `results/v5_vs_baseline/`
 
 ## Status: rejected
 
