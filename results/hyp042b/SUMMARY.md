@@ -23,18 +23,22 @@ Per-decode-step CUDA (÷ 128 decode steps, includes all 36 layers × 8 batched r
 
 ## Per-bucket attribution of the +18 ms per-step gap
 
+**CORRECTION (see HYP-043 rejection):** earlier this doc reported TQ
+attention at 41 ms/step from summing two profiler rows
+(`decode_v5_from_cache_paged_splitkv_ws` and
+`TurboQuantContiguousDecodeKernelV5TC`). Those are the host op and its
+child kernel — the *same work* reported twice. The true per-step TQ
+attention CUDA is **20.7 ms** (main kernel 20.56 + combine 0.14 +
+memset ≈ 0), and total TQ per-step CUDA time (35.8 ms) sums cleanly.
+Table below uses the corrected numbers.
+
 | bucket                          | baseline /step | tq /step | Δ /step | **share of Δ** |
 |---------------------------------|---------------:|---------:|--------:|---------------:|
-| **attention** (decode + combine)| 4.22 ms        | 41.32 ms | +37.10 ms | **— large negative caveat, see below** |
+| **attention** (main decode kernel + combine) | 4.22 ms | 20.72 ms | +16.50 ms | **~91 %** |
 | GEMM (linear layers)            | 11.78 ms       | 11.80 ms | +0.02 ms  | ≈0 % |
 | quant preamble (TQ-only minus baseline's `reshape_and_cache_flash`) | 0.12 ms | 0.63 ms | +0.51 ms | ~3 % |
 | norm + rope + act               | ~0.85 ms       | ~0.90 ms | +0.05 ms  | ~0.3 % |
 | elementwise + typeConvert tail  | ~0.31 ms       | ~0.70 ms | +0.40 ms  | ~2 % |
-
-**The attention bucket alone is +37 ms per step, but the measured total
-Δ is only +18 ms. That means the two TQ attention kernels are not
-both on the critical path in wall time — they overlap, or we are
-double-counting something in the per-kernel sum.** See analysis.
 
 ### Kernel-level detail
 
@@ -44,15 +48,17 @@ Baseline decode-phase attention (per layer per step):
 - **per-layer per-step: ~117 μs → 4.22 ms across 36 layers**
 
 TQ decode-phase attention (per layer per step):
-- `turboquant_v5::decode_v5_from_cache_paged_splitkv_ws…`: **577 μs/call** (4572 calls)
-- `flashinfer::TurboQuantContiguousDecodeKernelV5T…`: **571 μs/call** (4572 calls)
-- `flashinfer::SplitKVCombineKernel`: 4 μs/call
-- **per-layer per-step (both kernels summed): ~1152 μs → 41.5 ms across 36 layers** (!)
+- `flashinfer::TurboQuantContiguousDecodeKernelV5TC` (main): **571 μs/call** (4572 calls)
+- `flashinfer::SplitKVCombineKernel`: 4 μs/call (4572 calls)
+- **per-layer per-step: ~575 μs → 20.7 ms across 36 layers**
+- (the separate `turboquant_v5::decode_v5_from_cache_paged_splitkv_ws…`
+  row at 577 μs/call is the host op that *launches* the main kernel;
+  its Self CUDA column re-exposes the same ~571 μs of kernel time and
+  must not be added to the main kernel row)
 
-Per-layer per-step ratio, **kernel CUDA**: 1152 μs / 117 μs = **9.8×**.
-Compare with HYP-035's kernel-only measurement at **batch=1** seq=4096:
-2.69× FlashInfer. The batch-8 ratio is materially worse, which is the
-most important new finding below.
+Per-layer per-step kernel-CUDA ratio: **575 μs / 117 μs ≈ 4.9×**.
+Compare with HYP-035's batch=1 seq=4096 result: 2.69× FlashInfer. The
+batch-8 ratio is materially worse, which is the main finding below.
 
 ## Why HYP-042b **confirms** the overall hypothesis
 
@@ -65,39 +71,38 @@ So the HYP-042b prediction — "attention kernel carries ≥ 80 % of the Δ"
 — holds on A100 with room to spare. The A100 ceiling (HYP-035 /
 HYP-037 / HYP-040) is the binding constraint.
 
-## Two new findings this run surfaces
+## Finding that survives the correction
 
-**1. The decode step invokes *two* TQ attention kernels per layer.**
-`turboquant_v5::decode_v5_from_cache_paged_splitkv_ws…` **and**
-`flashinfer::TurboQuantContiguousDecodeKernelV5T…` each run 4572 times
-(36 layers × 127 decode steps), taking **577 μs** and **571 μs** per
-call on average. Baseline fires one decode kernel per layer per step.
-This either means:
-  - the two kernels run concurrently on different streams (so summed
-    CUDA time overstates wall cost — consistent with +37 ms kernel
-    sum vs only +18 ms wall), or
-  - the code path is doing redundant work (e.g. running the full-cache
-    kernel plus a contiguous-path kernel when only one is required).
+**Batch-8 makes TQ relatively worse, not better.** HYP-035 reported
+2.69× FlashInfer at batch=1. This run reports **4.9× per-layer-per-step
+at batch=8** (corrected number, was 9.8× before removing the host-op
+double-count). FlashInfer's cost barely grows with batch because it
+packs multiple requests into the same decode call and saturates SMs
+better. TQ's decode kernel scales closer to linearly with batch — so
+larger serving batch amplifies the gap. This is the opposite of what
+serving-side optimization assumes and is now the highest-priority
+A100-side lever (HYP-044).
 
-Either way, **halving this is the highest-leverage A100 lever** — more
-than pre-allocating workspace.
+## Retracted finding
 
-**2. Batch-8 makes TQ relatively worse, not better.** HYP-035 reported
-2.69× FlashInfer at batch=1. This run reports 9.8× per-layer-per-step
-at batch=8. FlashInfer's cost barely grows with batch because it packs
-multiple requests into the same decode call and saturates SMs better.
-TQ's decode kernel scales closer to linearly with batch — so larger
-serving batch amplifies the gap. This is the opposite of what
-serving-side optimization assumes.
+An earlier version of this document claimed the decode step invokes
+*two* TQ attention kernels per layer, each ~575 μs. That was a
+misread of the torch.profiler table, which exposes both a custom
+torch.library op (`turboquant_v5::decode_v5_from_cache_paged_splitkv_ws`)
+and its child CUDA kernel (`TurboQuantContiguousDecodeKernelV5TC`)
+with overlapping Self-CUDA columns. Reading
+`csrc/src/decode_v5_tc_binding.cu:754–874` confirms exactly one main
+decode kernel + one small combine + one memset per call — no
+redundancy. See HYP-043 (rejected on inspection) for detail.
 
 ## Next steps (decision table)
 
 | finding                     | next hypothesis  | priority |
 |-----------------------------|------------------|---------:|
-| 2 attention kernels / layer | HYP-043 "fuse or drop redundant TQ decode kernel pair" | **high** |
-| Batch-8 amplifies gap        | HYP-044 "batch-aware split-K; better SM saturation at batch>1" | high |
+| Batch-8 amplifies gap (4.9× at batch=8 vs 2.69× at batch=1) | HYP-044 "batch-aware split-K; better SM saturation at batch>1" | **high** |
 | Workspace alloc on every step (HYP-041 OOMs) | HYP-045 "pre-allocated v5 workspace" | medium (memory fix, small perf) |
 | H100 ceiling is different   | HYP-046 "re-measure everything on H100" | medium (blocked on hardware) |
+| ~~2 attention kernels / layer~~ | ~~HYP-043 "fuse or drop redundant TQ decode kernel pair"~~ | **rejected** on inspection |
 
 Raw artifacts: `results/hyp042b/{baseline,tq}/{profiler_out_0.txt,
 rank0.*.pt.trace.json.gz}`.

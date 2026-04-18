@@ -99,15 +99,19 @@ Full breakdown in `results/hyp042b/SUMMARY.md`.
 
 ## Two new findings beyond the go/no-go question
 
-1. **Two TQ attention kernels per layer per decode step.**
-   `turboquant_v5::decode_v5_from_cache_paged_splitkv_ws…` (577 μs/call)
-   **and** `flashinfer::TurboQuantContiguousDecodeKernelV5T…` (571 μs/call)
-   each fire 4572 times (36 layers × 127 decode steps). Baseline fires
-   one decode kernel per layer per step (110 μs). Summed TQ kernel
-   CUDA (+37 ms/step) is greater than measured wall Δ (+18 ms/step) —
-   so the two kernels either overlap on separate streams or one is
-   redundant. This is the single biggest A100-side optimization lever:
-   **drop or fuse the redundant decode-kernel pair**.
+1. **[CORRECTION — see HYP-043 rejection] The "two TQ attention
+   kernels per layer per decode step" finding was a torch.profiler
+   artifact**, not a real second kernel. Reading
+   `csrc/src/decode_v5_tc_binding.cu:754–874`, the host op
+   `decode_v5_from_cache_paged_splitkv_ws` launches exactly one main
+   kernel (`TurboQuantContiguousDecodeKernelV5TC`) plus a small
+   `SplitKVCombineKernel` and a `cudaMemsetAsync`. torch.profiler
+   double-exposes the host op's Self CUDA (which includes the child
+   kernel's time) and the child kernel itself, inflating `Self CUDA
+   time total` by ~2.6 s for TQ. The corrected per-decode-step
+   attention cost is **20.7 ms** (not 41 ms), giving a per-layer
+   ratio of **4.9×** (not 9.8×). Attention is still ~91 % of the
+   per-step Δ — the qualitative conclusion of HYP-042b holds.
 
 2. **Batch-8 makes TQ worse, not better.** HYP-035 (batch=1) saw
    2.69× FlashInfer; this run (batch=8) sees **9.8× per-layer**.
@@ -123,8 +127,16 @@ Full breakdown in `results/hyp042b/SUMMARY.md`.
   per step → 3–5 % of the gap. Worth doing for the OOM fix but not a
   speed play on its own.
 - The A100 perf ceiling is the load-bearing constraint. Follow-ups
-  (all recorded as their own hypothesis docs), ordered by expected ROI:
-    - [HYP-043](HYP-043-decode-kernel-dedup.md) — dedup / fuse the decode-kernel pair (A100, highest)
-    - [HYP-044](HYP-044-batch-aware-splitk.md) — batch-aware split-K to saturate SMs at batch > 1
-    - [HYP-045](HYP-045-preallocate-v5-workspace.md) — pre-allocated workspace (memory fix for HYP-041 OOMs + small perf)
-    - [HYP-046](HYP-046-h100-remeasure.md) — re-measure on H100 (unlocks async ldmatrix + fp8e4nv compile)
+  (all recorded as their own hypothesis docs), re-ordered by expected
+  ROI after HYP-043 was rejected on inspection:
+    - [HYP-044](HYP-044-batch-aware-splitk.md) — batch-aware split-K
+      to saturate SMs at batch > 1. Now the highest-priority lever:
+      ratio is 2.69× at batch=1 (HYP-035) vs 4.9× at batch=8 here.
+    - [HYP-045](HYP-045-preallocate-v5-workspace.md) — pre-allocated
+      workspace (memory fix for HYP-041 OOMs + small perf)
+    - [HYP-046](HYP-046-h100-remeasure.md) — re-measure on H100
+      (unlocks async ldmatrix + fp8e4nv compile)
+    - ~~[HYP-043](HYP-043-decode-kernel-dedup.md)~~ — **rejected on
+      code inspection**; the "two kernels per layer" observation was
+      a torch.profiler double-exposure of the host op and its child
+      kernel.
