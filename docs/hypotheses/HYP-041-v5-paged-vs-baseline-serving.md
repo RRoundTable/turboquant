@@ -31,6 +31,15 @@ For Qwen/Qwen3-8B on a single A100-40GB, output_len=128, eager mode
   `docker/vllm_patches/{v1/attention/backend.py, v1/kv_cache_interface.py,
   v1/worker/gpu_model_runner.py, model_executor/layers/attention/attention.py}`
   on top of vLLM's site-packages — same overlay used by `Dockerfile`.
+- **The overlay carries the customizations from
+  [vllm-project/vllm#39868](https://github.com/vllm-project/vllm/pull/39868)**
+  ("[v1] Allow attention backends to declare custom KV cache page size"):
+  `AttentionBackend.get_kv_cache_page_size`, `AttentionSpec.custom_page_size`,
+  and the `_reshape_kv_cache_tensors` view-prefix path. `TurboQuantBackend`
+  implements `get_kv_cache_page_size` to return its packed-byte size when
+  `cache_dtype == "fp8"`. **This is the customized-vLLM setting, not stock
+  vLLM** — confirmation that the page-size override fired at runtime is
+  in §Result below.
 - TurboQuant backend explicitly registered: `turboquant.vllm_plugin.register()`
   before `LLM(...)` construction.
 
@@ -123,6 +132,26 @@ vLLM defaults left on for both: `enable_prefix_caching=True`,
 
 ## Result
 
+### PR #39868 cache-compression check (sanity)
+
+Engine logs report `GPU KV cache size` after profiling — same value across
+every job (sweep used the same `max_model_len` ≈ 1168 only at seq=1024;
+the long-seq jobs use a per-config `max_model_len = input_len + 128 + 16`,
+but the cache budget is set by `gpu_memory_utilization=0.85` so the
+per-token math is comparable):
+
+|        | KV tokens | × baseline |
+|--------|----------:|-----------:|
+| baseline (fp16, FLASHINFER)   | 126,416 |  1.00× |
+| TQ (fp8, CUSTOM, PR #39868)   | 404,544 |  3.20× |
+
+The **3.20× cache compression from PR #39868 is fully realized** — the
+per-page byte budget really did shrink. So the remaining issues below
+are *not* "the PR didn't take effect"; they are downstream of a
+correctly-compressed cache.
+
+### Throughput / memory / OOM
+
 | seq×batch | base tok/s | tq tok/s | tq/base | base mem (GB) | tq mem (GB) |
 |----------:|-----------:|---------:|--------:|--------------:|------------:|
 |   1024×1  |       48.4 |     38.4 |   0.79× |         34.26 |       34.31 |
@@ -167,12 +196,19 @@ For Qwen3-8B with 8 KV heads, qbytes ≈ 64, this hits ~268 MB per tensor
 at (32, 16384) — and there are several. The workspace allocation runs
 *every decode step* (it's not pre-allocated to its peak). This:
 
-- Defeats the cache-side memory savings. The workspace is sized like an
-  un-quantized expansion buffer, so total resident memory is *higher*
-  than baseline for the same workload.
+- **Defeats the cache-side memory savings even though they are real.**
+  PR #39868 successfully shrank the cache (3.20× more KV tokens per
+  byte, confirmed above), but the workspace is sized like an
+  un-quantized expansion buffer, so total resident memory at runtime is
+  *higher* than baseline for the same workload.
 - Causes OOM at exactly the configs where TQ should have shone (long
   context × large batch — the decode-bound regime where memory savings
-  matter most).
+  matter most). The OOM tracebacks all land at
+  `_get_v5_ws` allocating `k_quant`/`v_quant` tensors, not at
+  `_reshape_kv_cache_tensors` allocating the cache.
+
+So the picture is: PR #39868 does its job (smaller cache pages), but the
+backend's per-step scratch buffers eat the headroom and then some.
 
 ### Issue B — eager-mode tax is structural, not a fluke
 
