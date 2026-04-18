@@ -123,8 +123,8 @@ Full breakdown in `results/hyp042b/SUMMARY.md`.
   per step → 3–5 % of the gap. Worth doing for the OOM fix but not a
   speed play on its own.
 - The A100 perf ceiling is the load-bearing constraint. Follow-ups
-  ordered by expected ROI:
-    - HYP-043: dedup / fuse the decode-kernel pair (A100, highest)
-    - HYP-044: batch-aware split-K to saturate SMs at batch > 1
-    - HYP-045: pre-allocated workspace (memory + small perf)
-    - HYP-046: re-measure on H100 (unlocks async ldmatrix + fp8e4nv compile)
+  (all recorded as their own hypothesis docs), ordered by expected ROI:
+    - [HYP-043](HYP-043-decode-kernel-dedup.md) — dedup / fuse the decode-kernel pair (A100, highest)
+    - [HYP-044](HYP-044-batch-aware-splitk.md) — batch-aware split-K to saturate SMs at batch > 1
+    - [HYP-045](HYP-045-preallocate-v5-workspace.md) — pre-allocated workspace (memory fix for HYP-041 OOMs + small perf)
+    - [HYP-046](HYP-046-h100-remeasure.md) — re-measure on H100 (unlocks async ldmatrix + fp8e4nv compile)
