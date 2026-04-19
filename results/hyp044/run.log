@@ -1,0 +1,161 @@
+sm_count=108  num_kv_heads=8  seq_len=8192
+
+[old] batch=1  num_splits=32  chunk=256  grid_blocks=256
+  kernel mean = 127.08 us (setup wall 229.4 s)
+
+[new] batch=1  num_splits=32  chunk=256  grid_blocks=256
+  kernel mean = 126.62 us (setup wall 0.0 s)
+
+[old] batch=2  num_splits=16  chunk=512  grid_blocks=256
+  kernel mean = 207.62 us (setup wall 0.1 s)
+
+[new] batch=2  num_splits=32  chunk=256  grid_blocks=512
+  kernel mean = 173.32 us (setup wall 0.1 s)
+
+[old] batch=4  num_splits=8  chunk=1024  grid_blocks=256
+  kernel mean = 306.88 us (setup wall 0.1 s)
+
+[new] batch=4  num_splits=32  chunk=256  grid_blocks=1024
+  kernel mean = 281.87 us (setup wall 0.1 s)
+
+[old] batch=8  num_splits=4  chunk=2048  grid_blocks=256
+  kernel mean = 576.82 us (setup wall 0.2 s)
+
+[new] batch=8  num_splits=32  chunk=256  grid_blocks=2048
+  kernel mean = 482.74 us (setup wall 0.1 s)
+
+[old] batch=16  num_splits=2  chunk=4096  grid_blocks=256
+  kernel mean = 1119.96 us (setup wall 0.3 s)
+
+[new] batch=16  num_splits=32  chunk=256  grid_blocks=4096
+  kernel mean = 912.18 us (setup wall 0.2 s)
+
+[old] batch=32  num_splits=1  chunk=8192  grid_blocks=256
+  kernel mean = 2209.88 us (setup wall 0.6 s)
+
+[new] batch=32  num_splits=32  chunk=256  grid_blocks=8192
+  kernel mean = 1747.90 us (setup wall 0.5 s)
+
+wrote /workspace/shared/hyp044/results.csv
+[
+  {
+    "heuristic": "old",
+    "batch": 1,
+    "num_splits": 32,
+    "chunk_size": 256,
+    "grid_blocks": 256,
+    "kernel_us": 127.08,
+    "wall_s": 229.4,
+    "note": ""
+  },
+  {
+    "heuristic": "new",
+    "batch": 1,
+    "num_splits": 32,
+    "chunk_size": 256,
+    "grid_blocks": 256,
+    "kernel_us": 126.62,
+    "wall_s": 0.0,
+    "note": ""
+  },
+  {
+    "heuristic": "old",
+    "batch": 2,
+    "num_splits": 16,
+    "chunk_size": 512,
+    "grid_blocks": 256,
+    "kernel_us": 207.62,
+    "wall_s": 0.1,
+    "note": ""
+  },
+  {
+    "heuristic": "new",
+    "batch": 2,
+    "num_splits": 32,
+    "chunk_size": 256,
+    "grid_blocks": 512,
+    "kernel_us": 173.32,
+    "wall_s": 0.1,
+    "note": ""
+  },
+  {
+    "heuristic": "old",
+    "batch": 4,
+    "num_splits": 8,
+    "chunk_size": 1024,
+    "grid_blocks": 256,
+    "kernel_us": 306.88,
+    "wall_s": 0.1,
+    "note": ""
+  },
+  {
+    "heuristic": "new",
+    "batch": 4,
+    "num_splits": 32,
+    "chunk_size": 256,
+    "grid_blocks": 1024,
+    "kernel_us": 281.87,
+    "wall_s": 0.1,
+    "note": ""
+  },
+  {
+    "heuristic": "old",
+    "batch": 8,
+    "num_splits": 4,
+    "chunk_size": 2048,
+    "grid_blocks": 256,
+    "kernel_us": 576.82,
+    "wall_s": 0.2,
+    "note": ""
+  },
+  {
+    "heuristic": "new",
+    "batch": 8,
+    "num_splits": 32,
+    "chunk_size": 256,
+    "grid_blocks": 2048,
+    "kernel_us": 482.74,
+    "wall_s": 0.1,
+    "note": ""
+  },
+  {
+    "heuristic": "old",
+    "batch": 16,
+    "num_splits": 2,
+    "chunk_size": 4096,
+    "grid_blocks": 256,
+    "kernel_us": 1119.96,
+    "wall_s": 0.3,
+    "note": ""
+  },
+  {
+    "heuristic": "new",
+    "batch": 16,
+    "num_splits": 32,
+    "chunk_size": 256,
+    "grid_blocks": 4096,
+    "kernel_us": 912.18,
+    "wall_s": 0.2,
+    "note": ""
+  },
+  {
+    "heuristic": "old",
+    "batch": 32,
+    "num_splits": 1,
+    "chunk_size": 8192,
+    "grid_blocks": 256,
+    "kernel_us": 2209.88,
+    "wall_s": 0.6,
+    "note": ""
+  },
+  {
+    "heuristic": "new",
+    "batch": 32,
+    "num_splits": 32,
+    "chunk_size": 256,
+    "grid_blocks": 8192,
+    "kernel_us": 1747.9,
+    "wall_s": 0.5,
+    "note": ""
+  }
+]
