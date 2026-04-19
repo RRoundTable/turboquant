@@ -9,7 +9,7 @@ MODEL="${MODEL:-Qwen/Qwen3-8B}"
 OUT_LEN="${OUT_LEN:-128}"
 GPU_MEM="${GPU_MEM:-0.85}"
 
-OUT_DIR=/workspace/shared/bench_v5_vs_baseline
+OUT_DIR="${OUT_DIR:-/workspace/shared/bench_v5_vs_baseline}"
 mkdir -p "$OUT_DIR"
 
 REPO=/workspace/shared/turboquant-bench

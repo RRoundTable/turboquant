@@ -96,7 +96,7 @@ If microbench shows < 1.2× speedup, the chunk_size hypothesis is
 wrong and other per-block fixed costs dominate (Q load, softmax init).
 File HYP-044b for that path.
 
-## Status: partially confirmed — ship the chunk cap, but batch scaling is compute-bound
+## Status: confirmed (kernel), partially confirmed (end-to-end); shipped
 
 ## Result (microbench, A100-40GB, seq=8192)
 
@@ -135,23 +135,41 @@ attention component: 20.7 ms → ~17.3 ms ⇒ total per-step CUDA
 tok/s should rise from 215 → ~240 (still 0.63× of baseline 380;
 recovers ~15 % of the HYP-041 gap).
 
-## Action
+## Action (DONE — patch landed, end-to-end sweep re-run)
 
-1. Patch `_choose_num_splits` in `turboquant/vllm_backend_fused.py`
-   and the inline copy in `tests/bench_v5_graph.py`. Replace:
-   ```python
-   splits_by_sm   = max(1, (4 * sm_count) // (batch_size * num_kv_heads))
-   splits_by_work = max(1, max_len // 32)
-   target = min(splits_by_sm, splits_by_work)
-   ```
-   with:
-   ```python
-   TARGET_CHUNK   = 256
-   splits_by_chunk = max(1, max_len // TARGET_CHUNK)
-   splits_by_sm   = max(1, (4 * sm_count) // num_kv_heads)  # no /batch
-   target = min(splits_by_chunk, splits_by_sm)
-   ```
-2. Re-run HYP-041's 12-config sweep to validate the ~15% end-to-end
-   bump and confirm no regression at batch=1.
-3. Stronger-kernel-density path is blocked on HYP-046 (H100 async
-   ldmatrix + tensor-core dequant path).
+Patched `turboquant/vllm_backend_fused.py::_choose_num_splits` and the
+inline copy in `tests/bench_v5_graph.py::_choose_num_splits` to the
+chunk-cap heuristic. Re-ran HYP-041's 12-config grid on the same env
+(image `tq-hyp029:pr`, eager mode, PR #39868 overlay).
+
+### End-to-end result (Qwen3-8B, A100-40GB, output_len=128, tok/s)
+
+| seq × b | tq v0 | tq v1 (HYP-044) | Δ tq | tq/base v0 | tq/base v1 | Δ ratio |
+|--------:|------:|----------------:|-----:|-----------:|-----------:|--------:|
+|  1024×1 |  38.4 |  38.8 |    +1% | 0.79× | 0.81× |  +2pp |
+|  1024×8 | 291.6 | 300.4 |    +3% | 0.77× | 0.77× |  +0pp |
+| 1024×32 | 961.2 | 1138.3 | **+18%** | 0.68× | **0.77×** | **+9pp** |
+|  4096×1 |  38.1 |  38.6 |    +1% | 0.81× | 0.81× |  +0pp |
+|  4096×8 | 291.3 | 296.3 |    +2% | 0.78× | 0.77× | −1pp |
+|  8192×1 |  37.3 |  37.9 |    +2% | 0.78× | 0.79× |  +1pp |
+|  8192×8 | 215.1 | 227.7 | **+6%** | 0.57× | **0.61×** | **+4pp** |
+| 16384×1 |  38.2 |  37.9 |    −1% | 0.79× | 0.80× |  +1pp |
+
+(Configs 4096×32, 8192×32, 16384×8, 16384×32 OOM pre-existing from
+HYP-041; HYP-045 is the fix.)
+
+**Highlights:**
+- At **seq=8192 × b=8** (the HYP-041 headline config): tq/base
+  **0.57× → 0.61×** (+4 pp, 6% tok/s).
+- At **seq=1024 × b=32**: tq/base **0.68× → 0.77×** (+9 pp, 18% tok/s)
+  — chunk_size dropped from 1024 to 256, biggest relative kernel
+  speedup.
+- **batch=1 unchanged** across every seq — expected, because at
+  batch=1 the old heuristic already produced chunk ≤ 256.
+
+End-to-end gains track the microbench order-of-magnitude but smaller:
+attention is ~91 % of the per-decode-step Δ, and kernel speedup of
+0.79–0.84× translates to ~5–10 % end-to-end (except at batch=32 short
+seq where kernel dominates more of the step).
+
+Full report: `results/v5_vs_baseline_hyp044/REPORT.md`.

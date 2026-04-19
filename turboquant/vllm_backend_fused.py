@@ -128,25 +128,27 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
     @staticmethod
     def _choose_num_splits(batch_size: int, max_len: int, num_kv_heads: int,
                            device: torch.device) -> int:
-        """Pick num_splits at workspace-creation time (HYP-034).
+        """Pick num_splits at workspace-creation time.
 
-        Static per shape bucket, so the captured graph has a fixed grid. Below
-        max_len=512 the combine-kernel overhead outweighs the fan-out benefit
-        (HYP-018), so stay at num_splits=1. Result is snapped to the largest
-        divisor of max_len ≤ target so chunk_size * num_splits == max_len
-        exactly — avoids overshooting workspace bounds even if the underlying
-        kernel didn't already clamp at seq_len.
+        HYP-044: cap chunk_size at TARGET_CHUNK tokens and let grid grow with
+        batch. Previous heuristic divided splits_by_sm by batch_size, which
+        made per-block work scale linearly with batch (8× chunk at batch=8 =>
+        8× kernel time). Microbench showed the chunk-cap version is 0.79–0.84×
+        the old kernel time at batch ≥ 8 with no regression at batch=1.
+
+        Snaps to the largest divisor of max_len ≤ target so chunk_size *
+        num_splits == max_len exactly.
         """
         if max_len < 512:
             return 1
+        TARGET_CHUNK = 256
         sm_count = torch.cuda.get_device_properties(device).multi_processor_count
-        # 4× SM oversubscription: empirical sweet spot (HYP-032 long-context
-        # sweep showed target_chunk=128 over-splits at seq≥16k — per-block
-        # fixed overhead from Q load + softmax init dominates once grid gets
-        # much larger than ~2-3× SM count).
-        splits_by_sm = max(1, (4 * sm_count) // (batch_size * num_kv_heads))
-        splits_by_work = max(1, max_len // 32)
-        target = min(splits_by_sm, splits_by_work)
+        splits_by_chunk = max(1, max_len // TARGET_CHUNK)
+        # Cap at 4× SM oversubscription per kv_head (no batch divisor — the
+        # grid grows with batch naturally and A100 absorbs many waves of
+        # blocks without losing throughput, see HYP-044 results.csv).
+        splits_by_sm = max(1, (4 * sm_count) // num_kv_heads)
+        target = min(splits_by_chunk, splits_by_sm)
         best = 1
         for d in range(2, target + 1):
             if max_len % d == 0:

@@ -160,15 +160,16 @@ def _alloc_v5_split_workspace(max_len: int, qbytes: int, dim_chunks: int, num_sp
 
 
 def _choose_num_splits(max_len: int) -> int:
-    """Same heuristic as TurboQuantFusedImpl._choose_num_splits, inlined for the
-    standalone benchmark. Snaps to the largest divisor of max_len ≤ target so
-    chunk_size * num_splits == max_len (no overshoot)."""
+    """Same heuristic as TurboQuantFusedImpl._choose_num_splits (HYP-044):
+    cap chunk at 256 tokens, no batch divisor. Snaps to the largest divisor
+    of max_len ≤ target so chunk_size * num_splits == max_len (no overshoot)."""
     if max_len < 512:
         return 1
+    TARGET_CHUNK = 256
     sm_count = torch.cuda.get_device_properties(0).multi_processor_count
-    splits_by_sm = max(1, (4 * sm_count) // (BATCH * NUM_KV_HEADS))
-    splits_by_work = max(1, max_len // 32)
-    target = min(splits_by_sm, splits_by_work)
+    splits_by_chunk = max(1, max_len // TARGET_CHUNK)
+    splits_by_sm = max(1, (4 * sm_count) // NUM_KV_HEADS)
+    target = min(splits_by_chunk, splits_by_sm)
     best = 1
     for d in range(2, target + 1):
         if max_len % d == 0:
