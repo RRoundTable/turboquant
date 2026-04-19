@@ -1,0 +1,18 @@
+{
+  "backend": "baseline",
+  "model": "Qwen/Qwen3-8B",
+  "input_len": 16384,
+  "batch": 8,
+  "output_len": 128,
+  "trials": 3,
+  "per_trial_s": [
+    2.9132586917839944,
+    2.907125595025718,
+    2.908352163154632
+  ],
+  "median_s": 2.908352163154632,
+  "decode_tokens_per_s": 352.08941096365976,
+  "per_request_s": 2.908352163154632,
+  "peak_gpu_mem_gb": 0.0,
+  "nvsmi_gpu_mem_gb": 34.8271484375
+}

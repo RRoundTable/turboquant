@@ -178,18 +178,24 @@ class TurboQuantFusedImpl(FlashAttentionImpl):
                                                  self.num_kv_heads, device)
             padded_batch = batch_size * num_splits
             ws = {
-                "k_quant": torch.empty((batch_size, self.num_kv_heads, max_len, self._qbytes),
-                                       dtype=torch.uint8, device=device),
-                "v_quant": torch.empty((batch_size, self.num_kv_heads, max_len, self._qbytes),
-                                       dtype=torch.uint8, device=device),
-                "k_norms": torch.empty((batch_size, self.num_kv_heads, max_len, dim_chunks),
-                                       dtype=torch.float16, device=device),
-                "v_norms": torch.empty((batch_size, self.num_kv_heads, max_len, dim_chunks),
-                                       dtype=torch.float16, device=device),
                 "o":       torch.empty((batch_size, self.num_heads, self._pd),
                                        dtype=torch.float16, device=device),
                 "num_splits": num_splits,
             }
+            if num_splits == 1:
+                # HYP-045: k/v_quant + k/v_norms are only consumed by the
+                # non-split decode_v5_from_cache_ws fallback. The paged-split
+                # path walks kv_cache directly. Allocating them here for
+                # split>1 wastes O(batch * num_kv_heads * max_len * qbytes) —
+                # ~9.6 GB at seq=8192, batch=32, 36 layers.
+                ws["k_quant"] = torch.empty((batch_size, self.num_kv_heads, max_len, self._qbytes),
+                                            dtype=torch.uint8, device=device)
+                ws["v_quant"] = torch.empty((batch_size, self.num_kv_heads, max_len, self._qbytes),
+                                            dtype=torch.uint8, device=device)
+                ws["k_norms"] = torch.empty((batch_size, self.num_kv_heads, max_len, dim_chunks),
+                                            dtype=torch.float16, device=device)
+                ws["v_norms"] = torch.empty((batch_size, self.num_kv_heads, max_len, dim_chunks),
+                                            dtype=torch.float16, device=device)
             if num_splits > 1:
                 # Split-KV scratch. Pre-filled split indices are pure functions
                 # of (batch_size, num_splits) — safe to compute once here.
