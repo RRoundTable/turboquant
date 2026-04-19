@@ -15,7 +15,7 @@ def main():
     p.add_argument("--input-len", type=int, required=True)
     p.add_argument("--batch", type=int, required=True)
     p.add_argument("--output-len", type=int, default=128)
-    p.add_argument("--backend", choices=["baseline", "tq"], required=True)
+    p.add_argument("--backend", choices=["baseline", "tq", "flashinfer"], required=True)
     p.add_argument("--trials", type=int, default=3)
     p.add_argument("--warmup", type=int, default=1)
     p.add_argument("--out", required=True)
@@ -46,6 +46,8 @@ def main():
     if args.backend == "tq":
         kwargs["kv_cache_dtype"] = "fp8"  # TurboQuant uses own quantizer; vllm treats as 1-byte alloc
         kwargs["attention_backend"] = "CUSTOM"
+    elif args.backend == "flashinfer":
+        kwargs["attention_backend"] = "FLASHINFER"
 
     llm = LLM(**kwargs)
 

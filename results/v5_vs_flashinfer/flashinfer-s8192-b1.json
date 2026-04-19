@@ -1,0 +1,18 @@
+{
+  "backend": "flashinfer",
+  "model": "Qwen/Qwen3-8B",
+  "input_len": 8192,
+  "batch": 1,
+  "output_len": 128,
+  "trials": 3,
+  "per_trial_s": [
+    2.5697336648590863,
+    2.5839040563441813,
+    2.5719331363216043
+  ],
+  "median_s": 2.5719331363216043,
+  "decode_tokens_per_s": 49.76801231429618,
+  "per_request_s": 2.5719331363216043,
+  "peak_gpu_mem_gb": 0.0,
+  "nvsmi_gpu_mem_gb": 35.2431640625
+}
