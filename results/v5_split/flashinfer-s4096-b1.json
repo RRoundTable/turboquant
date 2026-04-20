@@ -1,0 +1,26 @@
+{
+  "backend": "flashinfer",
+  "model": "Qwen/Qwen3-8B",
+  "input_len": 4096,
+  "batch": 1,
+  "output_len": 128,
+  "trials": 3,
+  "t_short_s": 0.02672866778448224,
+  "t_long_s": 2.504042379092425,
+  "short_trials_s": [
+    0.027084213215857744,
+    0.02672866778448224,
+    0.026209883857518435
+  ],
+  "long_trials_s": [
+    2.5557173741981387,
+    2.504042379092425,
+    2.4808276281692088
+  ],
+  "prefill_s": 0.007222260608829148,
+  "decode_per_step_s": 0.019506407175653093,
+  "decode_tokens_per_s": 51.265206913559624,
+  "total_tokens_per_s": 51.117345724153765,
+  "peak_gpu_mem_gb": 0.0,
+  "nvsmi_gpu_mem_gb": 34.8662109375
+}
