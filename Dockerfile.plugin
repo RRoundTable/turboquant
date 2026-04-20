@@ -15,5 +15,5 @@
 FROM scratch
 COPY dist/turboquant-0.1.0-py3-none-any.whl /opt/tq-plugin/
 COPY docker/vllm_patches /opt/tq-plugin/vllm_patches
-COPY docker/install_plugin.sh /opt/tq-plugin/install.sh
+COPY install.sh /opt/tq-plugin/install.sh
 COPY STATUS.md /opt/tq-plugin/STATUS.md

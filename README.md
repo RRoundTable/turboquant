@@ -15,49 +15,102 @@ TurboQuant compresses LLM KV cache from FP16 to 4-bit using Lloyd-Max codebook q
 
 ## Install
 
+TurboQuant requires both a Python package (the plugin + CUDA kernels) **and**
+four small vLLM source patches that wire up the per-backend KV-cache page-size
+hook from [vllm-project/vllm#39868](https://github.com/vllm-project/vllm/pull/39868).
+Until that PR merges upstream, the patches must be applied locally; once it
+merges, plain `pip install turboquant` will be enough.
+
+### Option 1 — turn-key Docker image (recommended)
+
 ```bash
-pip install .
+docker pull 847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:latest
+
+docker run --gpus all -p 8000:8000 \
+  847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:latest \
+  --model Qwen/Qwen3-8B --dtype float16 --enforce-eager \
+  --attention-backend CUSTOM --kv-cache-dtype fp8 \
+  --gpu-memory-utilization 0.85
 ```
 
-This registers TurboQuant as a [vLLM plugin](https://docs.vllm.ai/en/latest/design/plugin_system.html) via entry_points. No vLLM source modification needed.
+Bundles vLLM v0.19, the patches, and the plugin. Nothing to apply.
 
-**Requirements:** Python >= 3.10, PyTorch >= 2.1, CUDA GPU (A100 tested), vLLM >= 0.6.0, FlashInfer.
+### Option 2 — plugin overlay onto your own vLLM image
+
+For users who already maintain their own vLLM image. Pull the 504 KB plugin
+artifact and run `install.sh` against the existing vLLM install:
+
+```bash
+# Pull the plugin artifact (just wheel + patches + install.sh, no vllm)
+docker create --name tq 847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:plugin-latest
+docker cp tq:/opt/tq-plugin ./tq-plugin && docker rm tq
+
+# Inside your container (or wherever vLLM is installed):
+TQ_PATCH_DIR=./tq-plugin/vllm_patches ./tq-plugin/install.sh
+```
+
+Or as a multi-stage Dockerfile:
+
+```dockerfile
+FROM 847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:plugin-latest AS tq
+FROM your-vllm-image
+COPY --from=tq /opt/tq-plugin /opt/tq-plugin
+RUN TQ_PATCH_DIR=/opt/tq-plugin/vllm_patches /opt/tq-plugin/install.sh
+```
+
+### Option 3 — install from source
+
+```bash
+git clone https://github.com/RRoundTable/turboquant.git
+cd turboquant
+./install.sh    # applies patches from docker/vllm_patches + pip-installs the package
+```
+
+`install.sh` patches your vLLM site-packages (run-once) and installs the
+turboquant package, which auto-registers via vLLM's `vllm.general_plugins`
+entry point. To run without applying the patches, see "Without patches" below.
+
+### Without patches (for evaluation only)
+
+`pip install turboquant` alone *registers* the backend (the
+`vllm.general_plugins` entry-point machinery is stock), but the page-size
+override hook isn't wired in stock vLLM. The plugin will run with effective
+**~2× compression** instead of the published 3.2×, and may hit a
+layout-mismatch depending on vLLM version. The patches are required for the
+full 3.2× story until PR #39868 lands.
+
+**Requirements:** Python >= 3.10, PyTorch >= 2.1, CUDA GPU (A100 tested),
+vLLM v0.19, FlashInfer.
 
 ## Usage
 
-### vLLM (OpenAI-compatible API server)
-
 ```bash
-# TurboQuant activates automatically when installed alongside vLLM.
-# The plugin registers at vLLM startup via entry_points discovery.
-vllm serve Qwen/Qwen3-1.7B --dtype float16 --gpu-memory-utilization 0.9
+vllm serve Qwen/Qwen3-8B --dtype float16 --enforce-eager \
+  --attention-backend CUSTOM --kv-cache-dtype fp8 \
+  --gpu-memory-utilization 0.85
 ```
 
-### Docker
-
-```bash
-# Build
-docker build -t vllm-turboquant .
-
-# Run
-docker run --gpus all -p 8000:8000 vllm-turboquant \
-  --model Qwen/Qwen3-1.7B --dtype float16 --gpu-memory-utilization 0.9
-
-# Or use pre-built image from ECR
-docker pull 847366387031.dkr.ecr.us-east-1.amazonaws.com/vllm-turboquant
-```
-
-First request takes ~30s extra for CUDA kernel JIT compilation. Subsequent requests are instant.
+`--attention-backend CUSTOM --kv-cache-dtype fp8` are required to activate
+TurboQuant. `--enforce-eager` is required on A100 (SM80) — vLLM lowers the
+fp8 path to `fp8e4nv` which doesn't compile on SM80; H100 and later don't
+need it. First request takes ~30s extra for CUDA kernel JIT compilation;
+subsequent requests are instant.
 
 ### Programmatic (Python)
 
 ```python
 from vllm import LLM, SamplingParams
 
-# Just install turboquant — the plugin auto-registers
-llm = LLM(model="Qwen/Qwen3-1.7B", dtype="float16", gpu_memory_utilization=0.9)
-output = llm.generate("What is the capital of France?", SamplingParams(max_tokens=64))
-print(output[0].outputs[0].text)
+llm = LLM(
+    model="Qwen/Qwen3-8B",
+    dtype="float16",
+    enforce_eager=True,
+    attention_backend="CUSTOM",
+    kv_cache_dtype="fp8",
+    gpu_memory_utilization=0.85,
+)
+out = llm.generate("What is the capital of France?", SamplingParams(max_tokens=64))
+print(out[0].outputs[0].text)
 ```
 
 ### Validated Models
