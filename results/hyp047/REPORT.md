@@ -15,19 +15,27 @@ Cache size = 36 layers × 2 (K+V) × batch × 8 KV-heads × seq × 64 qbytes.
 |  8192 ×  8 |  2.42 GB |    92.3 |    92.4 |  26.1 |         134.5 | 0.69x ✓ | 2.7 × 34.0 ms |
 |  8192 × 32 |  9.66 GB |   371.3 |   370.7 |  26.1 |         282.5 | 1.31x ≈ | 4.7 × 78.5 ms |
 | 16384 ×  1 |  0.60 GB |    23.0 |    23.0 |  26.2 |          19.4 | 1.18x ≈ | 0.9 × 25.9 ms |
+| 16384 ×  4 |  2.42 GB |    92.5 |    92.5 |  26.1 |          90.1 | 1.03x ≈ | 2.5 × 36.6 ms |
 | 16384 ×  8 |  4.83 GB |   184.5 |   184.9 |  26.1 |         190.3 | 0.97x ✓ | 3.7 × 49.4 ms |
 | 16384 × 32 | 19.33 GB |   741.0 |   742.9 |  26.0 |         350.0 | 2.12x ✗ | 5.6 × 133.1 ms |
+| 32768 ×  1 |  1.21 GB |    46.2 |    46.4 |  26.0 |          40.6 | 1.14x ≈ | 1.7 × 26.6 ms |
+| 32768 ×  4 |  4.83 GB |   184.6 |   185.0 |  26.1 |         140.6 | 1.32x ≈ | 3.8 × 49.0 ms |
+| 32768 ×  8 |  9.66 GB |   369.6 |   370.6 |  26.1 |         259.2 | 1.43x ≈ | 4.9 × 75.7 ms |
 
 ## Read
 
 - **PCIe Gen4 effective bandwidth ≈ 26 GB/s** (vs 32 GB/s peak — 81 %).
   Symmetric in both directions.
-- **One-way restore (cache hit on warm spill)** vs re-prefill:
-  - WIN at small/medium configs (≤ 8192 × 8): restore is 0.34–0.97× prefill
-  - LOSS at large × large: 16384 × 32 restore is 740 ms vs 350 ms re-prefill
-- **Async overlap with decode** changes the picture: at decode/step ≈ 30–130 ms,
-  the ~92 ms restore at 8192×8 is hidden behind 3 decode steps; only the largest
-  config (16384×32) needs ~5 steps to cover transfer.
-- **fp16 KV would be 3.2× larger** → almost no config wins for fp16 offload.
-  TQ compression makes the offload-reuse trade viable in a regime where
-  raw fp16 cannot.
+
+### Extended grid (HYP-047b: 16384×4, 32k×{1,4,8})
+
+- **TQ prefill is fast at long-ctx** (32768×1 = 41 ms vs FA 68 ms; 32768×8 =
+  259 ms vs FA 361 ms). Side-effect: synchronous restore loses to re-prefill
+  at every 32k config (c2g/prefill = 1.13–1.43×). Async overlap still hides it
+  (restore = 0.6–4.9 decode steps).
+- **The trade flips at 32k**: at the original HYP-041 grid restore wins
+  outright; at the extended grid TQ prefill is cheap enough that re-prefill
+  is competitive with restore. Async overlap is the deciding factor.
+- **One regime is clear**: TQ + offload only beats raw fp16 + offload, never
+  itself + re-prefill at 32k+. Past 32k the value is *capacity* (fitting the
+  context at all) rather than *prefill amortization*.

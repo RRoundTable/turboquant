@@ -1,0 +1,26 @@
+{
+  "backend": "baseline",
+  "model": "Qwen/Qwen3-8B",
+  "input_len": 16384,
+  "batch": 4,
+  "output_len": 128,
+  "trials": 3,
+  "t_short_s": 0.15143265575170517,
+  "t_long_s": 2.7499259072355926,
+  "short_trials_s": [
+    0.13230288214981556,
+    0.15629417821764946,
+    0.15143265575170517
+  ],
+  "long_trials_s": [
+    2.8210462387651205,
+    2.7499259072355926,
+    2.741458805743605
+  ],
+  "prefill_s": 0.13097207896836746,
+  "decode_per_step_s": 0.020460576783337698,
+  "decode_tokens_per_s": 195.49791007150128,
+  "total_tokens_per_s": 186.18683458082558,
+  "peak_gpu_mem_gb": 0.0,
+  "nvsmi_gpu_mem_gb": 34.8251953125
+}

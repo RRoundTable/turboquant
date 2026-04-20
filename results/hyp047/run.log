@@ -1,50 +1,26 @@
 
-=== seq=1024 batch=1 (0.04 GB) ===
-  GPU->CPU:    1.67 ms  ( 22.6 GB/s)
-  CPU->GPU:    1.47 ms  ( 25.8 GB/s)
-
-=== seq=1024 batch=8 (0.30 GB) ===
-  GPU->CPU:   13.14 ms  ( 23.0 GB/s)
-  CPU->GPU:   11.52 ms  ( 26.2 GB/s)
-
-=== seq=1024 batch=32 (1.21 GB) ===
-  GPU->CPU:   46.15 ms  ( 26.2 GB/s)
-  CPU->GPU:   46.42 ms  ( 26.0 GB/s)
-
-=== seq=4096 batch=1 (0.15 GB) ===
-  GPU->CPU:    5.78 ms  ( 26.1 GB/s)
-  CPU->GPU:    5.78 ms  ( 26.1 GB/s)
-
-=== seq=4096 batch=8 (1.21 GB) ===
-  GPU->CPU:   45.96 ms  ( 26.3 GB/s)
-  CPU->GPU:   46.21 ms  ( 26.1 GB/s)
-
-=== seq=4096 batch=32 (4.83 GB) ===
-  GPU->CPU:  185.11 ms  ( 26.1 GB/s)
-  CPU->GPU:  184.99 ms  ( 26.1 GB/s)
-
-=== seq=8192 batch=1 (0.30 GB) ===
-  GPU->CPU:   11.51 ms  ( 26.2 GB/s)
-  CPU->GPU:   23.13 ms  ( 13.1 GB/s)
-
-=== seq=8192 batch=8 (2.42 GB) ===
-  GPU->CPU:   92.27 ms  ( 26.2 GB/s)
-  CPU->GPU:   92.41 ms  ( 26.1 GB/s)
-
-=== seq=8192 batch=32 (9.66 GB) ===
-  GPU->CPU:  371.27 ms  ( 26.0 GB/s)
-  CPU->GPU:  370.69 ms  ( 26.1 GB/s)
-
 === seq=16384 batch=1 (0.60 GB) ===
-  GPU->CPU:   23.00 ms  ( 26.3 GB/s)
-  CPU->GPU:   23.03 ms  ( 26.2 GB/s)
+  GPU->CPU:   23.23 ms  ( 26.0 GB/s)
+  CPU->GPU:   23.02 ms  ( 26.2 GB/s)
+
+=== seq=16384 batch=4 (2.42 GB) ===
+  GPU->CPU:   92.55 ms  ( 26.1 GB/s)
+  CPU->GPU:   92.48 ms  ( 26.1 GB/s)
 
 === seq=16384 batch=8 (4.83 GB) ===
-  GPU->CPU:  184.53 ms  ( 26.2 GB/s)
-  CPU->GPU:  184.90 ms  ( 26.1 GB/s)
+  GPU->CPU:  184.76 ms  ( 26.2 GB/s)
+  CPU->GPU:  185.07 ms  ( 26.1 GB/s)
 
-=== seq=16384 batch=32 (19.33 GB) ===
-  GPU->CPU:  741.04 ms  ( 26.1 GB/s)
-  CPU->GPU:  742.90 ms  ( 26.0 GB/s)
+=== seq=32768 batch=1 (1.21 GB) ===
+  GPU->CPU:   46.23 ms  ( 26.1 GB/s)
+  CPU->GPU:   46.37 ms  ( 26.0 GB/s)
 
-wrote /workspace/shared/hyp047/results.csv
+=== seq=32768 batch=4 (4.83 GB) ===
+  GPU->CPU:  184.64 ms  ( 26.2 GB/s)
+  CPU->GPU:  184.98 ms  ( 26.1 GB/s)
+
+=== seq=32768 batch=8 (9.66 GB) ===
+  GPU->CPU:  369.61 ms  ( 26.1 GB/s)
+  CPU->GPU:  370.61 ms  ( 26.1 GB/s)
+
+wrote /workspace/shared/hyp047x/results.csv
