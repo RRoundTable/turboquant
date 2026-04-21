@@ -152,6 +152,73 @@ Split-KV parameters (`request_indices`, `kv_tile_indices`, `split_indptr`,
 (HYP-044) picks `num_splits` per bucket to avoid over-splitting at
 `batch ≥ 8`.
 
+### GPU memory hierarchy (decode path)
+
+Where each tensor lives during `decode_v5_from_cache_paged_splitkv_ws` on A100 (SM80):
+
+```
+HBM  (40 GB, ~1.5 TB/s)
+├─ kv_cache[2, num_blocks, block_size, num_kv_heads, 80]  uint8  ── paged, persistent
+├─ block_table[batch, max_blocks_per_seq]                  int32
+├─ query[batch, num_qo_heads, head_dim]                    fp16   ── per step
+├─ graph-safe workspaces (pre-allocated, keyed on shape bucket):
+│    k_quant_ws, v_quant_ws     — per-split quant scratch
+│    k_norms_ws, v_norms_ws     — per-split norms scratch
+│    o_ws, m_ws, l_ws           — split partial outputs + running max/sum
+└─ output[batch, num_qo_heads, head_dim]                   fp16
+
+L2  (40 MB, ~4 TB/s) — transparent
+    Paged-native walk keeps the CTA's working set to
+    splits × block_size × 80 B, which fits L2 at typical shapes and
+    drives the long-context win over fp16 (less HBM pressure).
+
+SMEM  (164 KB/SM on A100, ~19 TB/s) — per CTA, laid out by
+      decode_v5_from_cache_paged_splitkv_ws:
+├─ q_smem[16, head_dim]                 fp16   — Q tile for WMMA A fragment
+├─ staging (per warp)                   uint8  — cp.async target for 4-bit bytes
+├─ kv_smem[16, head_dim] (per warp)     fp16   — dequantized K/V for WMMA B fragment
+├─ smem_norms[16, dim_chunks]           fp32   — norm · codebook_scale per chunk
+└─ scores_smem[16, 16]                  fp32   — WMMA C-fragment store for softmax
+
+Registers  (~64 K × 32-bit / SM)
+├─ 16-entry Lloyd-Max LUT, broadcast via __shfl_sync  (HYP-032)
+├─ WMMA a_frag / b_frag / c_frag (m16 n16 k16)
+├─ per-lane softmax m_i, l_i
+└─ FWHT butterfly temporaries (warp-shuffle, no SMEM)
+```
+
+Data movement per tile (one CTA iteration of the decode loop):
+
+```
+HBM → SMEM   cp.async 16-B bulk: kv_cache[page, tok, h, :80] → staging
+             (async, overlaps with norms precompute on other warps)
+SMEM → SMEM  cooperative dequant: staging (uint8) → kv_smem (fp16)
+             warp-shuffle LUT lookup, no HBM traffic
+SMEM → REG   wmma::load_matrix_sync q_smem/kv_smem → fragments
+REG  → REG   wmma::mma_sync  (tensor cores)
+REG  → SMEM  wmma::store_matrix_sync c_frag → scores_smem (softmax input)
+REG  → HBM   split partials stored to o_ws / m_ws / l_ws; a second
+             combine kernel reads these back for cross-warp merge.
+```
+
+### GPU memory hierarchy (write path)
+
+`quantize_write_hadamard_scatter_kernel` is register-only — no SMEM staging:
+
+```
+HBM        K,V fp16  ──load──▶  REG (per-thread VEC_SIZE lanes)
+REG        FWHT via local unroll + __shfl_xor_sync butterfly (warp-local)
+REG        L2 norm reduced across warp, then val / norm
+CONST MEM  kWriteBoundaries4bit[15]  (broadcast read, serialized in warp)
+REG        4-bit bucketize → nibble-pack (2 dims / byte)
+REG  ──▶   HBM  kv_cache[kv_idx, page=slot_mapping[tok]/B, tok%B, h, :80]
+                (quant bytes | 2×fp16 norms | pad — one contiguous 80-B store)
+```
+
+One pass, one CTA per (token, head). Grid scatters via `slot_mapping`, so
+the prefill write-back is a direct HBM → HBM hop with register-resident
+FWHT + quantize in between.
+
 ### Runtime dispatch
 
 `decoder_dispatch.pick_decode_op()` returns the best op for the current GPU
