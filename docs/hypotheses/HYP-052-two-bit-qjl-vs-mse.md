@@ -183,6 +183,26 @@ real Qwen3-8B.** The gap widens as budget shrinks. This empirically
 rejects pure TurboQuant Alg 2 as a practical quantizer for Qwen3-8B
 K/V cache.
 
+### Bias claim was seed lottery — rejection stands on variance
+
+After-the-fact diagnostic (Forge `0df2a604`, 8 different QJL seeds ×
+4 different query seeds × 3 layers × 3 seq lengths) confirms that
+**there is no bug** in `qjl.py` or `TurboQuantProd`:
+
+| metric                            | 8-seed result       | meaning                           |
+|-----------------------------------|---------------------|-----------------------------------|
+| `|bias_mean|` across seeds @ 32 k | **0.007** (< 0.01)  | unbiasedness holds in expectation |
+| per-seed bias range @ 32 k        | −0.058 to +0.043    | the single seed (10042) we used   |
+|                                   |                     | was in the tail                   |
+| best seed `out_cos` @ 32 k        | **0.889**           | still far below MSE_2bit's 0.984  |
+| MSE_2bit `out_cos` @ 32 k         | 0.984               | deterministic, no seed dependence |
+
+So the bias-inversion claim in the earlier draft of this rejection
+was a finite-sample artifact. The **real reason** the hypothesis
+fails is that JL **variance** — not bias — is the binding cost at
+a 2-bit budget on real Qwen3-8B activations. No seed choice flips
+the verdict.
+
 ### Why the paper's numbers don't reproduce here
 
 The paper's LongBench/NIAH quality tables (§4.3) are **always**
