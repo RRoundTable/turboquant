@@ -1,0 +1,86 @@
+{
+  "__meta__": {
+    "purpose": "Reusable LongBench eval-set sizes for HYP-055+ KV-quant experiments.",
+    "task_timing_qwen3_8b_a100": {
+      "qasper":               "fp16 ~1s/sample  | A ~1s  | B ~34s  | ctx ~3-7k",
+      "narrativeqa":          "fp16 ~4s/sample  | A ~4s  | B ~100s | ctx ~30k",
+      "hotpotqa":             "fp16 ~2s/sample  | A ~2s  | B ~60s  | ctx ~10-17k",
+      "gov_report":            "fp16 ~20s/sample | A ~20s | B ~400s | ctx ~11-17k, long outputs",
+      "passage_retrieval_en":  "fp16 ~1s/sample  | A ~1s  | B ~20s  | ctx ~9k"
+    },
+    "budget_notes": [
+      "B (PolarQuant 1b + QJL 1b) runs Python-dense d×d matmul on every attention step.",
+      "B wall-clock ≈ 30-40× fp16/A until a CUDA kernel ships.",
+      "Pick the smallest preset that still distinguishes methods by > 1.5 pt."
+    ]
+  },
+
+  "tiny_fast_qa": {
+    "description": "~1 min fp16/A, ~12 min B — smallest useful smoke for B.",
+    "samples_per_task": {
+      "qasper": 10,
+      "hotpotqa": 10,
+      "passage_retrieval_en": 10
+    }
+  },
+
+  "small_balanced": {
+    "description": "~3 min fp16/A, ~35 min B — first signal check for a method change.",
+    "samples_per_task": {
+      "qasper": 25,
+      "hotpotqa": 25,
+      "passage_retrieval_en": 25,
+      "narrativeqa": 10
+    }
+  },
+
+  "medium_mix": {
+    "description": "~8 min fp16/A, ~90 min B — near-confident ranking before full.",
+    "samples_per_task": {
+      "qasper": 50,
+      "narrativeqa": 25,
+      "hotpotqa": 50,
+      "gov_report": 15,
+      "passage_retrieval_en": 50
+    }
+  },
+
+  "full": {
+    "description": "~15 min fp16/A, ~3 hr B — definitive, HYP-055 primary run.",
+    "samples_per_task": {
+      "qasper": 100,
+      "narrativeqa": 100,
+      "hotpotqa": 100,
+      "gov_report": 100,
+      "passage_retrieval_en": 100
+    }
+  },
+
+  "short_ctx_only": {
+    "description": "Only samples with context < 8 k tokens. Tests whether quant damage is present at short ctx.",
+    "filter": {"max_ctx_tokens": 8000},
+    "samples_per_task": {
+      "qasper": 30,
+      "hotpotqa": 20,
+      "passage_retrieval_en": 20
+    }
+  },
+
+  "long_ctx_only": {
+    "description": "Only samples with context ≥ 16 k. Isolates long-ctx quant failure modes.",
+    "filter": {"min_ctx_tokens": 16000},
+    "samples_per_task": {
+      "narrativeqa": 30,
+      "hotpotqa": 20,
+      "gov_report": 15
+    }
+  },
+
+  "qa_only_fast": {
+    "description": "QA tasks only (qasper, hotpotqa) — fastest path to B's quality signal, skip summarization.",
+    "samples_per_task": {
+      "qasper": 40,
+      "hotpotqa": 40
+    }
+  }
+}
