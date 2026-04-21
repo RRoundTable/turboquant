@@ -155,51 +155,68 @@ status and no merge:
   tile size (96 B with m=64) but that is a separate hypothesis, not
   this one.
 
-## Variant taxonomy (clarification surfaced at Gate 0 scaffolding)
+## Scheme: Variant A — QJL-in-pad (chosen 2026-04-21)
 
-Two distinct schemes collapse under "MSE + QJL" and the hypothesis must
-be explicit about which one we're testing:
+Keeps today's 4-bit Lloyd-Max MSE **bit-for-bit identical**. Adds a
+QJL residual stored in the existing 12 B cp.async pad:
 
-- **Variant A — QJL-in-pad (originally proposed here).**
-  Keeps today's 4-bit Lloyd-Max MSE unchanged. Adds 32 QJL sign bits
-  per 64-dim chunk into the 12 B cp.async pad, plus one fp16 residual
-  norm per chunk. Effective bit rate: 4.5 bits/dim (64 MSE + 64 signs /
-  128 dims). Tile size unchanged at 80 B. Short-ctx quality guaranteed
-  equal to today because the MSE path is bit-for-bit the current one.
-- **Variant B — same-budget 3+1 (matches `TurboQuantProd` in
-  `quantizer.py:113`).**
-  Replaces today's 4-bit MSE with 3-bit MSE + 1-bit QJL — the paper's
-  Algorithm 2. Same 4-bit budget, so some of the current 64 B/head
-  becomes QJL signs. Short-ctx quality could regress (3-bit MSE is
-  coarser than 4-bit).
+```
+byte  0           31 32           63 64  67 68  71 72      79
+      ┌─────────────┬─────────────┬───────┬───────┬────────┐
+      │ chunk-0 MSE │ chunk-1 MSE │ MSE   │ QJL   │ QJL    │
+      │  32 B 4-bit │  32 B 4-bit │ norms │ res-  │ signs  │
+      │  (today)    │  (today)    │ 2×fp16│ norms │ 2 × 32 │
+      │             │             │  4 B  │ 4 B   │ = 8 B  │
+      └─────────────┴─────────────┴───────┴───────┴────────┘
+```
 
-Gate 0 tests **both** variants vs 4-bit MSE-only and vs fp16 at every
-seq length. The decision tree after Gate 0:
+- MSE at 4 bits = unchanged from today → short-ctx cosine and PPL are
+  guaranteed to match today's numbers bit-for-bit.
+- `m = 32` QJL sign bits per 64-dim chunk → JL variance
+  `(π/2·32)·‖residual‖² ≈ 0.049·‖residual‖²`.
+- Effective bit rate: 4.5 bits/dim — pays a 0.5-bit-per-dim "tax" in
+  information content, but 0 B extra HBM because the pad was already
+  16-byte-aligned and loaded on every tile.
 
-| Gate 0 outcome                                   | next step                                           |
-|--------------------------------------------------|-----------------------------------------------------|
-| Variant A > MSE-only at long seq                 | Gate 1 with Variant A; preserves short-ctx quality |
-| Variant B ≥ MSE-only at long seq AND ≥ at short seq | Gate 1 with Variant B; smaller footprint win       |
-| Both tied with MSE-only even at 32 k             | hypothesis rejected as vacuous                      |
-| Variant B regresses at short seq                 | Variant A only; pay the 0.5 bit overhead            |
+**Rejected alternative: Variant B (same-budget 3 + 1, paper's
+Algorithm 2 / `TurboQuantProd`).** Would replace 4-bit MSE with
+3-bit MSE + 1-bit QJL. Same bit budget, risk of short-ctx regression
+because 3-bit Lloyd-Max is coarser. User chose conservative A.
 
-Gate 1's `tests/test_qjl_tile_layout.py` needs a rectangular QJL
-extension (`m ≠ d`) because `turboquant/qjl.py` currently builds a
-square `S ∈ R^{d×d}`. That's a ~20 LOC change (parametrise `m`, rescale
-`dequant_scale = sqrt(pi/2)/m`) filed in the same branch as Gate 1
-work.
+## Gate 0 — updated for Variant A only
+
+The leading indicator now compares:
+
+1. **fp16 baseline** — attention scores from unquantized K/V.
+2. **MSE-only today** — 4-bit Lloyd-Max reconstruction.
+3. **Variant A** — 4-bit Lloyd-Max + rectangular QJL on residual with
+   `m = 32` per 64-dim chunk.
+
+This requires a rectangular QJL (`QJL(dim=64, m=32)`) the existing
+`turboquant/qjl.py` doesn't support. Gate 0 ships a local helper in
+the test file (not touching `qjl.py`) that rolls a `32×64` Gaussian
+projection with `dequant_scale = sqrt(π/2)/32`. The `qjl.py` change
+is deferred to Gate 1 where the production code will need it.
+
+Decision tree after Gate 0:
+
+| outcome                                            | next action                         |
+|----------------------------------------------------|-------------------------------------|
+| Variant A reduces bias ≥ 2× vs MSE-only at seq ≥ 8 k AND `out_cos(A) − out_cos(MSE) ≥ 0.001` | Gate 1 with Variant A |
+| Variant A tied with MSE-only even at 32 k          | hypothesis rejected as vacuous      |
+| Variant A regresses on softmax cosine anywhere     | hypothesis rejected — scheme broken |
 
 ## Status: pending
 
 Gate 0 scaffolding is in worktree branch `worktree-agent-a8d9f08d`
-(`tests/test_qjl_long_context_bias.py`). Needs:
+(`tests/test_qjl_long_context_bias.py`). That commit measures Variant B
+only (via `TurboQuantProd`). Needs:
 
-1. Extend the Gate 0 script with Variant A (manual 4-bit MSE + QJL on
-   residual) — currently it only measures Variant B via
-   `TurboQuantProd`.
+1. Extend the test with Variant A (4-bit MSE + rectangular QJL at
+   m=32) alongside MSE-only. Drop Variant B rows — decision is made.
 2. Run on Forge A100 at seq ∈ {1 k, 4 k, 16 k, 32 k}.
-3. Post-run: decision per the table above. If any pass, branch
-   Gate 1; else close "rejected" here.
+3. Post-run: decision per the table above. If pass → Gate 1; else close
+   "rejected" here.
 
 ## Paper references
 
