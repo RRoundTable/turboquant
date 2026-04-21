@@ -131,7 +131,72 @@ re-examine the paper's applicability to modern fp16 activations
 (post-RoPE, post-RMSNorm distributions that differ from the
 rotationally-symmetric synthetic data the paper proves bounds on).
 
-## Status: pending
+## Status: REJECTED — Alg 2 strictly worse than Alg 1 at 2-bit budget
 
-Dispatched to Forge. Reuses cached `/workspace/shared/hyp050_kv_real.pt`
-and `tq-models` disk.
+Forge job `d4f6bf2a-1f8a-49b6-a02b-146ee865743a` SUCCEEDED (~30 s).
+
+| method          | out_cos @ 1k | @ 4k   | @ 16k  | @ 32k  |
+|-----------------|-------------:|-------:|-------:|-------:|
+| fp16            | 1.000        | 1.000  | 1.000  | 1.000  |
+| MSE_4bit (prod) | 0.9989       | 0.9990 | 0.9993 | 0.9995 |
+| **MSE_2bit**    | **0.9827**   | **0.9770** | **0.9672** | **0.9642** |
+| Prod_2bit       | 0.8554       | 0.8731 | 0.8703 | 0.8689 |
+
+```
+out_cos(Prod_2bit) − out_cos(MSE_2bit) @ 4k  = −0.1039   (expected ≥ +0.02)
+out_cos(Prod_2bit) − out_cos(MSE_2bit) @ 16k = −0.0969
+out_cos(Prod_2bit) − out_cos(MSE_2bit) @ 32k = −0.0953
+|bias(MSE_2bit)| / |bias(Prod_2bit)| @ 16k   = 0.236     (expected ≥ 5)
+```
+
+QJL at 2 bits is **strictly harmful** on our data:
+
+1. **Delta is the wrong sign.** Prod loses 9.7 percentage points on
+   `out_cos` at long ctx, not gains 2.
+2. **Bias ratio is inverted.** Prod is ~4× *more* biased than MSE_2bit
+   (+0.085 vs −0.020). Theorem 2's "unbiased in expectation" property
+   holds asymptotically; on a finite 3-layer × 32 k sample it does not.
+3. **Absolute quality collapses.** Prod at 0.87 is well below the
+   secondary threshold (0.97).
+
+### Mechanism
+
+At 2-bit total budget, Alg 2 decomposes as `TurboQuantMSE(1) + QJL(1)`:
+- 1-bit MSE has huge reconstruction error (`abs_err = 0.58–0.63`, vs
+  `0.27` for 2-bit MSE). The "residual" QJL is asked to correct is
+  almost the full original vector.
+- QJL's variance `(π/2m)·‖res‖²` scales with the residual magnitude.
+  A huge residual makes the JL correction's variance dominate every
+  attention score.
+- The net effect: QJL adds more noise than it removes bias, and
+  softmax amplifies the noise nonlinearly.
+
+### Pattern across HYP-049 / 050 / 052
+
+| HYP | total b | Alg 1 (MSE) out_cos @ 16k | Alg 2 (MSE + QJL) out_cos @ 16k | delta |
+|-----|--------:|--------------------------:|--------------------------------:|------:|
+| 050 |       4 | 0.9993                    | 0.9965 (3 MSE + 1 QJL)           | −0.003 |
+| 052 |       2 | 0.9672                    | 0.8703 (1 MSE + 1 QJL)           | **−0.097** |
+
+**Alg 2 is worse than Alg 1 at every uniform bit budget we've tested on
+real Qwen3-8B.** The gap widens as budget shrinks. This empirically
+rejects pure TurboQuant Alg 2 as a practical quantizer for Qwen3-8B
+K/V cache.
+
+### Why the paper's numbers don't reproduce here
+
+The paper's LongBench/NIAH quality tables (§4.3) are **always**
+outlier-aware + Alg 2 on regular channels + higher-bit MSE on outliers.
+The paper never benchmarks pure uniform Alg 2 on LLM activations.
+Figure 2's "QJL wins at low b" plot is on **synthetic isotropic
+Gaussians**, not real post-RoPE/post-RMSNorm activations. Our three
+hypotheses establish that the synthetic → real gap is large enough
+to invert the MSE vs Prod ranking at the relevant budgets.
+
+### Implication for GOAL.md SC#3/SC#4
+
+Reproducing the paper's 4.5× compression at quality parity requires
+**outlier-aware mixed precision as the primary mechanism**, with
+Alg 2 only on the low-bit regular channels. Without outlier-aware,
+uniform sub-4-bit TurboQuant is not viable on Qwen3-8B K/V. This
+promotes SPEC.md §3 from "aspirational" to "critical path."
