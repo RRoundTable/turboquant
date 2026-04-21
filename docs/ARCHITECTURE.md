@@ -178,16 +178,88 @@ a graph-safe scalar fallback.
   `torch.utils.cpp_extension.load`; `csrc/` has no Python imports.
 - `docker/vllm_patches/` are overlays, not Python modules.
 
+## KV Cache Layout
+
+### Tensor shape
+
+vLLM allocates a single uint8 tensor per layer (see
+`TurboQuantBackend.get_kv_cache_shape`):
+
+```
+kv_cache : [2, num_blocks, block_size, num_kv_heads, bytes_per_head]  uint8
+           │  │           │           │              └─ 80 for hd=128
+           │  │           │           └─ KV heads per TP rank
+           │  │           └─ tokens per page (vLLM block_size, typ. 16)
+           │  └─ total pages in the pool
+           └─ 0 = K, 1 = V
+```
+
+`bytes_per_head` is computed per model:
+
+```
+dim_chunks     = next_pow2(head_dim) / 64
+raw            = dim_chunks·32  (quant)  +  dim_chunks·2  (fp16 norms)
+bytes_per_head = (raw + 15) & ~15             # 16-byte align for cp.async
+```
+
+For common head dims:
+
+| head_dim | dim_chunks | quant | norms | pad | **bytes_per_head** | fp16 ref | ratio |
+|---------:|-----------:|------:|------:|----:|-------------------:|---------:|------:|
+| 64       | 1          | 32    | 2     | 14  | **48**             | 128      | 2.67× |
+| 128      | 2          | 64    | 4     | 12  | **80**             | 256      | 3.20× |
+| 256      | 4          | 128   | 8     |  8  | **144**            | 512      | 3.56× |
+
+### Per-head byte map (hd=128, production case)
+
+```
+byte  0                                                          79
+      ┌──────────────────┬──────────────────┬───────┬──────────────┐
+      │  chunk-0 quant   │  chunk-1 quant   │ norms │   padding    │
+      │  32 B (64 dims)  │  32 B (64 dims)  │  4 B  │    12 B      │
+      │  nibble-packed   │  nibble-packed   │ 2×fp16│    zero      │
+      └──────────────────┴──────────────────┴───────┴──────────────┘
+       └──── qbytes = 64 ─────┘           └── nbytes=4 ─┘
+                                                        └ 16-B align ┘
+```
+
+Each nibble indexes a 16-level Lloyd-Max codebook. One fp16 norm per 64-dim
+chunk restores L2 magnitude at dequant time. Norms live **inline** with the
+quant bytes in this single tensor; `paged_kv_turbo_t` is constructed with
+`entry_byte_stride = 80` and a matching `norm_entry_byte_stride` so the
+kernel walks one contiguous stride per token per head.
+
+### Per-page indexing
+
+```
+slot(page, token, head) = kv_cache[kv_idx, page, token, head, :]      # 80 bytes
+                          │
+                          ├─ bytes[ 0 : 64]  → 4-bit codebook indices (K or V)
+                          ├─ bytes[64 : 68]  → 2 fp16 L2 norms
+                          └─ bytes[68 : 80]  → padding
+
+kv_idx ∈ {0, 1}  # K vs V
+page   = block_table[request][logical_block]
+token  = slot_within_page  # 0 .. block_size-1
+```
+
+### Write / read seams
+
+```
+Prefill write  (torch.ops.turboquant_write.quantize_write_kv_cache):
+    K_fp16 ─┐                     ┌→ kv_cache[0, page, tok, h, :]
+    V_fp16 ─┤  FWHT → L2-norm →   ┤
+            │  codebook quant →   ├→ kv_cache[1, page, tok, h, :]
+    slot ───┘  nibble pack        │
+                                  └ 80-B tile (quant | norms | pad)
+
+Decode read   (torch.ops.turboquant_v5.decode_v5_from_cache_paged_splitkv_ws):
+    kv_cache[k, page, tok, h, :] ─→ cp.async → smem staging
+                                 ─→ warp-shuffle LUT dequant → fp16 smem
+                                 ─→ wmma QK / softmax / V accumulate
+```
+
 ## Quantization Format
-
-Per token per head (hd=128, 2 dim-chunks of 64):
-
-| Field          | Bytes | Content                                |
-|----------------|------:|----------------------------------------|
-| Quantized data | 64    | 128 dims × 4 bits, nibble-packed       |
-| L2 norms       | 4     | 2 × fp16 (one per 64-dim chunk)        |
-| Padding        | 12    | Zero (16-byte align for `cp.async`)    |
-| **Total**      | **80**| vs fp16 256B → **3.2× compression**    |
 
 Codebook: Lloyd-Max optimal for N(0,1), 16 levels (4-bit), kept in a
 register-resident LUT broadcast via `__shfl_sync` (HYP-032) — faster than
