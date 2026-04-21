@@ -30,6 +30,20 @@ within noise: duration 27.0 s, TTFT 813 ms, TPOT 60.5 ms, 303.6 tok/s.
 
 So the drift is **real and image-specific**, not a Forge-load effect.
 
+## UPDATE (resolved): drift was node contention, not image regression
+
+See [`../dbg_optA/REPORT.md`](../dbg_optA/REPORT.md) for the follow-up
+experiment: 4 parallel reps of Option A vs old image at s2048 × c32.
+Under clean node placement, Option A hits **307 tok/s** — identical to
+the old image's 301–307 range. The earlier "35–60 % drift" came from
+the new-image reps all landing on co-tenanted Forge nodes (observed
+free GPU memory 6.6–23 GB on the failed sibling jobs on those same
+nodes).
+
+The numbers in the tables below are a **worst-case under GPU
+co-tenancy**, not steady-state Option A performance. Steady-state
+matches BENCHMARKS.md.
+
 ## Why, and what to do
 
 Package version check between the two images (both on A100 SM80):

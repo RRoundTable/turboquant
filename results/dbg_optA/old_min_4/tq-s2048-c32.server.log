@@ -1,0 +1,93 @@
+(APIServer pid=55) INFO 04-21 05:02:26 [utils.py:299] 
+(APIServer pid=55) INFO 04-21 05:02:26 [utils.py:299]        █     █     █▄   ▄█
+(APIServer pid=55) INFO 04-21 05:02:26 [utils.py:299]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.19.0
+(APIServer pid=55) INFO 04-21 05:02:26 [utils.py:299]   █▄█▀ █     █     █     █  model   Qwen/Qwen3-8B
+(APIServer pid=55) INFO 04-21 05:02:26 [utils.py:299]    ▀▀  ▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀
+(APIServer pid=55) INFO 04-21 05:02:26 [utils.py:299] 
+(APIServer pid=55) INFO 04-21 05:02:26 [utils.py:233] non-default args: {'model_tag': 'Qwen/Qwen3-8B', 'model': 'Qwen/Qwen3-8B', 'dtype': 'float16', 'max_model_len': 2192, 'enforce_eager': True, 'attention_backend': 'CUSTOM', 'gpu_memory_utilization': 0.85, 'kv_cache_dtype': 'fp8', 'disable_log_stats': True}
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] Error in inspecting model architecture 'Qwen3ForCausalLM'
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] Traceback (most recent call last):
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py", line 1306, in _run_in_subprocess
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     returned.check_returncode()
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/lib/python3.10/subprocess.py", line 457, in check_returncode
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     raise CalledProcessError(self.returncode, self.args, self.stdout,
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] subprocess.CalledProcessError: Command '['/usr/bin/python3', '-m', 'vllm.model_executor.models.registry']' returned non-zero exit status 1.
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] 
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] The above exception was the direct cause of the following exception:
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] 
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] Traceback (most recent call last):
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py", line 880, in _try_inspect_model_cls
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     return model.inspect_model_cls()
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/logging_utils/log_time.py", line 21, in _wrapper
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     result = func(*args, **kwargs)
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py", line 841, in inspect_model_cls
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     mi = _run_in_subprocess(
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py", line 1309, in _run_in_subprocess
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     raise RuntimeError(
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] RuntimeError: Error raised in subprocess:
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] /usr/lib/python3.10/runpy.py:126: RuntimeWarning: 'vllm.model_executor.models.registry' found in sys.modules after import of package 'vllm.model_executor.models', but prior to execution of 'vllm.model_executor.models.registry'; this may result in unpredictable behaviour
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   warn(RuntimeWarning(msg))
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] Traceback (most recent call last):
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     return _run_code(code, main_globals, None,
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/lib/python3.10/runpy.py", line 86, in _run_code
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     exec(code, run_globals)
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py", line 1332, in <module>
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     _run()
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py", line 1325, in _run
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     result = fn()
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py", line 842, in <lambda>
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     lambda: _ModelInfo.from_model_cls(self.load_model_cls())
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/registry.py", line 855, in load_model_cls
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     mod = importlib.import_module(self.module_name)
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/lib/python3.10/importlib/__init__.py", line 126, in import_module
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     return _bootstrap._gcd_import(name[level:], package, level)
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "<frozen importlib._bootstrap>", line 1050, in _gcd_import
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "<frozen importlib._bootstrap>", line 1027, in _find_and_load
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "<frozen importlib._bootstrap>", line 1006, in _find_and_load_unlocked
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "<frozen importlib._bootstrap>", line 688, in _load_unlocked
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "<frozen importlib._bootstrap_external>", line 883, in exec_module
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/models/qwen3.py", line 37, in <module>
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     from vllm.model_executor.layers.attention.encoder_only_attention import (
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/layers/attention/__init__.py", line 4, in <module>
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     from vllm.model_executor.layers.attention.attention import Attention
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/layers/attention/attention.py", line 24, in <module>
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     from vllm.model_executor.layers.quantization.kv_cache import BaseKVCacheMethod
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]   File "/usr/local/lib/python3.10/dist-packages/vllm/model_executor/layers/quantization/kv_cache.py", line 12, in <module>
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882]     from vllm.v1.attention.backend import is_quantized_kv_cache
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] ImportError: cannot import name 'is_quantized_kv_cache' from 'vllm.v1.attention.backend' (/usr/local/lib/python3.10/dist-packages/vllm/v1/attention/backend.py)
+(APIServer pid=55) ERROR 04-21 05:02:34 [registry.py:882] 
+(APIServer pid=55) Traceback (most recent call last):
+(APIServer pid=55)   File "/usr/local/bin/vllm", line 6, in <module>
+(APIServer pid=55)     sys.exit(main())
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/vllm/entrypoints/cli/main.py", line 75, in main
+(APIServer pid=55)     args.dispatch_function(args)
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/vllm/entrypoints/cli/serve.py", line 122, in cmd
+(APIServer pid=55)     uvloop.run(run_server(args))
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/uvloop/__init__.py", line 69, in run
+(APIServer pid=55)     return loop.run_until_complete(wrapper())
+(APIServer pid=55)   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=55)     return await main
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/vllm/entrypoints/openai/api_server.py", line 670, in run_server
+(APIServer pid=55)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/vllm/entrypoints/openai/api_server.py", line 684, in run_server_worker
+(APIServer pid=55)     async with build_async_engine_client(
+(APIServer pid=55)   File "/usr/lib/python3.10/contextlib.py", line 199, in __aenter__
+(APIServer pid=55)     return await anext(self.gen)
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/vllm/entrypoints/openai/api_server.py", line 100, in build_async_engine_client
+(APIServer pid=55)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=55)   File "/usr/lib/python3.10/contextlib.py", line 199, in __aenter__
+(APIServer pid=55)     return await anext(self.gen)
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/vllm/entrypoints/openai/api_server.py", line 124, in build_async_engine_client_from_engine_args
+(APIServer pid=55)     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/vllm/engine/arg_utils.py", line 1549, in create_engine_config
+(APIServer pid=55)     model_config = self.create_model_config()
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/vllm/engine/arg_utils.py", line 1398, in create_model_config
+(APIServer pid=55)     return ModelConfig(
+(APIServer pid=55)   File "/usr/local/lib/python3.10/dist-packages/pydantic/_internal/_dataclasses.py", line 121, in __init__
+(APIServer pid=55)     s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)
+(APIServer pid=55) pydantic_core._pydantic_core.ValidationError: 1 validation error for ModelConfig
+(APIServer pid=55)   Value error, Model architectures ['Qwen3ForCausalLM'] failed to be inspected. Please check the logs for more details. [type=value_error, input_value=ArgsKwargs((), {'model': ...nderer_num_workers': 1}), input_type=ArgsKwargs]
+(APIServer pid=55)     For further information visit https://errors.pydantic.dev/2.13/v/value_error
