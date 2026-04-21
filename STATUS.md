@@ -3,19 +3,28 @@
 Production deployment of TurboQuant as a vLLM attention backend, validated
 end-to-end on A100-40GB.
 
-## Deployment
+## Build & Run
 
-- **ECR image**: `847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:16c6e93`
-  (also tagged `latest`, digest `sha256:fe3a7e28d35590f65fb8729ca1a012e34acb054bde24b7c64e7032173315eebd`,
-  9.37 GB compressed)
-- **Bundles**: vLLM v0.19 + `docker/vllm_patches/` (carries
-  [vllm-project/vllm#39868](https://github.com/vllm-project/vllm/pull/39868))
-  + turboquant package (HYP-044 + HYP-045 patches applied).
-- **Pull**: `docker pull 847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:16c6e93`
-- **Run**: `docker run --gpus all -p 8000:8000 vllm-turboquant:16c6e93 \
-   --model Qwen/Qwen3-8B --dtype float16 --enforce-eager \
-   --attention-backend CUSTOM --kv-cache-dtype fp8 \
-   --gpu-memory-utilization 0.85`
+Build the image from repo:
+
+```bash
+git clone https://github.com/RRoundTable/turboquant.git
+cd turboquant
+docker build -t vllm-turboquant .
+```
+
+Bundles vLLM 0.19.0 + `docker/vllm_patches/` (carries
+[vllm-project/vllm#39868](https://github.com/vllm-project/vllm/pull/39868)) +
+the turboquant package (HYP-044 + HYP-045 patches applied). Run:
+
+```bash
+docker run --gpus all -p 8000:8000 vllm-turboquant \
+  --model Qwen/Qwen3-8B --gpu-memory-utilization 0.85
+```
+
+To apply to a different vLLM image, use `Dockerfile.overlay` with
+`--build-arg BASE_IMAGE=your-vllm-image:tag` (requires matching
+`docker/vllm_patches/` snapshot for that vLLM version).
 
 ## Hypothesis-by-hypothesis progression (this engagement)
 

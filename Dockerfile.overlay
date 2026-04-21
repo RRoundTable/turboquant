@@ -1,0 +1,30 @@
+# Apply TurboQuant to an existing vLLM image.
+#
+# Build:
+#   docker build -f Dockerfile.overlay \
+#     --build-arg BASE_IMAGE=your-vllm-image:tag \
+#     -t my-vllm-tq .
+#
+# Requirements: the base image must have vLLM 0.19.0 installed (the
+# patches in docker/vllm_patches/ target that version). For other vLLM
+# versions, re-snapshot the four files into docker/vllm_patches/ first.
+
+ARG BASE_IMAGE=vllm/vllm-openai:v0.19.0
+
+FROM ${BASE_IMAGE}
+
+COPY --chown=root:root . /opt/turboquant
+WORKDIR /opt/turboquant
+
+# install.sh patches vLLM site-packages and pip-installs the plugin.
+RUN ./install.sh
+
+ENV TURBOQUANT_CSRC=/opt/turboquant/csrc
+
+EXPOSE 8000
+# Defaults show the flags that activate TurboQuant. Override with your
+# own entrypoint / CMD if your base image already sets one.
+ENTRYPOINT ["python", "-m", "vllm.entrypoints.openai.api_server"]
+CMD ["--model", "Qwen/Qwen3-8B", "--dtype", "float16", "--enforce-eager", \
+     "--attention-backend", "CUSTOM", "--kv-cache-dtype", "fp8", \
+     "--gpu-memory-utilization", "0.85"]

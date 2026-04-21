@@ -151,21 +151,24 @@ Each has an `aggregate.py` you can re-run locally to regenerate the tables.
 
 ## Reproducing
 
-1. Pull the deployed image:
+1. Build the image locally:
 
    ```bash
-   docker pull 847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:latest
+   git clone https://github.com/RRoundTable/turboquant.git
+   cd turboquant
+   docker build -t vllm-turboquant .
    ```
 
-2. Start the server (for `--attention-backend CUSTOM` runs):
+2. Start the server:
 
    ```bash
-   docker run --gpus all -p 8000:8000 \
-     vllm-turboquant:latest \
-     --model Qwen/Qwen3-8B --dtype float16 --enforce-eager \
-     --attention-backend CUSTOM --kv-cache-dtype fp8 \
+   docker run --gpus all -p 8000:8000 vllm-turboquant \
+     --model Qwen/Qwen3-8B \
      --gpu-memory-utilization 0.85 --max-model-len 32896
    ```
+
+   (Entrypoint defaults to `--attention-backend CUSTOM --kv-cache-dtype fp8
+   --enforce-eager` — see the bottom of `Dockerfile`.)
 
 3. Drive it with `vllm bench serve` from any machine with network access:
 

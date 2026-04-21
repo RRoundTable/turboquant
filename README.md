@@ -44,72 +44,95 @@ Full tables + methodology + raw JSON: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Install
 
-TurboQuant requires both a Python package (the plugin + CUDA kernels) **and**
-four small vLLM source patches that wire up the per-backend KV-cache page-size
-hook from [vllm-project/vllm#39868](https://github.com/vllm-project/vllm/pull/39868).
-Until that PR merges upstream, the patches must be applied locally; once it
-merges, plain `pip install turboquant` will be enough.
+TurboQuant needs both the Python package (plugin + CUDA kernels) **and**
+four small vLLM source patches that wire up the per-backend KV-cache
+page-size hook from
+[vllm-project/vllm#39868](https://github.com/vllm-project/vllm/pull/39868).
+Until that PR merges upstream, the patches must be applied locally; once
+it merges, plain `pip install turboquant` will be enough.
 
-### Option 1 — turn-key Docker image (recommended)
+The patches target vLLM **0.19.0**. On any other vLLM version they may
+not apply cleanly — pin accordingly, or re-snapshot the four files from
+`vllm.model_executor.layers.attention.attention`,
+`vllm.v1.attention.backend`, `vllm.v1.kv_cache_interface`,
+`vllm.v1.worker.gpu_model_runner` into `docker/vllm_patches/`.
 
-```bash
-docker pull 847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:latest
-
-docker run --gpus all -p 8000:8000 \
-  847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:latest \
-  --model Qwen/Qwen3-8B --dtype float16 --enforce-eager \
-  --attention-backend CUSTOM --kv-cache-dtype fp8 \
-  --gpu-memory-utilization 0.85
-```
-
-Bundles vLLM v0.19, the patches, and the plugin. Nothing to apply.
-
-### Option 2 — plugin overlay onto your own vLLM image
-
-For users who already maintain their own vLLM image. Pull the 504 KB plugin
-artifact and run `install.sh` against the existing vLLM install:
-
-```bash
-# Pull the plugin artifact (just wheel + patches + install.sh, no vllm)
-docker create --name tq 847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:plugin-latest
-docker cp tq:/opt/tq-plugin ./tq-plugin && docker rm tq
-
-# Inside your container (or wherever vLLM is installed):
-TQ_PATCH_DIR=./tq-plugin/vllm_patches ./tq-plugin/install.sh
-```
-
-Or as a multi-stage Dockerfile:
-
-```dockerfile
-FROM 847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:plugin-latest AS tq
-FROM your-vllm-image
-COPY --from=tq /opt/tq-plugin /opt/tq-plugin
-RUN TQ_PATCH_DIR=/opt/tq-plugin/vllm_patches /opt/tq-plugin/install.sh
-```
-
-### Option 3 — install from source
+### Option A — build the Docker image locally
 
 ```bash
 git clone https://github.com/RRoundTable/turboquant.git
 cd turboquant
-./install.sh    # applies patches from docker/vllm_patches + pip-installs the package
+docker build -t vllm-turboquant .
+
+docker run --gpus all -p 8000:8000 vllm-turboquant \
+  --model Qwen/Qwen3-8B --max-model-len 32896 \
+  --gpu-memory-utilization 0.85
 ```
 
-`install.sh` patches your vLLM site-packages (run-once) and installs the
-turboquant package, which auto-registers via vLLM's `vllm.general_plugins`
-entry point. To run without applying the patches, see "Without patches" below.
+The image is opinionated:
+- `FROM nvidia/cuda:12.6.3-devel-ubuntu22.04` (override with
+  `--build-arg CUDA_IMAGE=...`)
+- `pip install vllm==0.19.0` (override with `--build-arg VLLM_VERSION=...`)
+- Applies the four patches from `docker/vllm_patches/`
+- Installs this package; entrypoint is `vllm.entrypoints.openai.api_server`
+  with `--attention-backend CUSTOM --kv-cache-dtype fp8 --enforce-eager`
+  as defaults (see `Dockerfile` bottom).
+
+Kernels JIT-compile on the first inference (~30s warmup); subsequent
+requests are instant.
+
+### Option B — overlay onto your own vLLM image
+
+If you already maintain a vLLM image and want TurboQuant on top, bind the
+repo into a small multi-stage build:
+
+```dockerfile
+# Your existing vLLM image (must be vLLM 0.19.0 for the patches to apply
+# cleanly; pin differently and re-snapshot docker/vllm_patches/ otherwise).
+FROM your-vllm-image
+
+# Copy the plugin source + patches from a local clone of this repo
+COPY --chown=root:root . /opt/turboquant
+WORKDIR /opt/turboquant
+
+# Apply patches to your vLLM site-packages, install the plugin
+RUN ./install.sh
+```
+
+Then:
+
+```bash
+git clone https://github.com/RRoundTable/turboquant.git
+cd turboquant
+docker build -f Dockerfile.overlay -t my-vllm-tq .
+```
+
+`install.sh` autodetects layout, applies the four source patches to
+whatever `vllm` is on `python -c "import vllm; print(vllm.__file__)"`,
+and pip-installs the plugin. Respects `TQ_PATCH_DIR` if you're shipping
+patches separately.
+
+### Option C — install into an existing Python environment
+
+```bash
+git clone https://github.com/RRoundTable/turboquant.git
+cd turboquant
+./install.sh
+```
+
+Same patch + pip install flow as Option B, just run directly on the host
+instead of inside a container.
 
 ### Without patches (for evaluation only)
 
-`pip install turboquant` alone *registers* the backend (the
-`vllm.general_plugins` entry-point machinery is stock), but the page-size
-override hook isn't wired in stock vLLM. The plugin will run with effective
-**~2× compression** instead of the published 3.2×, and may hit a
-layout-mismatch depending on vLLM version. The patches are required for the
-full 3.2× story until PR #39868 lands.
+`pip install turboquant` alone *registers* the backend via stock
+`vllm.general_plugins`, but without PR #39868 the page-size override hook
+isn't wired and effective compression caps at ~2× instead of 3.2×. Layout
+may also mismatch on some vLLM versions. For anything beyond a quick
+sanity check, apply the patches.
 
-**Requirements:** Python >= 3.10, PyTorch >= 2.1, CUDA GPU (A100 tested),
-vLLM v0.19, FlashInfer.
+**Requirements:** Python ≥ 3.10, PyTorch ≥ 2.1, CUDA GPU (A100 tested),
+vLLM 0.19.0, FlashInfer.
 
 ## Usage
 
