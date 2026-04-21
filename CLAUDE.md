@@ -100,6 +100,50 @@ Do NOT embed large (>~128 KB) base64 blobs in `--entrypoint-file` — the
 entire entrypoint is passed as a single argv and will hit
 `exec: argument list too long` (ARG_MAX).
 
+### Model cache on persistent disk (HuggingFace models)
+
+Do NOT re-download large HuggingFace models (Qwen3-8B ≈ 16 GB) into
+`/workspace/shared/hf_cache` or into the container's ephemeral disk on
+every job. Use a **dedicated persistent disk** so the cache survives
+job exit and shared-NFS cleanup cycles.
+
+One-time setup:
+
+```bash
+# Size: 100 GiB holds Qwen3-1.7B + 8B + a couple of comparable models.
+# Bump if you start pulling Qwen3-32B or similar.
+forge disk create --name tq-models --size 100
+```
+
+Standard job pattern (reuses the cache across every run):
+
+```bash
+forge job submit --name tq-hyp-XXX --gpu 1 \
+    --disk-mount tq-models:/mnt/models \
+    --shared-nfs \
+    --entrypoint-file /tmp/entry.sh
+```
+
+Inside the entrypoint:
+
+```bash
+export HF_HOME=/mnt/models/hf_cache
+export TRANSFORMERS_CACHE=$HF_HOME/transformers
+export HF_DATASETS_CACHE=$HF_HOME/datasets
+mkdir -p "$HF_HOME"
+# First job downloads Qwen3-8B; every subsequent job reads from disk.
+python -c "from transformers import AutoModel; AutoModel.from_pretrained('Qwen/Qwen3-8B')"
+```
+
+Rules:
+
+- `HF_HOME` lives on the disk mount, not `/workspace/shared/` or `/tmp`.
+- If a job fails mid-download, `HF_HOME` may have partial files —
+  `rm -rf $HF_HOME/hub/<broken-model>` before retrying.
+- Disk mounts are team-scoped — don't store credentials or one-off
+  experiment artifacts here; those go on `--shared-nfs` or a job-local
+  path. `tq-models` is **read-heavy, write-rare**.
+
 ### Key rules
 
 - Prefer `forge job submit` over `forge notebook create` for any non-interactive work. Notebooks burn quota while idle; jobs record the entrypoint and stop on their own. Only use notebooks when you genuinely need an SSH session or a compile-debug loop.
