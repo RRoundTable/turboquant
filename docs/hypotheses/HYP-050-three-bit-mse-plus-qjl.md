@@ -149,6 +149,66 @@ close-out) and HYP-050 (Gate 0):
 - **SPEC.md §2 "Unbiased Attention Estimation":** HYP-050 is the
   direct path to satisfying this spec behavior in production.
 
-## Status: pending
+## Status: REJECTED
 
-Dispatched to the same Forge job as HYP-049's real-data rerun.
+Forge job `2a208dfe` SUCCEEDED, real Qwen3-8B K/V at 3 layers × 32 k
+tokens. Variant B (`TurboQuantProd(bit_width=4)` = 3-bit MSE + 1-bit
+QJL) regressed `out_cos` at **every** seq vs 4-bit pure MSE:
+
+| seq   | MSE_4bit_only out_cos | Variant B out_cos | delta    |
+|------:|----------------------:|------------------:|---------:|
+|  1024 | 0.998897              | 0.984025          | **−1.49 %** |
+|  4096 | 0.999043              | 0.995680          | −0.34 %  |
+| 16384 | 0.999342              | 0.996476          | −0.29 %  |
+| 32768 | 0.999473              | 0.994841          | −0.46 %  |
+
+Both pass conditions failed: short-ctx regresses by 1.5 pt (well over
+the 0.5 pt allowance), and long-ctx does not beat 4-bit MSE by the
+required 0.005.
+
+### Why it failed — structural, not tunable
+
+The theory said: 3-bit residual is large enough that QJL's noise floor
+is *relatively* small vs the residual bias. That's mathematically true.
+But the binding quantity isn't QJL's noise — it's the **codebook
+distortion of 3-bit Lloyd-Max itself** on real activations.
+
+The 4-bit Lloyd-Max grid has 16 levels and is already matched to
+post-FWHT unit-norm distributions; dropping to 3-bit (8 levels) coarsens
+every quantized value, and the scalar norm per chunk can't recover that
+resolution. QJL then gets to debias a reconstruction that's already
+lost more information than the debias can replace.
+
+This generalises: **QJL doesn't rescue a coarser codebook; it only
+corrects inner-product bias of an already-tight codebook.** At 4-bit
+total budget, the tightest codebook is 4-bit pure MSE.
+
+### Implication for GOAL.md SC#3 (5× compression)
+
+5× compression needs < 4 bits/dim. The choices are:
+
+1. **Pure 3-bit MSE** (no QJL) — 4.27× compression. If this holds
+   quality on real data, ship it. HYP-052 to measure.
+2. **Outlier-aware 2+2 or 3+3 mixed-precision** — SPEC.md §3 covers
+   this framework. Higher-variance dims get 4 bits, the rest get 2-3.
+3. **3-bit TOTAL with QJL** (2-bit MSE + 1-bit QJL) — QJL's
+   theoretical regime, but a 2-bit codebook is very coarse. Open
+   question whether QJL recovers it or not; probably not given
+   HYP-050's result.
+
+Path 1 is the most likely to pay and should be tested first.
+
+## Lessons carried forward
+
+1. **4-bit is at quality floor on real activations.** `out_cos ≥ 0.998`
+   at every seq, bias averages out with T. Any optimization at 4-bit
+   cannot improve quality — only memory or latency.
+2. **QJL's domain is bit-starved regimes.** Adding it at 4-bit is
+   net-negative regardless of layout (A or B). The paper's Algorithm 2
+   is not universally better than pure MSE at the same bit budget.
+3. **Synthetic-Gaussian + FWHT is a fair Gate 0 data model for
+   attention-quality questions.** The synthetic result predicted the
+   real-data result (both HYP-049 Variant A and HYP-050 Variant B
+   failed in the same direction). We can save a Forge job on future
+   leading-indicator tests by trusting synthetic rejections — saves
+   ~10 min + model download per hypothesis.

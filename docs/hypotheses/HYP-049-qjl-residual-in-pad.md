@@ -206,7 +206,22 @@ Decision tree after Gate 0:
 | Variant A tied with MSE-only even at 32 k          | hypothesis rejected as vacuous      |
 | Variant A regresses on softmax cosine anywhere     | hypothesis rejected — scheme broken |
 
-## Status: rejected on synthetic, real-data rerun in flight
+## Status: REJECTED (synthetic + real-data both)
+
+Real-data rerun confirmed the synthetic verdict. Forge job `2a208dfe`
+SUCCEEDED, 3m 41s, Qwen3-8B K/V captured at layers {8, 16, 24} on a
+32 k-token prompt:
+
+| seq   | MSE_4bit_only out_cos | Variant A out_cos | delta    |
+|------:|----------------------:|------------------:|---------:|
+|  1024 | 0.998897              | 0.994486          | **−0.44 %** |
+|  4096 | 0.999043              | 0.988957          | −1.01 %  |
+| 16384 | 0.999342              | 0.976342          | −2.30 %  |
+| 32768 | 0.999473              | 0.974135          | −2.53 %  |
+
+Variant A regresses everywhere on real data too; `softmax_cos` drops
+from 0.99 to 0.92 at long seq. JL noise > residual bias at 4-bit MSE
+remains the binding constraint regardless of distribution.
 
 ### Gate 0 result on synthetic Gaussian (worktree commit `43a558d`, Forge job `3472a04f`)
 
