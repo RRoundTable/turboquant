@@ -155,10 +155,51 @@ status and no merge:
   tile size (96 B with m=64) but that is a separate hypothesis, not
   this one.
 
+## Variant taxonomy (clarification surfaced at Gate 0 scaffolding)
+
+Two distinct schemes collapse under "MSE + QJL" and the hypothesis must
+be explicit about which one we're testing:
+
+- **Variant A — QJL-in-pad (originally proposed here).**
+  Keeps today's 4-bit Lloyd-Max MSE unchanged. Adds 32 QJL sign bits
+  per 64-dim chunk into the 12 B cp.async pad, plus one fp16 residual
+  norm per chunk. Effective bit rate: 4.5 bits/dim (64 MSE + 64 signs /
+  128 dims). Tile size unchanged at 80 B. Short-ctx quality guaranteed
+  equal to today because the MSE path is bit-for-bit the current one.
+- **Variant B — same-budget 3+1 (matches `TurboQuantProd` in
+  `quantizer.py:113`).**
+  Replaces today's 4-bit MSE with 3-bit MSE + 1-bit QJL — the paper's
+  Algorithm 2. Same 4-bit budget, so some of the current 64 B/head
+  becomes QJL signs. Short-ctx quality could regress (3-bit MSE is
+  coarser than 4-bit).
+
+Gate 0 tests **both** variants vs 4-bit MSE-only and vs fp16 at every
+seq length. The decision tree after Gate 0:
+
+| Gate 0 outcome                                   | next step                                           |
+|--------------------------------------------------|-----------------------------------------------------|
+| Variant A > MSE-only at long seq                 | Gate 1 with Variant A; preserves short-ctx quality |
+| Variant B ≥ MSE-only at long seq AND ≥ at short seq | Gate 1 with Variant B; smaller footprint win       |
+| Both tied with MSE-only even at 32 k             | hypothesis rejected as vacuous                      |
+| Variant B regresses at short seq                 | Variant A only; pay the 0.5 bit overhead            |
+
+Gate 1's `tests/test_qjl_tile_layout.py` needs a rectangular QJL
+extension (`m ≠ d`) because `turboquant/qjl.py` currently builds a
+square `S ∈ R^{d×d}`. That's a ~20 LOC change (parametrise `m`, rescale
+`dequant_scale = sqrt(pi/2)/m`) filed in the same branch as Gate 1
+work.
+
 ## Status: pending
 
-Gate 0 is the next action. The leading-indicator script lives in the
-prototype worktree.
+Gate 0 scaffolding is in worktree branch `worktree-agent-a8d9f08d`
+(`tests/test_qjl_long_context_bias.py`). Needs:
+
+1. Extend the Gate 0 script with Variant A (manual 4-bit MSE + QJL on
+   residual) — currently it only measures Variant B via
+   `TurboQuantProd`.
+2. Run on Forge A100 at seq ∈ {1 k, 4 k, 16 k, 32 k}.
+3. Post-run: decision per the table above. If any pass, branch
+   Gate 1; else close "rejected" here.
 
 ## Paper references
 
