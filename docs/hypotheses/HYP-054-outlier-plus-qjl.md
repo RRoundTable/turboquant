@@ -119,6 +119,74 @@ the HYP-053 staging path. Expected ~1 min.
 - **SPEC §2** (Unbiased Attention Estimation): if HYP-054 passes, this
   spec behavior is satisfied in production for the first time.
 
-## Status: pending
+## Status: REJECTED — QJL retired from our stack (4 consecutive rejections)
 
-Dispatched to Forge.
+Forge job `d54ea205` SUCCEEDED, 20 s wall, real Qwen3-8B K/V, 3 layers.
+
+### Result table (full five methods)
+
+| seq   | fp16  | MSE 4-b | MSE 2-b | HYP-053 (outlier MSE) | **HYP-054 (outlier + QJL regs)** |
+|------:|:-----:|--------:|--------:|----------------------:|---------------------------------:|
+|  1 k  | 1.000 | 0.9989  | 0.9827  | 0.9922                | **0.9399**                       |
+|  4 k  | 1.000 | 0.9990  | 0.9770  | 0.9925                | **0.9444**                       |
+| 16 k  | 1.000 | 0.9993  | 0.9672  | 0.9914                | **0.9513**                       |
+| 32 k  | 1.000 | 0.9995  | 0.9642  | 0.9908                | **0.9516**                       |
+
+**All three criteria fail:**
+
+```
+primary   (Δ vs HYP-053 @ 16 k):  -0.040   (threshold >= +0.003)
+primary   (Δ vs HYP-053 @ 32 k):  -0.039
+secondary (absolute @ 16 k):       0.951   (threshold >= 0.997)
+short-ctx (Δ vs HYP-053 @ 4 k):   -0.048   (threshold >= -0.002)
+
+VERDICT: FAIL-PRIMARY
+```
+
+### Why the "small residual" intuition was wrong
+
+`TurboQuantProd(bit_width=2)` doesn't *add* QJL on top of a good MSE
+quantizer — it *splits* the 2-bit regular budget into
+`1-bit MSE + 1-bit QJL`. So at the regular channels:
+
+- HYP-053: 2-bit MSE → residual ≈ 0.27 · ‖x_reg‖ (tolerable)
+- HYP-054: **1-bit** MSE → residual ≈ 0.77 · ‖x_reg‖ (huge)
+
+Outlier-awareness shrank the *magnitude* of the regular channels'
+signal vs the full vector, but the *relative* residual-to-signal ratio
+after 1-bit MSE is unchanged. QJL inherited the same
+variance-dominates-signal problem as HYP-052 (uniform 2-bit).
+
+The binding quantity is the MSE bit-width. QJL can't rescue a
+coarser codebook regardless of which channels it's applied to.
+
+### QJL empirical record (retired)
+
+| hyp | config                                              | verdict                             |
+|-----|-----------------------------------------------------|-------------------------------------|
+| 049 | 4-bit MSE + QJL-in-pad (extra 0.5 bit/dim)          | rejected                            |
+| 050 | `TurboQuantProd(4)` = 3-b MSE + 1-b QJL uniform     | rejected                            |
+| 052 | `TurboQuantProd(2)` = 1-b MSE + 1-b QJL uniform     | rejected (4× variance inversion)    |
+| diag | 8 QJL seed sweep                                    | **no bug** — unbiasedness confirmed |
+| 054 | outlier-aware + `TurboQuantProd(2)` on regulars     | rejected (Δ = −0.04)                |
+
+**QJL is retired from this project.** On real Qwen3-8B K/V cache, at
+every MSE-bit-split tested, QJL's JL variance
+`(π/2m)·‖q‖²·‖residual‖²` exceeds the inner-product bias it's correcting.
+The paper's Theorem 2 (unbiasedness) holds theoretically (our seed
+diagnostic verified `|bias|<0.01` across 8 S draws), but unbiasedness
+is purchased at a variance cost that softmax amplifies nonlinearly
+and attention quality doesn't tolerate.
+
+### Where this leaves the sub-4-bit effort
+
+| option | desc                                                    | trade              |
+|--------|---------------------------------------------------------|--------------------|
+| **A**  | Ship HYP-053 (outlier MSE-only, 2.5-bit avg) as tier-2 | 4.5× compression, 0.009 out_cos gap at 32 k |
+| **B**  | HYP-055: 32 × 4-bit + 96 × 3-bit = **3.25-bit avg**    | 4.3× compression, predicted near-parity (paper's 3.5-bit point) |
+| **C**  | Close sub-4-bit effort                                  | stay at 3.2× today |
+
+Recommended: **A + B in parallel**. A gives us the 4.5× product
+option; B likely reaches fp16 parity at 4.3×. They're
+non-overlapping points on the compression-quality curve and users can
+pick per workload.
