@@ -1,17 +1,46 @@
 # TurboQuant
 
-Near-optimal KV cache quantization for LLM inference. **3.76x memory compression** with negligible quality loss.
+A CUDA-specialized vLLM attention backend for long-context serving. Hadamard
+rotation + 4-bit Lloyd-Max KV-cache quantization with a hand-written CUDA
+decode kernel that fuses dequant into attention.
 
-Based on: Zandieh et al., [TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate](https://arxiv.org/abs/2504.19874), 2025.
+Paper: Zandieh et al., [TurboQuant: Online Vector Quantization with
+Near-optimal Distortion Rate](https://arxiv.org/abs/2504.19874), 2026.
 
-## What It Does
+## Related: `vllm` already has a TurboQuant module
 
-TurboQuant compresses LLM KV cache from FP16 to 4-bit using Lloyd-Max codebook quantization with Hadamard rotation. Two fused CUDA kernels handle write (prefill) and decode, integrated into vLLM as a drop-in plugin.
+Upstream vLLM merged a TurboQuant implementation on 2026-04-15
+([module docs](https://docs.vllm.ai/en/latest/api/vllm/model_executor/layers/quantization/turboquant/)),
+available from `v0.19.2rc0` onward. It uses **Triton kernels** and plugs in as a
+`QuantizationConfig` (`--kv-cache-dtype turboquant_4bit_nc`). It covers the
+short-to-medium-context case very well.
 
-- **3.76x KV cache compression** (68 bytes vs 256 bytes per token per head)
-- **3.8x more concurrent requests** on the same GPU
-- **< 0.01% perplexity degradation** (WikiText-2: 14.91 -> 14.91)
-- **100% exact token match** vs FP16 baseline (12 prompts x 2 models)
+**This repo is a different point on the design curve**: hand-written
+**CUDA** kernels that win the long-context / high-batch regime where the
+decode-kernel hot loop and the scheduler's cache budget start to matter.
+See the [benchmarks](docs/BENCHMARKS.md) for when to pick which.
+
+## Headline numbers (Qwen3-8B on A100-40GB, `vllm bench serve`)
+
+| regime | winner | result |
+|---|---|---|
+| short ctx (≤ 2k), chat-style | **upstream TurboQuant** | TPOT 19 ms, matches FA |
+| medium ctx (4–8k), batch ≥ 8 | stock **FA / FI** | TurboQuant pays decode tax |
+| **long ctx (≥ 16k), batch ≥ 4** | **ours** | **1.89× FA throughput @ s32768×c8** |
+
+At s32768 × c8: **3.2 s TTFT vs FA's 31.8 s** (10× faster first-token,
+driven by avoided preemption; see
+[BENCHMARKS.md](docs/BENCHMARKS.md#why-ours-wins-ttft-at-long-ctx)).
+
+| config | FA tok/s | FI tok/s | ours tok/s | upstream tok/s |
+|---|---:|---:|---:|---:|
+| s1024 × c8 | 235 | 244 | 198 | **253** |
+| s8192 × c8 | **112** | **116** | 106 | 82 |
+| s16384 × c8 | 60 | 64 | **69** | 44 |
+| s32768 × c4 | 24 | 26 | **36** | 19 |
+| s32768 × c8 | 24 | 26 | **45** | 20 |
+
+Full tables + methodology + raw JSON: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Install
 
@@ -126,38 +155,27 @@ print(out[0].outputs[0].text)
 | Llama-3-8B | 32/8 | 4:1 | 128 | Kernel only |
 | Llama-3-70B | 64/8 | 8:1 | 128 | Kernel only |
 
-## Performance
+## When to use this vs upstream vllm.turboquant
 
-All numbers measured on A100-SXM4-40GB, Qwen3-1.7B, batch=1.
+See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the full 4-way comparison
+(FlashAttention, FlashInfer, this repo, upstream vLLM TurboQuant) across
+6 configs. Decision in one table:
 
-### End-to-End Serving (vLLM, CUDA graphs)
+| your workload | use |
+|---|---|
+| chat, prompts mostly ≤ 2k tokens | **upstream** (`--kv-cache-dtype turboquant_4bit_nc` in vLLM ≥ 0.19.2rc0) |
+| general serving, 4–8k context, no memory pressure | **stock FA / FI** — simpler, faster |
+| **long-doc / RAG / agentic, ≥ 16k context or batch ≥ 4 at 32k** | **this repo** (`--attention-backend CUSTOM --kv-cache-dtype fp8`) |
 
-| Phase | FP16 Baseline | TurboQuant 4-bit | Overhead |
-|-------|---------------|------------------|----------|
-| Prefill write (2K tokens) | 1.2 ms (memcpy) | 3.1 ms (CUDA quantize) | +3.7% of TTFT |
-| Decode TPOT (seq <= 256) | 1.2 ms | **0.81 ms** | **33% faster** |
-| Decode TPOT (seq = 1024) | 1.2 ms | 1.23 ms | 2.5% slower |
-| KV memory per token | 256 B/tok/head | 68 B/tok/head | **3.76x less** |
-| Max batch (seq=4K, 40GB) | 71 requests | **268 requests** | **3.8x more** |
-| Throughput (batch >= 64) | 1.0x | **1.1-1.2x** | Faster |
-
-### Decode Kernel Latency (standalone, A100)
-
-| seq_len | FlashAttention (SDPA) | TurboQuant | vs SDPA |
-|---------|-----------------------|------------|---------|
-| 128 | 22 us | **22 us** | 1.0x (matches) |
-| 256 | 30 us | 32 us | 1.05x |
-| 512 | 30 us | 48 us | 1.6x |
-| 1024 | 31 us | 48 us | 1.6x |
-| 2048 | 30 us | 59 us | 2.0x |
-
-At seq <= 256, TurboQuant **matches or beats** FlashInfer FP16 while using 3.76x less memory.
+The long-ctx win is driven primarily by avoided scheduler preemption once
+the fp16 KV cache exceeds the memory budget: ours keeps 8 concurrent 32k
+contexts on-GPU; FA preempts 2–3 of them and inflates median TTFT ~10×.
 
 ### Quality
 
 | Metric | Result |
 |--------|--------|
-| WikiText-2 PPL | 14.91 -> 14.91 (0.01% degradation) |
+| WikiText-2 PPL | 14.91 → 14.91 (0.01% degradation) |
 | Kernel cosine similarity | 1.000000 (all configs) |
 | Exact token match | 100% (12 prompts, Qwen3-1.7B + 8B) |
 
