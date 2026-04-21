@@ -206,17 +206,41 @@ Decision tree after Gate 0:
 | Variant A tied with MSE-only even at 32 k          | hypothesis rejected as vacuous      |
 | Variant A regresses on softmax cosine anywhere     | hypothesis rejected — scheme broken |
 
-## Status: pending
+## Status: rejected on synthetic, real-data rerun in flight
 
-Gate 0 scaffolding is in worktree branch `worktree-agent-a8d9f08d`
-(`tests/test_qjl_long_context_bias.py`). That commit measures Variant B
-only (via `TurboQuantProd`). Needs:
+### Gate 0 result on synthetic Gaussian (worktree commit `43a558d`, Forge job `3472a04f`)
 
-1. Extend the test with Variant A (4-bit MSE + rectangular QJL at
-   m=32) alongside MSE-only. Drop Variant B rows — decision is made.
-2. Run on Forge A100 at seq ∈ {1 k, 4 k, 16 k, 32 k}.
-3. Post-run: decision per the table above. If pass → Gate 1; else close
-   "rejected" here.
+```
+seq=32768   mse_only    out_cos = 0.9902   bias = -5e-5
+seq=32768   variant_a   out_cos = 0.9686   bias = -4e-5
+```
+
+Variant A **regressed `out_cos` by ~2.2 points at every seq**. Two
+findings:
+
+1. **MSE bias does not compound** on synthetic rotated Gaussian data —
+   it averages toward zero as T grows (`-1.2e-3` at 1 k → `-5e-5` at
+   32 k). The "long-context bias compounding" premise of this
+   hypothesis does not hold on this data model.
+2. **QJL's own JL-variance (`π/2m · ‖res‖²`) exceeds the residual
+   bias** at 4-bit MSE. The correction is net-negative: it doubles
+   `abs_err` (0.077 → 0.131). When MSE is already tight, QJL has
+   nothing to add.
+
+### Real-data rerun (HYP-050 Forge job)
+
+Variant A is re-tested on real Qwen3-8B K/V in the same job that runs
+HYP-050's Gate 0. If real data confirms the synthetic verdict → close
+`rejected`. If real data shows compounding bias the synthetic missed
+→ reopen.
+
+### Structural learning
+
+The QJL-at-4-bit-MSE regime is likely **architecturally net-negative**,
+not fixable by choice of `m`. The successor hypothesis is
+**HYP-050: 3-bit MSE + 1-bit QJL (same total budget)** — the paper's
+Algorithm 2 — where the residual is large enough to make QJL
+information-rich vs its own noise floor.
 
 ## Paper references
 
