@@ -13,6 +13,7 @@ GPU_MEM="${GPU_MEM:-0.85}"
 OUT_DIR="${OUT_DIR:-/workspace/shared/bench_serve}"
 PORT=${PORT:-8000}
 HOST=127.0.0.1
+GRAPHS="${GRAPHS:-0}"
 
 mkdir -p "$OUT_DIR"
 
@@ -35,18 +36,46 @@ MAX_LEN=$(( SEQ + OUT_LEN + 16 ))
 COMMON=("$MODEL" --dtype float16
         --gpu-memory-utilization "$GPU_MEM"
         --max-model-len "$MAX_LEN"
-        --enforce-eager
         --disable-log-stats
         --port "$PORT")
+
+if [ "$GRAPHS" = "0" ]; then
+  COMMON+=(--enforce-eager)
+else
+  # CUDA graphs capture activation tensors into private pools; without
+  # expandable_segments the allocator can't reclaim fragmented reserved
+  # memory and OOMs during model load at gpu_memory_utilization=0.85.
+  export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
+  # Narrow captured shapes to the concurrencies we actually bench so the
+  # graph pool fits alongside KV cache at gpu_memory_utilization=0.85.
+  # Apply uniformly across backends for apples-to-apples comparison.
+  COMMON+=(--max-num-seqs 64)
+fi
 
 case "$BACKEND" in
   fa)  EXTRA=() ;;                                         # vLLM auto -> FA
   fi)  EXTRA=(--attention-backend FLASHINFER) ;;
-  tq)  EXTRA=(--attention-backend CUSTOM --kv-cache-dtype fp8) ;;
+  tq)  EXTRA=(--attention-backend CUSTOM --kv-cache-dtype fp8)
+       if [ "$GRAPHS" = "1" ]; then
+         # A100 SM80 can't torch.compile fp8e4nv (mode:0 disables inductor),
+         # but CUDA graph capture is independent of compilation.
+         EXTRA+=(--compilation-config '{"mode":0,"cudagraph_mode":"FULL","cudagraph_capture_sizes":[1,2,4,8,16,32,64]}')
+       fi
+       ;;
   *)   echo "bad BACKEND=$BACKEND"; exit 2 ;;
 esac
 
-TAG="${BACKEND}-s${SEQ}-c${CONCURRENCY}"
+if [ "$GRAPHS" = "1" ] && [ "$BACKEND" != "tq" ]; then
+  # FA / FI: vLLM default compile+graph path, narrow capture list to match ours.
+  EXTRA+=(--compilation-config '{"cudagraph_capture_sizes":[1,2,4,8,16,32,64]}')
+fi
+
+TAG_SUFFIX=""
+if [ "$GRAPHS" = "1" ]; then
+  TAG_SUFFIX="-g"
+fi
+
+TAG="${BACKEND}-s${SEQ}-c${CONCURRENCY}${TAG_SUFFIX}"
 LOG_FILE="$OUT_DIR/${TAG}.server.log"
 RESULT_FILE="$OUT_DIR/${TAG}.json"
 

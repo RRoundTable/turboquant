@@ -42,6 +42,12 @@ driven by avoided preemption; see
 
 Full tables + methodology + raw JSON: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+The numbers above are with `--enforce-eager` (the Dockerfile default). With
+CUDA graphs enabled (`--compilation-config cudagraph_mode:FULL`, see
+[docs/BENCHMARKS.md#with-cuda-graphs-enabled](docs/BENCHMARKS.md#with-cuda-graphs-enabled))
+every backend gets a flat ~1.5× TPOT speedup at short context (s1024) and
+essentially zero improvement at long context. Regime verdicts don't shift.
+
 ## Install
 
 TurboQuant needs both the Python package (plugin + CUDA kernels) **and**

@@ -59,6 +59,90 @@ the aggregation script and raw results are in `results/v5_serve*`.
 |   32768 ×  4 | 24.1 | 26.3 | ** 36.4** | ** 18.5** | 0.77× | **1.51×** |
 |   32768 ×  8 | 24.1 | 26.2 | ** 45.4** | ** 19.9** | 0.83× | **1.89×** |
 
+## With CUDA graphs enabled
+
+The eager tables above match the Dockerfile default (`--enforce-eager`). We
+re-ran FA, FI, and ours with `--compilation-config cudagraph_mode:FULL` to
+measure what CUDA graphs buy on the same hardware.
+
+- **ours**: `--compilation-config '{"mode":0,"cudagraph_mode":"FULL","cudagraph_capture_sizes":[1,2,4,8,16,32,64]}'`.
+  `mode:0` keeps inductor off — A100 SM80 cannot torch.compile fp8e4nv — but
+  graph capture is independent of compilation. Our decode / quantize-write
+  ops are dispatcher-routed (`torch.ops.turboquant_v5.*`,
+  `torch.ops.turboquant_write.*`) so they survive vLLM's KV-cache storage
+  swap during `profile_cudagraph_memory`; see HYP-051.
+- **FA / FI**: dropped `--enforce-eager`, narrowed capture list to the same
+  `[1,2,4,8,16,32,64]` for a clean cross-backend comparison.
+- All three use `--max-num-seqs 64 --gpu-memory-utilization 0.85
+  PYTORCH_ALLOC_CONF=expandable_segments:True`. The narrower
+  `max_num_seqs` is needed so the graph pool fits alongside fp8 KV cache at
+  `0.85` util (the default `256` overflows). Never hit in our bench since
+  max concurrency here is 32.
+- Upstream is not re-listed — it already ran compiled + graphs in the eager
+  tables (that's upstream's default path).
+
+### Median TTFT (ms)
+
+| seq × conc |    FA |    FI | **ours** | ours/FA |
+|------------|------:|------:|---------:|--------:|
+|    1024 ×  8 |   474 |   460 | **  427** | 0.90× |
+|    2048 × 32 |   756 |   743 | **  713** | 0.94× |
+|    8192 ×  8 |  1752 |  1712 | ** 1201** | 0.69× |
+|   16384 ×  8 |  3978 |  3735 | ** 1861** | 0.47× |
+|   32768 ×  4 |  9094 |  8278 | ** 3345** | 0.37× |
+|   32768 ×  8 | 31209 | 28807 | ** 3199** | **0.10×** |
+
+### Median TPOT (ms)
+
+| seq × conc |   FA |   FI | **ours** | ours/FA |
+|------------|-----:|-----:|---------:|--------:|
+|    1024 ×  8 | 15.3 | 15.2 | **19.6** | 1.28× |
+|    2048 × 32 | 52.1 | 49.4 | **59.6** | 1.14× |
+|    8192 ×  8 | 47.1 | 46.0 | **55.7** | 1.18× |
+|   16384 ×  8 | 96.6 | 90.2 | **91.8** | 0.95× |
+|   32768 ×  4 | 86.5 | 79.3 | **81.6** | 0.94× |
+|   32768 ×  8 | 86.0 | 79.4 |**138.2** | 1.61× |
+
+### Output throughput (tok/s)
+
+| seq × conc |    FA |    FI | **ours** | ours/FA |
+|------------|------:|------:|---------:|--------:|
+|    1024 ×  8 | 292.5 | 293.4 | **255.2** | 0.87× |
+|    2048 × 32 | 343.0 | 352.2 | **313.8** | 0.91× |
+|    8192 ×  8 | 115.7 | 117.9 | **108.1** | 0.93× |
+|   16384 ×  8 |  60.4 |  64.9 | ** 68.4** | 1.13× |
+|   32768 ×  4 |  24.4 |  26.6 | ** 36.9** | **1.51×** |
+|   32768 ×  8 |  24.5 |  26.5 | ** 45.5** | **1.86×** |
+
+### What graphs change
+
+Graphs only pay off in the short-context decode regime where Python launch
+overhead is a large fraction of each step. At long context, the kernel is
+compute-bound and graphs do nothing visible.
+
+| metric | backend | s1024×c8 (short) | s32768×c8 (long) |
+|---|---|---:|---:|
+| **TPOT, eager → graphs** | FA   | 22.7 → 15.3 ms (**1.48×**) | 87.7 → 86.0 ms (1.02×) |
+|                          | FI   | 22.0 → 15.2 ms (**1.45×**) | 80.4 → 79.4 ms (1.01×) |
+|                          | ours | 29.5 → 19.6 ms (**1.50×**) | 138.5 → 138.2 ms (1.00×) |
+| **throughput, eager → graphs** | FA | 235 → 293 (1.24×) | 24.1 → 24.5 (1.02×) |
+|                                 | FI | 244 → 293 (1.20×) | 26.2 → 26.5 (1.01×) |
+|                                 | ours | 198 → 255 (1.29×) | 45.4 → 45.5 (1.00×) |
+
+TTFT at short ctx *regresses* ~1.4-1.8× across all three. Prefill compute
+doesn't benefit from graphs, and the narrower `max_num_seqs=64` changes
+the scheduler's chunked-prefill behaviour. TTFT at long ctx is unchanged —
+there prefill cost dominates the scheduling delta, and the
+"ours avoids preemption" story from the eager tables is preserved (ours
+still 0.10× FA at s32768×c8).
+
+**Net: the regime verdicts from the eager tables hold.** Graphs give every
+backend the same ~1.5× short-ctx decode bump; they don't shift who wins
+where.
+
+Raw data in `results/v5_serve_graphs/`; regenerate with
+`uv run python results/v5_serve_graphs/aggregate.py`.
+
 ## KV cache memory (same `gpu_memory_utilization=0.85`, from engine logs)
 
 | backend | KV tokens budget | vs FA |
