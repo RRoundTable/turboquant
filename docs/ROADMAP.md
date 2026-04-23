@@ -16,19 +16,12 @@ Reproduce HYP-057 on a fresh Forge run, capture reference nsys + ncu
 traces under `--security-profile profiling-debug`, and scaffold the
 per-kernel baseline reference doc that Phase 2 fills in.
 
-- [ ] **HYP-058** — Baseline lock (no code, pure measurement).
-  - Bench grid: `{4bit_nc, k3v4_nc, 3bit_nc, fp16}` × `seq ∈ {1024, 8192}` ×
-    `concurrency ∈ {1, 8}` = 16 cells, via
-    `tests/bench_serve_upstream_entry.sh` adapted to v0.20.0.
-  - Profile subset: `4bit_nc × seq=8192 × concurrency=1` with nsys
-    (`-t cuda,nvtx`) and ncu
-    (`--section WarpStateStatistics,SpeedOfLight,MemoryWorkloadAnalysis`,
-    `--kernel-name regex:_tq_.*`).
-  - Populate the TBD cells in
-    `docs/reference/upstream-triton-kernel-baseline.md`.
-  - **Gate**: bench JSON + nsys + ncu archived under
-    `/workspace/shared/hyp058_phase1/`. SHA-256 of fp16 prediction
-    strings recorded as the parity reference.
+- [x] **HYP-058** — Baseline lock (CONFIRMED 2026-04-23, Forge job
+      `fb2e708a`). Accuracy + 16-cell perf grid landed at byte-exact
+      340/340 vs HYP-057. Profiling (nsys + ncu) deferred to HYP-059's
+      setup because the custom image is incompatible with
+      `profiling-debug`. See
+      `docs/hypotheses/HYP-058-baseline-lock.md` for the full table.
 
 Files touched: none in `vllm`/`turboquant/`. Only adds
 `docs/hypotheses/HYP-058-*.md` and writes baseline TBD cells.

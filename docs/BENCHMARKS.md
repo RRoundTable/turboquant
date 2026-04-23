@@ -323,19 +323,63 @@ Forge job IDs (all SUCCEEDED): `af38238c` (fp16), `7a642416`
 ## Per-HYP results
 
 Each row records the confirmed HYP, the kernel(s) it patches, the
-parity gate it cleared, and the median TPOT delta vs the HYP-057
+parity gate it cleared, and the median TPOT delta vs the HYP-058
 baseline at the bench cell where the HYP wins biggest. *TBD* rows are
 filled in as Phase 3+ HYPs land.
 
 | HYP | patches | parity gate | best cell (preset × seq × conc) | TPOT before → after | Δ TPOT |
 |---|---|---|---|---:|---:|
-| HYP-058 (baseline lock) | none | — (reference) | `4bit_nc × 8192 × 1` | TBD | — |
-| HYP-062 (joint launch retune) | `_tq_decode_stage1` | SHA-256 | TBD | TBD | TBD |
+| HYP-058 (baseline lock) | none | byte-exact 340/340 | reference (table below) | — | — |
+| HYP-062 (joint launch retune) | `_tq_decode_stage1` | SHA-256 | `4bit_nc × 8192 × 1` (17.5 ms ref) | TBD | TBD |
 | HYP-063 (smem centroid pre-stage) | `_tq_decode_stage1` | SHA-256 | TBD | TBD | TBD |
 | HYP-064 (midpoints pre-load) | `_tq_fused_store_mse` | SHA-256 | TBD | TBD | TBD |
-| HYP-065 (adaptive `NUM_KV_SPLITS`) | `TurboQuantMetadataBuilder.build` | mean ±0.002 pp (opt-out) | TBD | TBD | TBD |
+| HYP-065 (adaptive `NUM_KV_SPLITS`) | `TurboQuantMetadataBuilder.build` | mean ±0.002 pp (opt-out) | `3bit_nc × 8192 × 8` (83.4 ms ref) | TBD | TBD |
 | HYP-066 (`tl.dot` QK fp16 acc) | `_tq_decode_stage1` | mean ±0.002 pp (opt-out) | TBD | TBD | TBD |
 | HYP-067 (`tl.dot` V acc + TMA) | `_tq_decode_stage1` | mean ±0.002 pp (opt-out) | TBD | TBD | TBD |
+
+## HYP-058 — measured baseline (the reference for every Phase 3+ row above)
+
+Llama-3.1-8B-Instruct, vLLM v0.20.0 (`579602aa4be6`), 1× A100-SXM4-40GB
+under default Forge profile, eager mode, `gpu-memory-utilization=0.85`,
+output_len=128. Forge job `fb2e708a` (succeeded 2026-04-23 13:27 UTC).
+Raw JSONs at `results/hyp058/perf_*.json` and on Forge NFS at
+`/workspace/shared/hyp058_phase1/perf_grid/`.
+
+### Median TPOT (ms) — lower is better
+
+| preset | s1024 × c1 | s1024 × c8 | s8192 × c1 | s8192 × c8 |
+|---|---:|---:|---:|---:|
+| `auto` (fp16) | 12.9 | 15.8 | 13.7 | 48.2 |
+| `turboquant_4bit_nc` | 14.2 | 20.0 | 17.5 | 68.8 |
+| `turboquant_k3v4_nc` | 14.2 | 20.7 | 17.9 | 76.9 |
+| `turboquant_3bit_nc` | 14.3 | 21.2 | 18.6 | 83.4 |
+
+### Median TTFT (ms)
+
+| preset | s1024 × c1 | s1024 × c8 | s8192 × c1 | s8192 × c8 |
+|---|---:|---:|---:|---:|
+| `auto` (fp16) | 93.9 | 466.0 | 702.3 | 1546.4 |
+| `turboquant_4bit_nc` | 95.7 | 464.4 | 745.7 | 1747.8 |
+| `turboquant_k3v4_nc` | 95.2 | 370.6 | 725.0 | 1871.1 |
+| `turboquant_3bit_nc` | 98.1 | 372.3 | 746.8 | 1822.4 |
+
+### Output throughput (tok/s)
+
+| preset | s1024 × c1 | s1024 × c8 | s8192 × c1 | s8192 × c8 |
+|---|---:|---:|---:|---:|
+| `auto` (fp16) | 66.0 | 412.5 | 49.0 | 132.5 |
+| `turboquant_4bit_nc` | 60.8 | 265.2 | 39.1 | 91.2 |
+| `turboquant_k3v4_nc` | 60.8 | 330.5 | 38.6 | 86.7 |
+| `turboquant_3bit_nc` | 60.3 | 323.0 | 37.5 | 81.8 |
+
+### Accuracy parity
+
+LongBench `small_balanced` (qasper × 25 + hotpotqa × 25 +
+passage_retrieval_en × 25 + narrativeqa × 10 = 85 samples per preset).
+SHA-256 of greedy-decode prediction strings: **340 / 340 byte-exact
+match vs HYP-057 baseline** (max |Δscore| = 0.0000 across all 4
+in-scope presets). `turboquant_k8v4` is out-of-scope per `docs/GOAL.md`
+(Ampere FP8 path broken).
 
 ## Profiling artefacts
 

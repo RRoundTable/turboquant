@@ -10,10 +10,17 @@ Companion to `vllm-upstream-turboquant-architecture.md` (which covers
 the cross-kernel data flow + cache slot layout) — this doc zooms in on
 each kernel as a profiling target.
 
-> **Status — most "after Phase 2" cells are TBD.** Phase 1 (HYP-058)
-> populates the launch grid and smem map cells from source. Phase 2
-> (HYP-059/060/061) populates the register-budget, warp-stall, and
-> occupancy cells from ncu output.
+> **Status — Phase 1 (HYP-058) confirmed accuracy + perf grid; ncu
+> profiling deferred.** The custom turboquant Forge image lacks
+> nsys/ncu and is rejected by `--security-profile profiling-debug`
+> (only `nvcr.io/nvidia/pytorch:*` and `*/mlops/forge:notebook-*`
+> images are allowed). The register-budget, warp-stall, and occupancy
+> cells stay TBD until HYP-059's profiling job lands. Launch-grid
+> values below are still source-derived from `triton_turboquant_*.py`
+> (independent of any run).
+>
+> The Phase 1 perf baseline against which every Phase 3+ HYP is
+> measured is in [`BENCHMARKS.md`](../BENCHMARKS.md#hyp-058--measured-baseline-the-reference-for-every-phase-3-row-above).
 
 ---
 

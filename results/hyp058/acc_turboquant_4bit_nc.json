@@ -1,0 +1,910 @@
+{
+  "model": "meta-llama/Llama-3.1-8B-Instruct",
+  "backend": "turboquant_4bit_nc",
+  "preset": "small_balanced",
+  "tasks": {
+    "qasper": {
+      "task": "qasper",
+      "n": 25,
+      "mean_score": 0.4802529491846103,
+      "total_time_s": 15.473988289944828,
+      "mean_time_s": 0.6189595315977932
+    },
+    "hotpotqa": {
+      "task": "hotpotqa",
+      "n": 25,
+      "mean_score": 0.4579047619047619,
+      "total_time_s": 28.46753943199292,
+      "mean_time_s": 1.1387015772797167
+    },
+    "passage_retrieval_en": {
+      "task": "passage_retrieval_en",
+      "n": 25,
+      "mean_score": 1.0,
+      "total_time_s": 27.137602305971086,
+      "mean_time_s": 1.0855040922388435
+    },
+    "narrativeqa": {
+      "task": "narrativeqa",
+      "n": 10,
+      "mean_score": 0.4381354280842772,
+      "total_time_s": 21.3225252549164,
+      "mean_time_s": 2.13225252549164
+    }
+  },
+  "predictions_by_task": {
+    "qasper": [
+      {
+        "id": 0,
+        "pred": "The ground truth for fake news is established through manual annotation by a single person, using the categorization provided by Rubin et al.",
+        "refs": [
+          "Ground truth is not established in the paper"
+        ],
+        "score": 0.29629629629629634,
+        "input_len_tok": 4035,
+        "gen_len_tok": 27
+      },
+      {
+        "id": 1,
+        "pred": "An extension of the NetVLAD approach that adds ghost clusters to map noisy or irrelevant content into ghost clusters, not included during feature aggregation.",
+        "refs": [
+          "extension of the NetVLAD, adds Ghost clusters along with the NetVLAD clusters",
+          "An extension of NetVLAD which replaces hard assignment-based clustering with soft assignment-based clustering with the additon o fusing Ghost clusters to deal with noisy content."
+        ],
+        "score": 0.4375,
+        "input_len_tok": 3366,
+        "gen_len_tok": 29
+      },
+      {
+        "id": 2,
+        "pred": "68.8% to 71.8%",
+        "refs": [
+          "the attention model, MDREA, also outperforms the best existing research results (WAP 0.690 to 0.688)"
+        ],
+        "score": 0.125,
+        "input_len_tok": 4396,
+        "gen_len_tok": 11
+      },
+      {
+        "id": 3,
+        "pred": "Context tweets and character-level features are proposed.",
+        "refs": [
+          "using tweets that one has replied or quoted to as contextual information",
+          "text sequences of context tweets"
+        ],
+        "score": 0.3333333333333333,
+        "input_len_tok": 3012,
+        "gen_len_tok": 10
+      },
+      {
+        "id": 4,
+        "pred": "FoxNews, CNN, ESPN, New York Times, Time magazine, Huffington Post Weird News, The Guardian, Cartoon Network, Cooking Light, Home Cooking Adventure, Justin Bieber, Nickelodeon, Spongebob, Disney.",
+        "refs": [
+          "FoxNews, CNN, ESPN, New York Times, Time magazine, Huffington Post Weird News, The Guardian, Cartoon Network, Cooking Light, Home Cooking Adventure, Justin Bieber, Nickelodeon, Spongebob, Disney",
+          "FoxNews, CNN, ESPN, New York Times, Time magazine, Huffington Post Weird News, The Guardian, Cartoon Network, Cooking Light, Home Cooking Adventure, Justin Bieber, Nickelodeon, Spongebob, Disney."
+        ],
+        "score": 1.0,
+        "input_len_tok": 4474,
+        "gen_len_tok": 45
+      },
+      {
+        "id": 5,
+        "pred": "yes",
+        "refs": [
+          "Yes",
+          "Yes"
+        ],
+        "score": 1.0,
+        "input_len_tok": 5408,
+        "gen_len_tok": 2
+      },
+      {
+        "id": 6,
+        "pred": "Extrinsic evaluation, specifically using summary evaluation.",
+        "refs": [
+          "Answer with content missing: (Evaluation Metrics section) Precision, Recall, F1-scores, Strict match, METEOR, ROUGE-2"
+        ],
+        "score": 0.1,
+        "input_len_tok": 5670,
+        "gen_len_tok": 10
+      },
+      {
+        "id": 7,
+        "pred": "The CNN/DailyMail news highlights dataset, the New York Times Annotated Corpus (NYT), and XSum.",
+        "refs": [
+          "CNN/DailyMail news highlights, New York Times Annotated Corpus, XSum",
+          "the CNN/DailyMail news highlights dataset BIBREF24, the New York Times Annotated Corpus (NYT; BIBREF25), XSum BIBREF22"
+        ],
+        "score": 0.8571428571428571,
+        "input_len_tok": 6533,
+        "gen_len_tok": 25
+      },
+      {
+        "id": 8,
+        "pred": "The proposed approach (GM_KL) performs better than existing approaches (w2g and w2gm) on benchmark word similarity and entailment datasets.",
+        "refs": [
+          "GM$\\_$KL achieves better correlation than existing approaches for various metrics on SCWS dataset."
+        ],
+        "score": 0.3870967741935484,
+        "input_len_tok": 3525,
+        "gen_len_tok": 32
+      },
+      {
+        "id": 9,
+        "pred": "The ensemble method works by selecting the best performing model according to validation performance, then adding the best performing model that had not been previously tried, and keeping it in the ensemble if it improves validation performance.",
+        "refs": [
+          "simply averaging the predictions from the constituent single models"
+        ],
+        "score": 0.0,
+        "input_len_tok": 5357,
+        "gen_len_tok": 41
+      },
+      {
+        "id": 10,
+        "pred": "Friends dataset comes from the scripts of the Friends TV sitcom, and EmotionPush dataset comes from Facebook messenger chats.",
+        "refs": [
+          "Friends TV sitcom, Facebook messenger chats"
+        ],
+        "score": 0.5217391304347826,
+        "input_len_tok": 4628,
+        "gen_len_tok": 24
+      },
+      {
+        "id": 11,
+        "pred": "English.",
+        "refs": [
+          "English",
+          "Simple English"
+        ],
+        "score": 1.0,
+        "input_len_tok": 3289,
+        "gen_len_tok": 3
+      },
+      {
+        "id": 12,
+        "pred": "The IMDb dataset of movie reviews.",
+        "refs": [
+          "IMDb dataset of movie reviews",
+          "IMDb"
+        ],
+        "score": 1.0,
+        "input_len_tok": 3404,
+        "gen_len_tok": 8
+      },
+      {
+        "id": 13,
+        "pred": "The proposed system (ALCrowd) achieves the best performance among all the systems, with significant improvements over the baseline systems, and achieves F1 values of 83.12 on DL-PS, 84.45 on EC-MT, and 86.38 on EC-UQ.",
+        "refs": [
+          "F1 scores of 85.99 on the DL-PS data,  75.15 on the EC-MT data and 71.53 on the EC-UQ data ",
+          "F1 of 85.99 on the DL-PS dataset (dialog domain); 75.15 on EC-MT and 71.53 on EC-UQ (e-commerce domain)"
+        ],
+        "score": 0.3913043478260869,
+        "input_len_tok": 8698,
+        "gen_len_tok": 60
+      },
+      {
+        "id": 14,
+        "pred": "Yes.",
+        "refs": [
+          "No"
+        ],
+        "score": 0.0,
+        "input_len_tok": 4761,
+        "gen_len_tok": 3
+      },
+      {
+        "id": 15,
+        "pred": "The Switchboard dataset, the Dialog State Tracking Challenge (DSTC) dataset, and a set of 246,945 documents related to finance, including 184,001 Twitter posts and 62,949 news articles.",
+        "refs": [
+          "Custom dataset with user questions; set of documents, twitter posts and news articles, all related to finance.",
+          "a self-collected financial intents dataset in Portuguese"
+        ],
+        "score": 0.5853658536585366,
+        "input_len_tok": 17661,
+        "gen_len_tok": 45
+      },
+      {
+        "id": 16,
+        "pred": "unanswerable",
+        "refs": [
+          "Energy with accuracy of 0.538",
+          "Energy"
+        ],
+        "score": 0.0,
+        "input_len_tok": 15598,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 17,
+        "pred": "RNN-based NMT and Transformer-NMT.",
+        "refs": [
+          "RNN-based NMT model, Transformer-NMT"
+        ],
+        "score": 0.75,
+        "input_len_tok": 5176,
+        "gen_len_tok": 11
+      },
+      {
+        "id": 18,
+        "pred": "A regularization term associated with neutral features, the maximum entropy of class distribution regularization term, and the KL divergence between reference and predicted class distribution.",
+        "refs": [
+          "a regularization term associated with neutral features, the maximum entropy of class distribution regularization term, the KL divergence between reference and predicted class distribution",
+          "a regularization term associated with neutral features,  the maximum entropy of class distribution, KL divergence between reference and predicted class distribution"
+        ],
+        "score": 0.9767441860465117,
+        "input_len_tok": 5137,
+        "gen_len_tok": 29
+      },
+      {
+        "id": 19,
+        "pred": "1) SVM with unigram, bigram, and trigram features, 2) SVM with average word embedding, 3) SVM with average transformed word embeddings, 4) CNN, 5) RCNN, 6) UTCNN without user information, 7) UTCNN without the LDA model, 8) UTCNN without comments.",
+        "refs": [
+          "SVM with unigram, bigram, and trigram features, SVM with average word embedding, SVM with average transformed word embeddings, CNN, ecurrent Convolutional Neural Networks, SVM and deep learning models with comment information",
+          "SVM with unigram, bigram, trigram features, with average word embedding, with average transformed word embeddings, CNN and RCNN, SVM, CNN, RCNN with comment information"
+        ],
+        "score": 0.6349206349206349,
+        "input_len_tok": 5982,
+        "gen_len_tok": 74
+      },
+      {
+        "id": 20,
+        "pred": "They improved the state-of-the-art performance by several points.",
+        "refs": [
+          "They decrease MAE in 0.34"
+        ],
+        "score": 0.16666666666666666,
+        "input_len_tok": 3731,
+        "gen_len_tok": 13
+      },
+      {
+        "id": 21,
+        "pred": "The model improves interpretability by allowing for sparser attention weights and enabling the identification of head specializations, such as positional heads and BPE-merging heads.",
+        "refs": [
+          "the attention heads in the proposed adaptively sparse Transformer can specialize more and with higher confidence",
+          "We introduce sparse attention into the Transformer architecture"
+        ],
+        "score": 0.16666666666666663,
+        "input_len_tok": 7849,
+        "gen_len_tok": 34
+      },
+      {
+        "id": 22,
+        "pred": "The baseline model was a Transformer base model.",
+        "refs": [
+          " MT system on the data released by BIBREF11",
+          "Transformer base, two-pass CADec model"
+        ],
+        "score": 0.5454545454545454,
+        "input_len_tok": 5184,
+        "gen_len_tok": 10
+      },
+      {
+        "id": 23,
+        "pred": "XNLI test accuracy and Labeled Attachment Scores (LAS) for zero-shot dependency parsing.",
+        "refs": [
+          "translation probabilities, Labeled Attachment Scores (LAS)",
+          "accuracy, Labeled Attachment Scores (LAS)"
+        ],
+        "score": 0.5882352941176471,
+        "input_len_tok": 5370,
+        "gen_len_tok": 20
+      },
+      {
+        "id": 24,
+        "pred": "MT",
+        "refs": [
+          "the model is pre-trained on CTC-based ASR task and MT task in the pre-training stage."
+        ],
+        "score": 0.14285714285714288,
+        "input_len_tok": 7554,
+        "gen_len_tok": 2
+      }
+    ],
+    "hotpotqa": [
+      {
+        "id": 0,
+        "pred": "Gates v. Collier",
+        "refs": [
+          "Miller v. California"
+        ],
+        "score": 0.3333333333333333,
+        "input_len_tok": 11381,
+        "gen_len_tok": 7
+      },
+      {
+        "id": 1,
+        "pred": "Charles L. Clifford",
+        "refs": [
+          "Charles L. Clifford"
+        ],
+        "score": 1.0,
+        "input_len_tok": 16330,
+        "gen_len_tok": 5
+      },
+      {
+        "id": 2,
+        "pred": "Lowell, Michigan.",
+        "refs": [
+          "Norman"
+        ],
+        "score": 0.0,
+        "input_len_tok": 16349,
+        "gen_len_tok": 6
+      },
+      {
+        "id": 3,
+        "pred": "Jupiter",
+        "refs": [
+          "Sun"
+        ],
+        "score": 0.0,
+        "input_len_tok": 16379,
+        "gen_len_tok": 3
+      },
+      {
+        "id": 4,
+        "pred": "film",
+        "refs": [
+          "erotic thriller film"
+        ],
+        "score": 0.5,
+        "input_len_tok": 14537,
+        "gen_len_tok": 2
+      },
+      {
+        "id": 5,
+        "pred": "MP",
+        "refs": [
+          "Parliament"
+        ],
+        "score": 0.0,
+        "input_len_tok": 14644,
+        "gen_len_tok": 2
+      },
+      {
+        "id": 6,
+        "pred": "Mayiladuthurai",
+        "refs": [
+          "Tharangambadi"
+        ],
+        "score": 0.0,
+        "input_len_tok": 15849,
+        "gen_len_tok": 6
+      },
+      {
+        "id": 7,
+        "pred": "Pleiospilos",
+        "refs": [
+          "Pleiospilos"
+        ],
+        "score": 1.0,
+        "input_len_tok": 2282,
+        "gen_len_tok": 6
+      },
+      {
+        "id": 8,
+        "pred": "2013",
+        "refs": [
+          "2013"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12186,
+        "gen_len_tok": 3
+      },
+      {
+        "id": 9,
+        "pred": "The Rebirth",
+        "refs": [
+          "The Rebirth"
+        ],
+        "score": 1.0,
+        "input_len_tok": 8776,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 10,
+        "pred": "October 13, 1980",
+        "refs": [
+          "October 13, 1980"
+        ],
+        "score": 1.0,
+        "input_len_tok": 16289,
+        "gen_len_tok": 8
+      },
+      {
+        "id": 11,
+        "pred": "Adult Swim",
+        "refs": [
+          "Betty Cohen"
+        ],
+        "score": 0.0,
+        "input_len_tok": 15908,
+        "gen_len_tok": 3
+      },
+      {
+        "id": 12,
+        "pred": "Mary Astor",
+        "refs": [
+          "Mary Astor"
+        ],
+        "score": 1.0,
+        "input_len_tok": 15511,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 13,
+        "pred": "5",
+        "refs": [
+          "number five"
+        ],
+        "score": 0.0,
+        "input_len_tok": 10323,
+        "gen_len_tok": 2
+      },
+      {
+        "id": 14,
+        "pred": "Red, fallow, and roe deer.",
+        "refs": [
+          "New Zealand, Canada, the United States, the Falkland Islands, and Peru."
+        ],
+        "score": 0.14285714285714285,
+        "input_len_tok": 16247,
+        "gen_len_tok": 11
+      },
+      {
+        "id": 15,
+        "pred": "2000",
+        "refs": [
+          "2000 Summer Olympic Games"
+        ],
+        "score": 0.4,
+        "input_len_tok": 12271,
+        "gen_len_tok": 3
+      },
+      {
+        "id": 16,
+        "pred": "Mario Kempes, Claudio L\u00f3pez",
+        "refs": [
+          "Claudio Javier L\u00f3pez"
+        ],
+        "score": 0.5714285714285715,
+        "input_len_tok": 6220,
+        "gen_len_tok": 8
+      },
+      {
+        "id": 17,
+        "pred": "Ronald Reagan",
+        "refs": [
+          "George H. W. Bush"
+        ],
+        "score": 0.0,
+        "input_len_tok": 16318,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 18,
+        "pred": "Rihanna's \"We Found Love\"",
+        "refs": [
+          "\"Talk That Talk\""
+        ],
+        "score": 0.0,
+        "input_len_tok": 14037,
+        "gen_len_tok": 9
+      },
+      {
+        "id": 19,
+        "pred": "The Traveling Wilburys",
+        "refs": [
+          "Bob Dylan"
+        ],
+        "score": 0.0,
+        "input_len_tok": 15485,
+        "gen_len_tok": 7
+      },
+      {
+        "id": 20,
+        "pred": "Cartoon Cartoon Fridays",
+        "refs": [
+          "Cartoon Cartoon Fridays"
+        ],
+        "score": 1.0,
+        "input_len_tok": 11069,
+        "gen_len_tok": 5
+      },
+      {
+        "id": 21,
+        "pred": "Greater Western Sydney.",
+        "refs": [
+          "on the Cumberland Plain"
+        ],
+        "score": 0.0,
+        "input_len_tok": 15154,
+        "gen_len_tok": 5
+      },
+      {
+        "id": 22,
+        "pred": "Fire Island",
+        "refs": [
+          "Long Island"
+        ],
+        "score": 0.5,
+        "input_len_tok": 5171,
+        "gen_len_tok": 3
+      },
+      {
+        "id": 23,
+        "pred": "PewDiePie",
+        "refs": [
+          "PewDiePie"
+        ],
+        "score": 1.0,
+        "input_len_tok": 11407,
+        "gen_len_tok": 5
+      },
+      {
+        "id": 24,
+        "pred": "It's Always Sunny in Philadelphia",
+        "refs": [
+          "It's Always Sunny in Philadelphia"
+        ],
+        "score": 1.0,
+        "input_len_tok": 14246,
+        "gen_len_tok": 7
+      }
+    ],
+    "passage_retrieval_en": [
+      {
+        "id": 0,
+        "pred": "Paragraph 15",
+        "refs": [
+          "Paragraph 15"
+        ],
+        "score": 1.0,
+        "input_len_tok": 11211,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 1,
+        "pred": "Paragraph 8",
+        "refs": [
+          "Paragraph 8"
+        ],
+        "score": 1.0,
+        "input_len_tok": 11621,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 2,
+        "pred": "Paragraph 18",
+        "refs": [
+          "Paragraph 18"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12981,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 3,
+        "pred": "Paragraph 17",
+        "refs": [
+          "Paragraph 17"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12666,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 4,
+        "pred": "Paragraph 14",
+        "refs": [
+          "Paragraph 14"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12380,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 5,
+        "pred": "Paragraph 3",
+        "refs": [
+          "Paragraph 3"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12138,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 6,
+        "pred": "Paragraph 24",
+        "refs": [
+          "Paragraph 24"
+        ],
+        "score": 1.0,
+        "input_len_tok": 11802,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 7,
+        "pred": "Paragraph 27",
+        "refs": [
+          "Paragraph 27"
+        ],
+        "score": 1.0,
+        "input_len_tok": 11932,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 8,
+        "pred": "Paragraph 30",
+        "refs": [
+          "Paragraph 30"
+        ],
+        "score": 1.0,
+        "input_len_tok": 10548,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 9,
+        "pred": "Paragraph 12",
+        "refs": [
+          "Paragraph 12"
+        ],
+        "score": 1.0,
+        "input_len_tok": 14131,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 10,
+        "pred": "Paragraph 22",
+        "refs": [
+          "Paragraph 22"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12500,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 11,
+        "pred": "Paragraph 30",
+        "refs": [
+          "Paragraph 30"
+        ],
+        "score": 1.0,
+        "input_len_tok": 13424,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 12,
+        "pred": "Paragraph 24",
+        "refs": [
+          "Paragraph 24"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12120,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 13,
+        "pred": "Paragraph 19",
+        "refs": [
+          "Paragraph 19"
+        ],
+        "score": 1.0,
+        "input_len_tok": 13695,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 14,
+        "pred": "Paragraph 3",
+        "refs": [
+          "Paragraph 3"
+        ],
+        "score": 1.0,
+        "input_len_tok": 15159,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 15,
+        "pred": "Paragraph 8",
+        "refs": [
+          "Paragraph 8"
+        ],
+        "score": 1.0,
+        "input_len_tok": 13566,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 16,
+        "pred": "Paragraph 3",
+        "refs": [
+          "Paragraph 3"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12036,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 17,
+        "pred": "Paragraph 17",
+        "refs": [
+          "Paragraph 17"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12459,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 18,
+        "pred": "Paragraph 4",
+        "refs": [
+          "Paragraph 4"
+        ],
+        "score": 1.0,
+        "input_len_tok": 13204,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 19,
+        "pred": "Paragraph 3",
+        "refs": [
+          "Paragraph 3"
+        ],
+        "score": 1.0,
+        "input_len_tok": 14725,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 20,
+        "pred": "Paragraph 24",
+        "refs": [
+          "Paragraph 24"
+        ],
+        "score": 1.0,
+        "input_len_tok": 13039,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 21,
+        "pred": "Paragraph 2",
+        "refs": [
+          "Paragraph 2"
+        ],
+        "score": 1.0,
+        "input_len_tok": 13161,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 22,
+        "pred": "Paragraph 6",
+        "refs": [
+          "Paragraph 6"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12322,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 23,
+        "pred": "Paragraph 12",
+        "refs": [
+          "Paragraph 12"
+        ],
+        "score": 1.0,
+        "input_len_tok": 12326,
+        "gen_len_tok": 4
+      },
+      {
+        "id": 24,
+        "pred": "Paragraph 24",
+        "refs": [
+          "Paragraph 24"
+        ],
+        "score": 1.0,
+        "input_len_tok": 11025,
+        "gen_len_tok": 4
+      }
+    ],
+    "narrativeqa": [
+      {
+        "id": 0,
+        "pred": "He is living with the Mulvilles at their house in Wimbledon.",
+        "refs": [
+          "He is a guest in the home of the Mulvilles."
+        ],
+        "score": 0.47058823529411764,
+        "input_len_tok": 31409,
+        "gen_len_tok": 15
+      },
+      {
+        "id": 1,
+        "pred": "Ann's heart is entirely engrossed by one object, and friendship cannot serve as a substitute.",
+        "refs": [
+          "Because she is in unrequited love with someone else"
+        ],
+        "score": 0.08695652173913043,
+        "input_len_tok": 31456,
+        "gen_len_tok": 21
+      },
+      {
+        "id": 2,
+        "pred": "On Atlas' mountain within a cavern.",
+        "refs": [
+          "The Atlas Mountains"
+        ],
+        "score": 0.28571428571428575,
+        "input_len_tok": 8086,
+        "gen_len_tok": 9
+      },
+      {
+        "id": 3,
+        "pred": "To persuade Socrates to escape from prison.",
+        "refs": [
+          "To smuggle Socrates out of prison and into a life of exile."
+        ],
+        "score": 0.33333333333333326,
+        "input_len_tok": 9088,
+        "gen_len_tok": 10
+      },
+      {
+        "id": 4,
+        "pred": "He wanted to make an example of him.",
+        "refs": [
+          "Otto was so young."
+        ],
+        "score": 0.0,
+        "input_len_tok": 32658,
+        "gen_len_tok": 10
+      },
+      {
+        "id": 5,
+        "pred": "At least six hours.",
+        "refs": [
+          "Six hours."
+        ],
+        "score": 0.6666666666666666,
+        "input_len_tok": 13548,
+        "gen_len_tok": 6
+      },
+      {
+        "id": 6,
+        "pred": "With Lisa, Plog's wife.",
+        "refs": [
+          "Lisa, the blacksmith's wife."
+        ],
+        "score": 0.5714285714285715,
+        "input_len_tok": 31149,
+        "gen_len_tok": 9
+      },
+      {
+        "id": 7,
+        "pred": "Janosz Poha.",
+        "refs": [
+          "Dr. Janosz Poha"
+        ],
+        "score": 0.8,
+        "input_len_tok": 32659,
+        "gen_len_tok": 7
+      },
+      {
+        "id": 8,
+        "pred": "American.",
+        "refs": [
+          "She is an American."
+        ],
+        "score": 0.5,
+        "input_len_tok": 31408,
+        "gen_len_tok": 3
+      },
+      {
+        "id": 9,
+        "pred": "The lying scribe.",
+        "refs": [
+          "The scribe."
+        ],
+        "score": 0.6666666666666666,
+        "input_len_tok": 8092,
+        "gen_len_tok": 6
+      }
+    ]
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "auto": {
+    "hotpotqa": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 0.46790476190476193,
+      "score_ref": 0.46790476190476193
+    },
+    "narrativeqa": {
+      "new": 10,
+      "ref": 10,
+      "byte_exact_match": 10,
+      "score_new": 0.4253623188405797,
+      "score_ref": 0.4253623188405797
+    },
+    "passage_retrieval_en": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 1.0,
+      "score_ref": 1.0
+    },
+    "qasper": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 0.46891510282785454,
+      "score_ref": 0.46891510282785454
+    }
+  },
+  "turboquant_4bit_nc": {
+    "hotpotqa": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 0.4579047619047619,
+      "score_ref": 0.4579047619047619
+    },
+    "narrativeqa": {
+      "new": 10,
+      "ref": 10,
+      "byte_exact_match": 10,
+      "score_new": 0.4381354280842772,
+      "score_ref": 0.4381354280842772
+    },
+    "passage_retrieval_en": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 1.0,
+      "score_ref": 1.0
+    },
+    "qasper": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 0.4802529491846103,
+      "score_ref": 0.4802529491846103
+    }
+  },
+  "turboquant_k3v4_nc": {
+    "hotpotqa": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 0.4579047619047619,
+      "score_ref": 0.4579047619047619
+    },
+    "narrativeqa": {
+      "new": 10,
+      "ref": 10,
+      "byte_exact_match": 10,
+      "score_new": 0.4076815341521224,
+      "score_ref": 0.4076815341521224
+    },
+    "passage_retrieval_en": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 0.96,
+      "score_ref": 0.96
+    },
+    "qasper": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 0.4762721405116162,
+      "score_ref": 0.4762721405116162
+    }
+  },
+  "turboquant_3bit_nc": {
+    "hotpotqa": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 0.49104761904761907,
+      "score_ref": 0.49104761904761907
+    },
+    "narrativeqa": {
+      "new": 10,
+      "ref": 10,
+      "byte_exact_match": 10,
+      "score_new": 0.41785714285714287,
+      "score_ref": 0.41785714285714287
+    },
+    "passage_retrieval_en": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 1.0,
+      "score_ref": 1.0
+    },
+    "qasper": {
+      "new": 25,
+      "ref": 25,
+      "byte_exact_match": 25,
+      "score_new": 0.4390608894642143,
+      "score_ref": 0.4390608894642143
+    }
+  }
+}
