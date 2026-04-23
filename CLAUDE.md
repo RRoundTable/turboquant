@@ -456,6 +456,20 @@ half-validated setup. Every research variant must clear these gates first:
    hooks are for research prototyping only — they're 10× slower and don't
    stress the production plugin path. If the kernel isn't wired into the
    vLLM plugin yet, wire it up before running eval, don't fall back to HF.
+3. **Fan out multi-task / multi-variant runs across Forge.** If the eval
+   is more than one task or more than one variant, check `forge quota my`
+   and split the work into one job per (variant, task-group) so they run
+   in parallel instead of serially through a single job. Rule of thumb:
+     - Check `forge quota my` (headroom = `Available` GPUs).
+     - If headroom ≥ N, fan out N independent jobs, each with `--gpu 1`.
+     - Each job owns one slice (e.g. one variant × ~3 tasks, or one
+       long-context task on its own) and writes to its own output path.
+     - A final tiny aggregation step (local or 1-GPU job) merges the
+       per-slice JSONs into a single result table.
+     - Avoid submitting a single monolithic "all variants × all tasks"
+       job — one OOM there wastes the whole sweep.
+   Cap fan-out at the current quota headroom; never queue more jobs than
+   the team has available GPUs (other people use the cluster too).
 
 Concretely, for each new variant (A_35_prime, B_35_prime, etc.):
 
@@ -463,7 +477,8 @@ Concretely, for each new variant (A_35_prime, B_35_prime, etc.):
 2. CUDA kernel (`.cuh` + binding `.cu`) + JIT wrapper.
 3. GPU parity test: kernel vs Python reference on tile bits + decoded values.
 4. vLLM plugin dispatch path (new `kv_cache_dtype` string or mode switch).
-5. `tests/bench_longbench_vllm.py --mode <variant>` for batched eval.
+5. `tests/bench_longbench_vllm.py --mode <variant>` for batched eval,
+   **fanned out per rule 3 above** when running many tasks or variants.
 
 Steps 1–4 all produce committed code with green tests. Only then does the
 full 13-task × 100-sample LongBench job run.
