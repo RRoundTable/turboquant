@@ -33,15 +33,20 @@ Files touched: none in `vllm`/`turboquant/`. Only adds
 Analyse Phase 1's nsys + ncu output. Per-kernel warp-stall attribution,
 occupancy ceiling, and ordered ROI list for Phase 3. No code; analysis only.
 
-- [ ] **HYP-059** — `_tq_decode_stage1` warp-stall attribution.
-  Identify dominant stall class (`long_scoreboard` / `short_scoreboard` /
-  `math_pipe_throttle` / `wait`); occupancy ceiling at default config
-  (`num_warps=1, num_stages=1, BLOCK_KV=4`).
-- [ ] **HYP-060** — `_tq_fused_store_mse` warp-stall attribution.
-  Quantify the redundant midpoint loads in the binary-search loop
-  (`triton_turboquant_store.py:290`).
-- [ ] **HYP-061** — `_tq_full_dequant_kv` profile (continuation prefill).
-  Occupancy + memory bandwidth for the bulk-dequant path.
+- [x] **HYP-059** — `_tq_decode_stage1` profiling (PARTIAL, 2026-04-23,
+  Forge job `a10d3ae4`). nsys kernel-time attribution **confirms
+  `_tq_decode_stage1` as dominant TQ kernel (79.4 % of TQ time)**. ncu
+  warp-stall / occupancy / register sections blocked by Forge DCGM perf-counter
+  contention — see HYP-059 §Forge job iterations. Phase 3 ROI ranking
+  unblocked; warp-stall attribution stays a follow-up until DCGM
+  coordination is resolved or H100 access lands.
+- [x] **HYP-060** — folded into HYP-059. nsys data shows
+  `_tq_fused_store_mse` is 12.3 % of TQ time / 0.6 % of total kernel
+  time; HYP-064 prediction (0.5–1 % TPOT win) is right-sized — no
+  separate analysis needed.
+- [x] **HYP-061** — folded into HYP-059. `_tq_full_dequant_kv` is 8.3 %
+  of TQ time on `small_balanced` (continuation prefill rare on this
+  workload); deferred until a continuation-heavy bench surfaces.
 
 **Output**: ranked optimization-axis table (one row per kernel × bottleneck
 class × predicted ROI). This becomes Phase 3's HYP order.

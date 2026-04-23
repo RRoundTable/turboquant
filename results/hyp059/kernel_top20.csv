@@ -1,0 +1,20 @@
+ampere_fp16_s16816gemm_fp16_128x256_ldg8_f2f_stages_64x3_tn,2208,9803.26,4439.88,36.86
+"void flash::flash_fwd_kernel<Flash_fwd_kernel_traits<(int)128, (int)128, (int)64, (int)4, (bool)0, (bool)0, cutlass::half_t, Flash_kernel_traits<(int)128, (int)128, (int)64, (int)4, cutlass::half_t>>, (bool)0, (bool)1, (bool)0, (bool)0, (bool)0, (bool)1, (bool)0, (bool)0>(flash::Flash_fwd_params)",1400,6117.33,4369.52,23.0
+"void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x256_32x6_tn_align8>(T1::Params)",1024,3694.36,3607.77,13.89
+ampere_fp16_s16816gemm_fp16_256x128_ldg8_f2f_stages_64x3_tn,1282,1433.94,1118.52,5.39
+"void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<(int)128, (int)64, (int)128, (int)4, (bool)0, (bool)0, cutlass::half_t, Flash_kernel_traits<(int)128, (int)64, (int)128, (int)4, cutlass::half_t>>, (bool)1, (bool)0, (bool)0, (bool)0, (bool)1, (bool)0, (bool)0, (bool)0>(flash::Flash_fwd_params)",140,1013.92,7242.31,3.81
+_tq_decode_stage1,2576,990.45,384.49,3.72
+"void vllm::act_and_mul_kernel<c10::Half, __half2, &vllm::silu_kernel<c10::Half>, &vllm::packed_silu_kernel<__half2>, (bool)1, (bool)1, (bool)0>(T1 *, const T1 *, int)",3296,557.83,169.24,2.1
+ampere_fp16_s16816gemm_fp16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn,3685,504.79,136.99,1.9
+"std::enable_if<T2>(int)0&&vllm::_typeConvert<T1>::exists, void>::type vllm::fused_add_rms_norm_kernel<c10::Half, (int)8>(T1 *, long, T1 *, const T1 *, float, int, int)",6592,426.3,64.67,1.6
+ampere_fp16_s16816gemm_fp16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn,4224,263.26,62.33,0.99
+"void at::native::<unnamed>::CatArrayBatchedCopy<at::native::<unnamed>::OpaqueType<(unsigned int)2>, unsigned int, (int)3, (int)64, (int)64>(T1 *, at::native::<unnamed>::CatArrInputTensorMetadata<T1, T2, T4, T5>, at::native::<unnamed>::TensorSizeStride<T2, (unsigned int)4>, int, T2)",2744,236.26,86.1,0.89
+"void vllm::rotary_embedding_kernel<c10::Half, (bool)1>(const long *, T1 *, T1 *, const T1 *, int, long, long, long, int, int, int)",3296,222.83,67.61,0.84
+_tq_fused_store_mse,2856,153.81,53.86,0.58
+ampere_sgemm_128x128_nn,952,135.6,142.44,0.51
+"void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)",6384,126.3,19.78,0.47
+_tq_full_dequant_kv,1372,103.93,75.75,0.39
+"void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 10)]::operator ()() const::[lambda(c10::Half) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)",2944,83.72,28.44,0.31
+"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<c10::Half>, std::array<char *, (unsigned long)1>>(int, T2, T3)",2538,81.5,32.11,0.31
+ampere_sgemm_64x64_nn,280,74.28,265.3,0.28
+"void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, (unsigned long)2>, (int)4, TrivialOffsetCalculator<(int)1, unsigned int>, TrivialOffsetCalculator<(int)1, unsigned int>, at::native::memory::LoadWithCast<(int)1>, at::native::memory::StoreWithCast<(int)1>>(int, T1, T2, T4, T5, T6, T7)",3379,59.92,17.73,0.23

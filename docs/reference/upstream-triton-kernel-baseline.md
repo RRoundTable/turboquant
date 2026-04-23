@@ -10,17 +10,27 @@ Companion to `vllm-upstream-turboquant-architecture.md` (which covers
 the cross-kernel data flow + cache slot layout) — this doc zooms in on
 each kernel as a profiling target.
 
-> **Status — Phase 1 (HYP-058) confirmed accuracy + perf grid; ncu
-> profiling deferred.** The custom turboquant Forge image lacks
-> nsys/ncu and is rejected by `--security-profile profiling-debug`
-> (only `nvcr.io/nvidia/pytorch:*` and `*/mlops/forge:notebook-*`
-> images are allowed). The register-budget, warp-stall, and occupancy
-> cells stay TBD until HYP-059's profiling job lands. Launch-grid
-> values below are still source-derived from `triton_turboquant_*.py`
-> (independent of any run).
+> **Status — Phase 1 (HYP-058) and Phase 2 (HYP-059) partial.**
+> HYP-058 nailed accuracy + 16-cell perf grid. HYP-059 captured
+> per-kernel **timing** via nsys (proves `_tq_decode_stage1` dominates
+> at 79.4 % of TQ kernel time), but the ncu warp-stall / register /
+> occupancy sections were blocked at runtime by Forge's DCGM holding
+> the GPU's perf counters — see `docs/hypotheses/HYP-059-decode-stage1-warp-stalls.md`
+> §"Forge job iterations" for the workaround attempts. Those cells stay TBD.
 >
-> The Phase 1 perf baseline against which every Phase 3+ HYP is
-> measured is in [`BENCHMARKS.md`](../BENCHMARKS.md#hyp-058--measured-baseline-the-reference-for-every-phase-3-row-above).
+> The Phase 1 perf baseline is in
+> [`BENCHMARKS.md`](../BENCHMARKS.md#hyp-058--measured-baseline-the-reference-for-every-phase-3-row-above).
+>
+> HYP-059 measured (Llama-3.1-8B-Instruct, samples-per-task=5):
+>
+> | kernel | n_calls | total ms | avg μs | % of TQ time |
+> |---|---:|---:|---:|---:|
+> | `_tq_decode_stage1` | 2,576 | 990.5 | 384 | **79.4 %** |
+> | `_tq_fused_store_mse` | 2,856 | 153.8 | 54 | 12.3 % |
+> | `_tq_full_dequant_kv` | 1,372 | 103.9 | 76 | 8.3 % |
+>
+> TQ kernels = 4.7 % of total GPU kernel time at this workload (rest
+> is GEMM and prefill flash-attn). Top-20 at `results/hyp059/kernel_top20.csv`.
 
 ---
 
