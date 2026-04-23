@@ -1,5 +1,16 @@
 # Benchmarks
 
+> **Historical baseline (frozen 2026-04-22).** The 4-backend serving
+> tables in §"Setup" through §"How to read this" below were captured
+> with our pre-pivot custom-CUDA-kernel plugin
+> (`turboquant/vllm_backend_fused.py` + `csrc/**`) labelled *ours*,
+> compared against FA, FI, and the first-merged upstream
+> `turboquant_4bit_nc`. They remain true for that code (now archived),
+> but the project pivoted on 2026-04-23 to **improving upstream
+> Triton TurboQuant via a vLLM plugin** — no custom CUDA. New HYP
+> results land under
+> §"Upstream TurboQuant optimization track" at the bottom.
+
 End-to-end serving comparison of four attention-cache backends on the same hardware,
 workload, and harness. Numbers come directly from `vllm bench serve`'s JSON output;
 the aggregation script and raw results are in `results/v5_serve*`.
@@ -266,3 +277,74 @@ Each has an `aggregate.py` you can re-run locally to regenerate the tables.
 
 For the Forge-based full sweep, see `tests/bench_serve_entry.sh` and
 `tests/bench_serve_upstream_entry.sh`.
+
+---
+
+# Upstream TurboQuant optimization track
+
+Active development as of 2026-04-23. We ship optimizations to upstream
+vLLM v0.20.0's Triton TurboQuant kernels via a vLLM plugin (no source
+fork). Entries below land per confirmed HYP from
+`docs/ROADMAP.md` Phase 3+. See `docs/GOAL.md` for the SHA-256 parity
+gate and out-of-scope list.
+
+## Setup (current track)
+
+- **Model**: `meta-llama/Llama-3.1-8B-Instruct` (paper's model).
+- **Hardware**: 1× A100-SXM4-40GB on Forge, `--security-profile profiling-debug`.
+- **vLLM**: v0.20.0 (commit `579602aa4be6`), staged at
+  `/workspace/shared/tq-vllm020/vllm-v0.20.0/`.
+- **Plugin**: `pip install -e /workspace/shared/turboquant-plugin/`
+  before bench launch.
+- **Accuracy harness**: `tests/bench_longbench_vllm.py --preset small_balanced`,
+  greedy decoding, identical to HYP-057.
+- **Perf harness**: `tests/bench_serve_upstream_entry.sh` adapted to
+  v0.20.0; bench grid `{4bit_nc, k3v4_nc, 3bit_nc, fp16}` ×
+  `seq ∈ {1024, 8192}` × `concurrency ∈ {1, 8}` = 16 cells.
+
+## Baseline — HYP-057 (Llama-3.1-8B-Instruct, small_balanced)
+
+LongBench `small_balanced` 4-task accuracy (qasper / hotpotqa /
+passage_retr / narrativeqa, F1·ROUGE-L·acc):
+
+| preset | compression | 4-task avg | Δ vs fp16 |
+|---|---:|---:|---:|
+| `auto` (fp16) | 1× | 0.591 | — |
+| `turboquant_4bit_nc` | 3.82× | 0.594 | +0.003 ✅ |
+| `turboquant_k3v4_nc` | 4.34× | 0.576 | −0.015 ✅ |
+| `turboquant_3bit_nc` | 5.02× | 0.587 | −0.004 ✅ |
+| `turboquant_k8v4` | 2.61× | 0.012 | −0.579 ❌ (A100 broken; out of scope) |
+
+Forge job IDs (all SUCCEEDED): `af38238c` (fp16), `7a642416`
+(`4bit_nc`), `2810a1c8` (`k3v4_nc`), `44b23c1b` (`3bit_nc`),
+`36542047` (`k8v4`). Raw JSONs at
+`/workspace/shared/vllm020_longbench/`.
+
+## Per-HYP results
+
+Each row records the confirmed HYP, the kernel(s) it patches, the
+parity gate it cleared, and the median TPOT delta vs the HYP-057
+baseline at the bench cell where the HYP wins biggest. *TBD* rows are
+filled in as Phase 3+ HYPs land.
+
+| HYP | patches | parity gate | best cell (preset × seq × conc) | TPOT before → after | Δ TPOT |
+|---|---|---|---|---:|---:|
+| HYP-058 (baseline lock) | none | — (reference) | `4bit_nc × 8192 × 1` | TBD | — |
+| HYP-062 (joint launch retune) | `_tq_decode_stage1` | SHA-256 | TBD | TBD | TBD |
+| HYP-063 (smem centroid pre-stage) | `_tq_decode_stage1` | SHA-256 | TBD | TBD | TBD |
+| HYP-064 (midpoints pre-load) | `_tq_fused_store_mse` | SHA-256 | TBD | TBD | TBD |
+| HYP-065 (adaptive `NUM_KV_SPLITS`) | `TurboQuantMetadataBuilder.build` | mean ±0.002 pp (opt-out) | TBD | TBD | TBD |
+| HYP-066 (`tl.dot` QK fp16 acc) | `_tq_decode_stage1` | mean ±0.002 pp (opt-out) | TBD | TBD | TBD |
+| HYP-067 (`tl.dot` V acc + TMA) | `_tq_decode_stage1` | mean ±0.002 pp (opt-out) | TBD | TBD | TBD |
+
+## Profiling artefacts
+
+Each confirmed HYP archives paired nsys + ncu traces at
+`/workspace/shared/hypNNN/`:
+
+- `before/trace.nsys-rep`, `before/decode.ncu-rep` — baseline (plugin off).
+- `after/trace.nsys-rep`, `after/decode.ncu-rep` — patched (plugin on).
+- `delta-warpstall.md` — short writeup of the dominant warp-stall class
+  shift, must match the HYP's predicted shift.
+
+No HYP merges to main without both halves on disk.

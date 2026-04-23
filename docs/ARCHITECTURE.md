@@ -1,5 +1,21 @@
 # Architecture
 
+> **Archived (frozen 2026-04-23).** This document describes the
+> custom-CUDA-kernel design (`csrc/**`,
+> `turboquant/decode_kernel*.py`, `turboquant/vllm_backend_fused.py`)
+> from the pre-pivot project. That track is no longer the development
+> target; see `docs/GOAL.md` for the current direction.
+>
+> **Primary architecture reference (new track):**
+> [`docs/reference/vllm-upstream-turboquant-architecture.md`](reference/vllm-upstream-turboquant-architecture.md)
+> — upstream vLLM v0.20.0's Triton TurboQuant kernels (file tree, cache
+> slot layout, store/decode flows, fusion map, optimization axes).
+>
+> The directory map, dependency-direction rules, and `csrc/`-centric
+> diagrams below remain accurate for the archived code, but new HYPs
+> (HYP-058+) target the upstream Triton kernels via a vLLM plugin and
+> do not edit `csrc/**`.
+
 ## Overview
 
 TurboQuant compresses the LLM KV cache from fp16 to 4-bit codebook quantization
