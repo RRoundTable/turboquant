@@ -234,9 +234,52 @@ done
 
 ## Project Goal
 
-Match FlashInfer's decode latency with TurboQuant's 3.76× memory efficiency.
-The kernel must be **as fast as FlashInfer** and **as memory-efficient as TurboQuant**.
-Use profiling data to guide every optimization decision — never guess.
+Improve upstream vLLM v0.20.0's Triton TurboQuant kernels on A100 (SM80)
+while preserving bit-exact LongBench accuracy per the HYP-057 baseline.
+Ship optimizations as a vLLM plugin that monkey-patches upstream Triton
+entry points; no vLLM source fork. The custom-CUDA-kernel track
+(`csrc/**`, `turboquant/decode_kernel*.py`,
+`turboquant/vllm_backend_fused.py`) is archived under
+`docs/hypotheses/archive/custom-kernel/` and
+`docs/reference/archive/custom-kernel/` — do not extend it.
+
+Read `docs/GOAL.md` for full success criteria and the explicit
+out-of-scope list (custom CUDA, QJL, outlier-aware, k8v4-on-A100,
+docker/vllm_patches/, source forks, H100/H200/B200).
+
+## Plugin development workflow
+
+The plugin lives in this repo under `turboquant/`. At vLLM startup,
+`turboquant.vllm_plugin:register()` (declared as
+`[project.entry-points."vllm.plugins"]` in `pyproject.toml`) replaces
+specific attrs on `vllm.v1.attention.ops.triton_turboquant_decode` and
+`vllm.v1.attention.ops.triton_turboquant_store` with our optimized
+Triton kernels. The user-visible CLI
+(`--kv-cache-dtype turboquant_*_nc`) is unchanged.
+
+**Install**: `pip install -e .` against a vLLM that already has v0.20.0
+TurboQuant. No vLLM fork. No source edits. No `docker/vllm_patches/`
+overlay (v0.20.0 merged the page-size hook natively).
+
+**Forge job pattern**: stage the plugin to
+`/workspace/shared/turboquant-plugin/`, then each job's entrypoint runs
+`pip install -e /workspace/shared/turboquant-plugin` before invoking
+`tests/bench_longbench_vllm.py` or `tests/bench_serve_upstream_entry.sh`.
+Do **not** `cp` over vLLM's `site-packages` — let the entry-point do its
+work.
+
+**Bit-exact verification (mandatory per HYP)**: run the eval with the
+plugin disabled (reference) and enabled (candidate); SHA-256-compare the
+prediction token strings against the HYP-057 baseline at
+`/workspace/shared/vllm020_longbench/`. Default gate is byte-exact. A
+specific HYP may opt out to `mean_score within ±0.002 pp per task` only
+with a written mathematical justification (see `docs/GOAL.md` §1).
+
+**Profiling (mandatory per HYP)**: every optimization ships with paired
+nsys + ncu traces (before / after) captured under Forge
+`--security-profile profiling-debug`. The ncu warp-stall delta must
+match the HYP's predicted bottleneck shift. No merge without both
+halves.
 
 ## GPU Profiling
 
@@ -382,9 +425,13 @@ ncu --section SpeedOfLight --section WarpStateStatistics \
 
 ## Architecture
 
-Read `docs/ARCHITECTURE.md` for module boundaries and import rules.
+Primary reference: `docs/reference/vllm-upstream-turboquant-architecture.md`
+— upstream Triton kernel file tree, cache slot layout, store/decode
+flows, fusion map, and per-kernel optimization axes.
 
-**Dependency direction:** integrations → kv_cache → quantizer → {codebook, hadamard, qjl}
+`docs/ARCHITECTURE.md` covers the archived custom-CUDA-kernel design
+(`csrc/**`); kept for historical reference only. New work targets the
+upstream Triton kernels via the plugin path described above.
 
 ## Governance
 
@@ -444,18 +491,21 @@ All kernel optimization work follows a hypothesis → experiment → record cycl
 LongBench (and any full-scale eval) is expensive. Never run it from a
 half-validated setup. Every research variant must clear these gates first:
 
-1. **Unit-test the kernel first.** Before any LongBench run, the CUDA
-   kernel for the variant (write + dequant + decode as applicable) must
-   pass parity tests against its Python reference on a Forge GPU job.
-   Tile bytes must be bit-exact where the packing is deterministic;
-   decoded K/V must match Python's `dequantize` within fp16 tolerance
-   (cos ≥ 0.9998). No eval until these tests are green.
-2. **Eval runs through vLLM, not HF hooks.** LongBench eval uses the
-   vLLM plugin (`turboquant/vllm_backend_fused.py`) so the kernel is
-   hot-path integrated and generation is batched. HF `ALL_ATTENTION_FUNCTIONS`
-   hooks are for research prototyping only — they're 10× slower and don't
-   stress the production plugin path. If the kernel isn't wired into the
-   vLLM plugin yet, wire it up before running eval, don't fall back to HF.
+1. **SHA-256 parity test before any LongBench run.** The patched plugin
+   kernel must produce prediction token strings that match the HYP-057
+   baseline byte-for-byte on
+   `tests/bench_longbench_vllm.py --preset small_balanced` for at least
+   one preset (default `turboquant_4bit_nc`). SHA-256 mismatch is a hard
+   fail unless the HYP doc opts out per `docs/GOAL.md` §1 (with a
+   written mathematical justification). No multi-task eval until this
+   gate is green.
+2. **Eval runs through vLLM with the plugin enabled, not HF hooks.**
+   LongBench eval uses `tests/bench_longbench_vllm.py` so generation is
+   batched and the plugin's monkey-patched Triton kernels are hot-path
+   integrated. HF `ALL_ATTENTION_FUNCTIONS` hooks are for research
+   prototyping only — 10× slower and they bypass the upstream plugin
+   path entirely. If a new kernel variant isn't wired into the plugin
+   yet, wire it up before running eval; don't fall back to HF.
 3. **Fan out multi-task / multi-variant runs across Forge.** If the eval
    is more than one task or more than one variant, check `forge quota my`
    and split the work into one job per (variant, task-group) so they run
@@ -471,17 +521,25 @@ half-validated setup. Every research variant must clear these gates first:
    Cap fan-out at the current quota headroom; never queue more jobs than
    the team has available GPUs (other people use the cluster too).
 
-Concretely, for each new variant (A_35_prime, B_35_prime, etc.):
+Concretely, for each upstream-improvement HYP (HYP-062, 063, …):
 
-1. Python reference module in `turboquant/<variant>.py` + unit tests.
-2. CUDA kernel (`.cuh` + binding `.cu`) + JIT wrapper.
-3. GPU parity test: kernel vs Python reference on tile bits + decoded values.
-4. vLLM plugin dispatch path (new `kv_cache_dtype` string or mode switch).
-5. `tests/bench_longbench_vllm.py --mode <variant>` for batched eval,
-   **fanned out per rule 3 above** when running many tasks or variants.
+1. Add the optimized Triton kernel under
+   `turboquant/kernels/<kernel_name>.py`.
+2. Extend `turboquant/vllm_plugin.py:_patch_triton_kernels()` to
+   monkey-patch the upstream entry point with the new variant.
+3. Run `tests/bench_longbench_vllm.py --backend turboquant_4bit_nc
+   --preset small_balanced` with the plugin enabled; SHA-256-compare
+   the per-(preset, task, sample) prediction strings against
+   `/workspace/shared/vllm020_longbench/turboquant_4bit_nc-…json`.
+4. Capture paired nsys + ncu traces under
+   `--security-profile profiling-debug`. The ncu warp-stall delta must
+   match the HYP's predicted bottleneck shift.
+5. Run the perf grid via `tests/bench_serve_upstream_entry.sh`
+   (≥ 5 % TPOT win at the best cell, ≤ 0.5 % regression elsewhere),
+   **fanned out per rule 3 above** when running many tasks or presets.
 
-Steps 1–4 all produce committed code with green tests. Only then does the
-full 13-task × 100-sample LongBench job run.
+Steps 1–4 all produce committed code + traces with green gates. Only
+then does the full multi-task LongBench sweep run.
 
 ## Code Standards
 
