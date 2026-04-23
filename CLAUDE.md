@@ -439,6 +439,35 @@ All kernel optimization work follows a hypothesis → experiment → record cycl
 - Check `docs/hypotheses/` before proposing any new optimization
 - Include paper references when the idea comes from literature
 
+## Evaluation Workflow (mandatory)
+
+LongBench (and any full-scale eval) is expensive. Never run it from a
+half-validated setup. Every research variant must clear these gates first:
+
+1. **Unit-test the kernel first.** Before any LongBench run, the CUDA
+   kernel for the variant (write + dequant + decode as applicable) must
+   pass parity tests against its Python reference on a Forge GPU job.
+   Tile bytes must be bit-exact where the packing is deterministic;
+   decoded K/V must match Python's `dequantize` within fp16 tolerance
+   (cos ≥ 0.9998). No eval until these tests are green.
+2. **Eval runs through vLLM, not HF hooks.** LongBench eval uses the
+   vLLM plugin (`turboquant/vllm_backend_fused.py`) so the kernel is
+   hot-path integrated and generation is batched. HF `ALL_ATTENTION_FUNCTIONS`
+   hooks are for research prototyping only — they're 10× slower and don't
+   stress the production plugin path. If the kernel isn't wired into the
+   vLLM plugin yet, wire it up before running eval, don't fall back to HF.
+
+Concretely, for each new variant (A_35_prime, B_35_prime, etc.):
+
+1. Python reference module in `turboquant/<variant>.py` + unit tests.
+2. CUDA kernel (`.cuh` + binding `.cu`) + JIT wrapper.
+3. GPU parity test: kernel vs Python reference on tile bits + decoded values.
+4. vLLM plugin dispatch path (new `kv_cache_dtype` string or mode switch).
+5. `tests/bench_longbench_vllm.py --mode <variant>` for batched eval.
+
+Steps 1–4 all produce committed code with green tests. Only then does the
+full 13-task × 100-sample LongBench job run.
+
 ## Code Standards
 
 - No `TODO`, `FIXME`, `HACK`, `XXX`, or `WORKAROUND` in committed code
