@@ -250,5 +250,13 @@ A_35_prime` on 13 tasks × 100 samples.
   - fp16 norm bytes [56..60) within fp16 ULP tolerance.
   - Decoded-through-reference cos mean ≥ 0.9998 vs Python tile's decode.
   No kernel iterations required.
-- **Phase 3 decode kernel + vLLM plugin** — next.
-- **Phase 4 LongBench eval** — pending.
+- **Phase 3a dequantize kernel + parity** — committed (`8e09c8d`). **CONFIRMED.**
+  Forge job `7a445399` built the JIT kernel with both quantize+dequantize
+  and all 28 tests passed (adds `test_cuda_dequant_matches_python_dequant`
+  cos ≥ 0.9998 + `test_full_roundtrip_cuda_vs_python` cos ≥ 0.90 on
+  synthetic Gaussian). Kernel exposes bit-exact round-trip on GPU.
+- **Phase 3b vLLM plugin wiring** — next. New `kv_cache_dtype="A_35_prime"`
+  routes writes through `quantize_write_a35` and reads through
+  `dequantize_a35` + torch SDPA attention (or a full fused decode kernel
+  for speed; dequant+SDPA is correct by construction and unblocks eval).
+- **Phase 4 LongBench eval** — pending vLLM wiring.
