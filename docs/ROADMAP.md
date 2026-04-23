@@ -1,575 +1,166 @@
 # Roadmap
 
-## Now
+Improve upstream vLLM v0.20.0's Triton TurboQuant kernels via a vLLM
+plugin. Five phases, each gated on the prior phase's output. Only "Now"
+phases are active targets; everything else is staged.
 
-### Phase 1: Architecture and Memory Layout Design (C++ / CPU) — DONE
+The accuracy gate, plugin architecture, and out-of-scope items are
+defined in `docs/GOAL.md`. This document plans *what* to do; the
+hypothesis docs in `docs/hypotheses/HYP-058+` capture each experiment.
 
-- [x] TurboQuantTile struct (16 tokens × 64 dims, now 544 bytes at uniform 4-bit)
-- [x] 4-bit nibble packing, Lloyd-Max codebook
-- [x] CPU mock tests, static_assert alignment
-- [x] GPU-native Python core (codebook, Hadamard, QJL)
+---
 
-### Phase 2: Write Kernel — DONE
+## Now — Phase 1: Baseline lock
 
-- [x] CUDA write kernel: L2 normalize → codebook quantize → bit-pack → VRAM write
-- [x] Bit-exact vs C++ CPU reference
-- [x] PyTorch write kernel reference (`write_kernel.py`)
+Reproduce HYP-057 on a fresh Forge run, capture reference nsys + ncu
+traces under `--security-profile profiling-debug`, and scaffold the
+per-kernel baseline reference doc that Phase 2 fills in.
 
-Note: Hadamard rotation and RoPE not fused into CUDA kernel yet (done in Python simulation).
+- [ ] **HYP-058** — Baseline lock (no code, pure measurement).
+  - Bench grid: `{4bit_nc, k3v4_nc, 3bit_nc, fp16}` × `seq ∈ {1024, 8192}` ×
+    `concurrency ∈ {1, 8}` = 16 cells, via
+    `tests/bench_serve_upstream_entry.sh` adapted to v0.20.0.
+  - Profile subset: `4bit_nc × seq=8192 × concurrency=1` with nsys
+    (`-t cuda,nvtx`) and ncu
+    (`--section WarpStateStatistics,SpeedOfLight,MemoryWorkloadAnalysis`,
+    `--kernel-name regex:_tq_.*`).
+  - Populate the TBD cells in
+    `docs/reference/upstream-triton-kernel-baseline.md`.
+  - **Gate**: bench JSON + nsys + ncu archived under
+    `/workspace/shared/hyp058_phase1/`. SHA-256 of fp16 prediction
+    strings recorded as the parity reference.
 
-### Phase 3: Fused Decode Kernel — DONE (standalone, NOT integrated into vLLM)
+Files touched: none in `vllm`/`turboquant/`. Only adds
+`docs/hypotheses/HYP-058-*.md` and writes baseline TBD cells.
 
-Built a standalone CUDA decode kernel that fuses dequantization into the attention loop.
-Uses FlashInfer headers for math/types but does NOT modify FlashInfer source code.
+---
 
-#### 3a. Standalone kernel — DONE
-- [x] `paged_kv_turbo_t` struct: quantized KV + norms + page table (`csrc/include/turboquant/page_turbo.cuh`)
-- [x] `decode_turboquant.cuh`: standalone attention kernel with inline dequant (`csrc/include/turboquant/decode_turboquant.cuh`)
-- [x] Dummy injection test: cosine=1.000000 vs CPU reference
+## Next — Phase 2: Kernel-level profiling
 
-#### 3b. Profiling — DONE
-- [x] No register spilling (50 regs, 0 local memory)
-- [x] Parallel dequant: 1.72× speedup, 1.02 tokens/μs
+Analyse Phase 1's nsys + ncu output. Per-kernel warp-stall attribution,
+occupancy ceiling, and ordered ROI list for Phase 3. No code; analysis only.
 
-#### 3c. Python JIT wrapper — DONE
-- [x] `TurboQuantDecoder` via torch.utils.cpp_extension JIT compile (`turboquant/decode_kernel.py`)
-- [x] cosine=1.0 from Python
+- [ ] **HYP-059** — `_tq_decode_stage1` warp-stall attribution.
+  Identify dominant stall class (`long_scoreboard` / `short_scoreboard` /
+  `math_pipe_throttle` / `wait`); occupancy ceiling at default config
+  (`num_warps=1, num_stages=1, BLOCK_KV=4`).
+- [ ] **HYP-060** — `_tq_fused_store_mse` warp-stall attribution.
+  Quantify the redundant midpoint loads in the binary-search loop
+  (`triton_turboquant_store.py:290`).
+- [ ] **HYP-061** — `_tq_full_dequant_kv` profile (continuation prefill).
+  Occupancy + memory bandwidth for the bulk-dequant path.
 
-**NOT done:** FlashInfer was not modified. The fused kernel is standalone, not integrated into FlashInfer's JIT system or vLLM's attention dispatch.
+**Output**: ranked optimization-axis table (one row per kernel × bottleneck
+class × predicted ROI). This becomes Phase 3's HYP order.
 
-### Phase 4: vLLM Integration — IN PROGRESS
+Files touched: only updates to
+`docs/reference/upstream-triton-kernel-baseline.md` + new
+`docs/hypotheses/HYP-059..061-*.md`.
 
-#### What works:
-- [x] `TurboQuantBackend` registered in vLLM (FlashAttention subclass)
-- [x] `attention_backend="TURBOQUANT"` selects our backend
-- [x] Python quantize-dequant simulation in `do_kv_cache_update`
-- [x] Qwen3-1.7B generates correct text (7/8 factual accuracy matches baseline)
-- [x] TTFT/TPOT benchmarked: 1.84× overhead from Python simulation
+---
 
-#### What does NOT work:
-- [ ] **Kernel fusion not applied** — vLLM uses Python quantize-dequant + FlashAttention, not the fused CUDA kernel
-- [ ] **No memory savings** — KV cache stores fp16 (same size as baseline), quantize-dequant is a simulation pass
-- [ ] **No compressed cache allocator** — vLLM's allocator needs modification to allocate smaller int8 buffers
-- [ ] Max batch size measurement
-- [ ] Perplexity eval (WikiText, LongBench, NIAH)
+## Then — Phase 3: Memory-hierarchy optimization
 
-#### To achieve real kernel fusion + memory savings:
-1. Modify vLLM's `_allocate_kv_cache` to allocate compressed int8 buffers
-2. Override `get_kv_cache_shape` to return compressed dimensions
-3. Replace `do_kv_cache_update` with CUDA write kernel (quantize → store packed bytes)
-4. Replace `forward` with fused CUDA decode kernel (read packed bytes → dequant → attention)
-5. Benchmark actual VRAM reduction and TPOT improvement
+Plugin-monkey-patch experiments on the upstream Triton kernels. Each HYP
+must clear the SHA-256 parity gate (or document a mathematical opt-out
+per `GOAL.md` §1) AND the paired nsys/ncu trace requirement before merge.
 
-### Phase 5: Fused Kernel Integration — DONE
-
-Fused CUDA decode kernel running in vLLM. Qwen3-1.7B generates coherent text.
-
-- [x] Store quantized bytes in separate HND tensors alongside vLLM cache
-- [x] Call fused CUDA decode kernel from vLLM `forward()` for decode
-- [x] Prefill fallback: eager dequant → FlashAttention
-- [x] Fix 8 bugs (chunk size, dequant split, GQA dispatch, bound check, HEAD_DIM, output dims, rotation, layout)
-- [x] 8/8 standalone kernel tests at cosine=1.0
-- [ ] Benchmark: TPOT with fused kernel vs eager simulation
-- [ ] Max batch size: measure VRAM savings
-
-### Phase 6: Benchmarks and Optimization — DONE (partial)
-
-#### 6a. Kernel benchmark — DONE
-
-Standalone kernel comparison (seq_len=1024, Qwen3 config):
-
-| Kernel | Latency | vs SDPA |
-|--------|---------|---------|
-| FP16 SDPA (FlashAttention) | 20.5 μs | 1.0× |
-| TQ fused (bdz=1, 16 threads) | 856 μs | 41.6× slower |
-| TQ fused (bdz=16, 256 threads) | 142 μs | 6.9× slower |
-
-Memory: 3.76× compression confirmed (512 → 136 bytes/token/head).
-
-#### 6a-opt. Step-by-step optimization — DONE
-
-| Step | What | Result |
-|------|------|--------|
-| More threads (bdz sweep) | bdz 1→16 | 856→142 μs (**6× speedup**) |
-| Pipeline analysis | Kernel is compute-bound | Double-buffer won't help |
-| FWHT in kernel | Shuffle-based FWHT | Broken with multi-warp layout |
-| bdz>1 merge | Cross-tz softmax merge | Broken (tile index interaction with GQA) |
-
-**Conclusion: our standalone kernel proves correctness (cosine=1.0) but is 7-42× slower than FlashAttention. Closing this gap requires modifying FlashInfer's optimized decode kernel directly — replacing its `cast_load` KV path with a dequant path. This avoids reimplementing tensor cores, pipelining, and warp specialization from scratch.**
-
-#### 6b-6d. Not started
-
-Blocked on kernel performance. The fused kernel is too slow for meaningful serving benchmarks.
-
-### Phase 7: Modify FlashInfer decode kernel — NOW
-
-Follow FlashInfer's existing architecture. Add TurboQuant as a new KV dtype alongside FP8/FP16. Only change the KV loading path — everything else stays FlashInfer's optimized code.
-
-Working tree: `~/workdir/flashinfer` on DGX Spark.
-
-#### What FlashInfer already does for FP8:
-1. `cp_async` loads FP8 bytes from VRAM → shared memory
-2. `cast_load` converts FP8 → float in registers (hardware type cast)
-3. QK dot product, softmax, V accumulate — all optimized with tensor cores
-
-#### What we change for TurboQuant 4-bit:
-1. Replace `cp_async` with: load 4-bit packed bytes → **codebook lookup** → write fp16 to smem
-2. Keep `cast_load` (reads fp16 from smem → float registers, same as FP16 path)
-3. Keep QK, softmax, V accumulate **completely unchanged**
-
-#### Done:
-- [x] `flashinfer_dequant_load.cuh`: dequant_load_to_smem (replaces cp_async per element)
-- [x] `flashinfer_decode_turbo.cuh`: FlashInfer-style kernel with dequant load
-- [x] Correctness: cosine=1.0 (head_dim=64/128, GQA, 1-64 tokens)
-- [x] Benchmark: 1739 μs (84× vs SDPA) — correct but slow
-
-#### Optimization steps (see `docs/reference/optimization-plan.md`):
-- [x] **7a.** Fix bdz>1 merge → 373 μs (4.7× speedup, 18× vs SDPA)
-- [x] **7b.** Precompute page offsets → skipped (net negative from smem pressure)
-- [ ] **7c.** In-kernel FWHT → eliminate 203 μs Python overhead
-- [x] **7d.** Inject dequant into FlashInfer decode — cosine=1.0, 9/9 configs pass (A100)
-  - Uses FlashInfer's compute_qk, update_local_state, sync_state directly
-  - head_dim={64,128}, GQA={1:1,2:1,4:1}, batch={1,2}, seq_len={16..256}
-  - Tested on Forge A100-SXM4-40GB
-- [x] **7e.** Benchmark v2 kernel vs SDPA on A100
-
-v2 benchmark results (Qwen3 config: 12 heads, head_dim=128, batch=1):
-
-| seq_len | SDPA (μs) | TQ v2 (μs) | Ratio |
-|---------|-----------|------------|-------|
-| 128     | 22        | 59         | 2.7×  |
-| 256     | 31        | 101        | 3.3×  |
-| 512     | 30        | 185        | 6.2×  |
-| 1024    | 31        | 351        | 11.4× |
-| 2048    | 30        | 635        | 21.1× |
-| 4096    | 34        | 1352       | 39.8× |
-
-**Analysis:** SDPA uses cp_async pipelining (load/compute overlap). Our v2 kernel has
-zero pipelining — dequant is synchronous, each tile blocks until load completes. The
-compute path (compute_qk/update_local_state) is FlashInfer's optimized code, but the
-load path kills performance because it serializes memory and compute.
-
-**Root cause:** `cp_async` is a HW DMA that overlaps with compute. Our dequant-load
-requires ALU work (codebook lookup) during the load, so it can't use `cp_async`.
-The entire tile load → sync → compute → sync pattern is serial.
-
-#### Software pipelining (closing the gap with SDPA):
-- [x] **7f.** cp_async staged pipeline — **net negative** (18% slower than v2).
-  cp_async packed bytes to smem staging, dequant from staging to fp16. Correct (cos=1.0)
-  but extra syncs + staging overhead > overlap benefit. Root cause: compute phases are
-  too short (0.5μs) to hide VRAM load (1.5μs). cp_async only helps when compute ≈ load.
-- [x] **7g.** Fused inline dequant (v4) — **22-33% faster than v2**
-  Eliminated fp16 smem buffer, dequant inline during QK/V compute.
-  cp_async packed bytes → staging, precompute norms → smem, inline dequant to float.
-  No FlashInfer function reuse (custom QK/V loops). ~7× less smem than v2.
-  Results (12 heads, hd=128, batch=1):
-
-  | seq | SDPA | v2 | v4 | v4/v2 |
-  |-----|------|----|----|-------|
-  | 512 | 53μs | 206μs | 159μs | 0.78× |
-  | 1024 | 60μs | 415μs | 296μs | 0.71× |
-  | 2048 | 67μs | 755μs | 503μs | 0.67× |
-
-  Still 3-7× slower than SDPA at bdz=4. Remaining gap: occupancy + page table overhead.
-- [x] **7h.** Increase bdz to 16 — **3.3× speedup** (HYP-008 confirmed)
-  v4 at bdz=16: 89μs at seq=1024 (was 296μs at bdz=4). 256 threads = 8 warps.
-  Correctness: cos=1.0, 6/6 configs. Faster than SDPA at short sequences.
-
-#### Contiguous + split-KV optimization:
-- [x] **7i.** Contiguous KV layout (HYP-017) — **beats SDPA at seq≤256**
-  No paging overhead: 16μs at seq=128 (vs SDPA 22μs), 24μs at seq=256 (vs SDPA 30μs)
-- [x] **7j.** Contiguous + split-KV combined (HYP-018) — **flat 48μs at seq=128-1024**
-  Adaptive: nosplit at seq≤256 (22-32μs), split at seq≥512 (48-59μs)
-
-#### Current best (A100, Qwen3-1.7B, batch=1):
-
-| seq | Best TQ | Config | vs SDPA | Memory |
-|-----|---------|--------|---------|--------|
-| 128 | **22 μs** | contiguous nosplit | **1.0× (matches SDPA)** | 3.8× less |
-| 256 | **32 μs** | contiguous nosplit | 1.05× | 3.8× less |
-| 512 | **48 μs** | contiguous split-4 | 1.6× | 3.8× less |
-| 1024 | **48 μs** | contiguous split-8 | 1.6× | 3.8× less |
-| 2048 | **59 μs** | contiguous split-16 | 2.0× | 3.8× less |
-
-Kernel evolution: 856μs → 37μs (CUDA graph) = **23× total speedup** (23 hypotheses tested).
-
-#### Hypothesis record (23 total, 10 confirmed, 13 rejected):
-See `docs/hypotheses/` for all experiment records.
-
-### Phase 8: Evaluation and Integration — DONE
-
-- [x] **8a.** Perplexity — **0.01% degradation** (14.91 → 14.91 PPL on WikiText-2)
-- [x] **8b.** Memory — **3.76× compression**, 3.8× more concurrent requests
-- [x] **8c.** vLLM E2E with v4 contiguous+split-KV kernel — backend updated
-- [x] **8d.** Multi-model — **6/6 models pass** on A100
-- [x] **8e.** Max batch — **3.8× more requests** (71→268 at seq=4K on A100-40GB)
-- [x] **8f.** Throughput — **TQ beats SDPA at batch≥64** (1.1-1.2× higher tok/s)
-- [x] **8g.** Correctness — **100% exact token match** (12/12 prompts, Qwen3-1.7B + 8B)
-- [x] **8h.** FlashInfer comparison — **TQ beats FlashInfer at seq≤256** (0.68× faster)
-- [x] **8i.** CUDA write kernel (HYP-021) — **prefill TTFT overhead: 3.7%** (was 44%)
-- [x] **8j.** CUDA graph capture (HYP-023) — **decode overhead: 2.5%** (was 23% eager)
-- [x] **8k.** Fused combine (HYP-022) — rejected (7-8% slower, __threadfence overhead)
-
-#### Complete E2E Performance (A100, Qwen3-1.7B, CUDA graphs, batch=1)
-
-| Phase | FP16 baseline | TQ 4-bit | Overhead |
-|-------|--------------|----------|----------|
-| Prefill write (2K tok) | 1.2 ms (memcpy) | 3.1 ms (CUDA quantize) | **+3.7% of TTFT** |
-| Decode TPOT (seq≤256) | 1.2 ms | **0.81 ms (eager)** | **33% faster** |
-| Decode TPOT (seq=1024) | 1.2 ms | **1.23 ms (CUDA graph)** | **2.5% slower** |
-| Memory | 1.0× | **0.27×** | **3.76× less** |
-| **Max batch throughput** | 1.0× | **~3.6×** | **3.6× gain** |
-
-Adaptive dispatch: eager at seq≤256 (TQ faster), CUDA graph at seq≥512 (26% kernel speedup).
-
-#### Correctness
-
-| Test | Result |
-|------|--------|
-| Kernel cosine (all configs) | 1.000000 |
-| WikiText-2 PPL | 14.91 → 14.91 (0.01% loss) |
-| Exact token match (12 prompts) | 100% on Qwen3-1.7B and 8B |
-| Factual accuracy | FP16 = TQ on every prompt |
-
-### Architecture gap: TurboQuant vs FlashInfer (baseline)
-
-**Current: 1.6× at seq=1024 (48μs vs 30μs). Origin of the gap:**
+Plugin package layout (incremental — files added per HYP, not all at once):
 
 ```
-FlashInfer FP16 decode pipeline:
-  VRAM [fp16] ──cp_async──► SMEM [fp16] ──cast_load──► Regs [float]
-       └── pipelined: load N+1 overlaps compute N (2-3 stages) ──┘
-  Compute: tensor core mma.sync (312 TFLOPS)
-  Grid: batch × kv_heads × num_splits (fills all SMs)
-
-TurboQuant v4 contiguous+split pipeline:
-  VRAM [4-bit] ──cp_async──► SMEM staging [uint8] ──dequant──► Regs [float]
-       └── NO overlap: dequant is ALU, can't pipeline with compute ──┘
-  Compute: scalar FMA + warp shuffle (20 TFLOPS)
-  Grid: batch × kv_heads × num_splits (same structure)
+turboquant/
+├── vllm_plugin.py                 # extend register() with _patch_triton_kernels()
+├── kernels/
+│   ├── decode_stage1.py           # HYP-062/063/065 target
+│   ├── store_mse.py               # HYP-064 target
+│   └── store_fp8.py               # (future)
+└── dispatch.py                    # SM-tier config selection (Phase 4)
 ```
 
-| Aspect | FlashInfer | TurboQuant | Gap factor |
-|--------|-----------|------------|-----------|
-| QK/V compute | Tensor core (312 TFLOPS) | Scalar FMA (20 TFLOPS) | **~1.5× on QK phase** |
-| Pipelining | 2-3 stages overlap | Single-stage serial | **~1.2× (4 syncs vs 2)** |
-| Data per token | 512 bytes (fp16) | 136 bytes (4-bit) | **0.27× (TQ wins)** |
-| Grid parallelism | Same split-KV | Same split-KV | 1.0× |
-| Smem per block | ~32 KB | ~7 KB | **0.22× (TQ wins)** |
+`pyproject.toml` already declares the entry point
+`[project.entry-points."vllm.plugins"] turboquant = "turboquant.vllm_plugin:register"`.
 
-**The 1.6× gap decomposition:**
-- 40%: scalar FMA vs tensor cores (irreducible without INT4 TC or BitDecoding)
-- 30%: rank-2 QK underutilizes M16 MMA dimension at bdy=2
-- 15%: sequential dequant ALU (codebook lookup per element)
-- 10%: SM fill (64 blocks / 108 SMs at batch=1)
-- 5%: extra syncs + instruction overhead
+- [ ] **HYP-062** — Joint retune of `(num_warps, num_stages, BLOCK_KV)` on
+  `_tq_decode_stage1` via patched launch wrapper.
+  - Default: `num_warps=1, num_stages=1, BLOCK_KV=4`.
+  - Sweep: `num_warps ∈ {1,2,4}` × `num_stages ∈ {1,2,3}` × `BLOCK_KV ∈ {4,8,16}` = 27 cells × 3 surviving presets.
+  - **Predicted impact**: 8–15 % TPOT reduction at `seq=8k, conc=1`.
+  - **Gate**: `long_scoreboard` stall % must drop ≥ 30 % vs Phase 1 baseline (ncu observable). SHA-256 parity preserved.
+  - **Files**: `turboquant/kernels/decode_stage1.py` (new),
+    `turboquant/vllm_plugin.py` (`_patch_triton_kernels()` call).
 
-### Phase 9: Closing the gap — kernel architecture improvements
+- [ ] **HYP-063** — SMEM pre-stage of centroids at decode-kernel entry.
+  Replaces per-tile HBM gather (`triton_turboquant_decode.py:193-197`)
+  with select-chain on a register tensor staged once.
+  - **Predicted impact**: 2–4 % TPOT additive on top of HYP-062.
+  - **Gate**: SHA-256 parity preserved (no math change).
+  - **Files**: `turboquant/kernels/decode_stage1.py`.
 
-#### 9a. INT4 tensor core matmul (BitDecoding pattern)
-Feed packed 4-bit data directly to `mma.sync.m16n8k64.s32.s4.s4.s32`.
-No dequant step — apply codebook scaling post-matmul.
-Requires: uniform quantization (not Lloyd-Max), Q quantized to INT4.
-**Expected: 2-3× on QK/V compute → close to FlashInfer at seq≥512.**
-Ref: BitDecoding (HPCA 2026), SageAttention2 (ICML 2025).
+- [ ] **HYP-064** — Midpoints pre-load in `_tq_fused_store_mse`.
+  Eliminate the 4× repeated load in the binary-search loop
+  (`triton_turboquant_store.py:290`).
+  - **Predicted impact**: 0.5–1 % TPOT via freed L2 bandwidth.
+  - **Gate**: SHA-256 parity preserved (load-reorder only).
+  - **Files**: `turboquant/kernels/store_mse.py` (new).
 
-#### 9b. Dequant-to-fp16 + tensor core (Marlin pattern)
-Dequant 4-bit → fp16 in registers via bitwise LUT, feed to fp16 tensor cores.
-Compatible with Lloyd-Max codebook (non-uniform). Pipeline: dequant on CUDA cores
-while tensor cores compute previous tile.
-**Expected: 1.5-2× on compute, keeps codebook quality.**
-Ref: Marlin (arXiv:2408.11743), BitDecoding warp-layout-aware dequant.
+- [ ] **HYP-065** — Adaptive `NUM_KV_SPLITS` per batch-size bucket.
+  Plugin patches `TurboQuantMetadataBuilder.build` (method-level
+  monkey-patch) so the split count adapts to `(batch, kv_len)` instead
+  of the constant default. Graph-capture-aware.
+  - **Predicted impact**: 3–6 % TPOT at `concurrency ≥ 8`.
+  - **Gate (opt-out)**: SHA-256 may break — reduction order changes
+    when split count changes. Use `mean_score within ±0.002 pp per task`.
+    Mathematical justification documented in HYP-065 doc.
+  - **Files**: `turboquant/vllm_plugin.py` (extend
+    `_patch_triton_kernels()` to also patch
+    `TurboQuantMetadataBuilder.build`).
 
-#### 9c. Persistent kernel with warp specialization
-Dedicate warp groups: load warps (dequant + cp_async) vs compute warps (QK/V).
-Eliminates block.sync() between load and compute phases.
-Requires named barriers (SM80+) for producer-consumer handoff.
-**Expected: 1.2× from reduced sync overhead.**
+---
 
-#### 9d. Batch-level SM saturation
-At batch≥4, grid = 4 × 8 × 8 = 256 blocks → all SMs busy.
-Single-request latency can't improve, but throughput scales.
-Already measured (8f): TQ beats SDPA at batch≥64 (1.1-1.2× higher tok/s).
+## Later — Phase 4: Arch-aware async dispatch (blocked on H100/H200 quota)
 
-### Phase 9 results:
-- [x] **9a.** INT4 tensor cores (HYP-019) — **rejected** (15× slower at rank-1 decode)
-- [x] **9c.** Warp specialization (HYP-020) — **rejected** (0% improvement, compute:load=10:1)
-- [x] **9e.** Fused combine (HYP-022) — **rejected** (7-8% slower, __threadfence overhead)
-- [x] **9f.** CUDA graph capture (HYP-023) — **confirmed** (26% kernel speedup at seq=1024)
+SM-tier launch-config dispatch and SM90+-only async paths. Both HYPs
+opt out of SHA-256 parity (fp16 roundoff differs from fp32). Both
+target an additional 15–25 % TPOT on A100 if accuracy holds, plus
+~5 % more on SM90+.
 
-### Phase 10: Deployment — IN PROGRESS
+- [ ] **HYP-066** — `tl.dot` QK with fp16 accumulator on the decode path.
+  - **Predicted impact**: 8–12 % TPOT on A100; opens TMA path on SM90+.
+  - **Gate (opt-out)**: SHA-256 will break — fp16 accumulate ≠ fp32.
+    Use `mean_score within ±0.002 pp per task`. Justified by error-bound
+    analysis in the HYP doc.
+- [ ] **HYP-067** — `tl.dot` V accumulate, plus `cp.async.bulk.tensor`
+  (TMA) load path for SM90+.
+  - **Predicted impact**: 5–10 % TPOT additive on H100/H200.
+  - **Gate**: same opt-out as HYP-066.
+- [ ] **`dispatch.py`** — SM-tier config selection (A100 / H100 / B200);
+  monkey-patches the launch wrapper to pick the right kernel variant
+  per `torch.cuda.get_device_capability()`.
 
-- [x] **10a.** vLLM plugin system — entry_points registration (`turboquant/vllm_plugin.py`)
-- [x] **10b.** Dockerfile — nvidia/cuda + vLLM + FlashInfer + TurboQuant
-- [x] **10c.** ECR setup — `847366387031.dkr.ecr.us-east-1.amazonaws.com/vllm-turboquant`
-- [ ] **10d.** Forge image build — building (`forge image build --context .`)
-- [ ] **10e.** Tensor parallel support — validate kernel at TP=2,4,8
-- [ ] **10f.** E2E serving test — vLLM serve with `--kv-cache-dtype turboquant`
+Blocked: no H100/H200 access on the team's Forge quota. Re-evaluate
+when hardware lands.
 
-### Phase 11: Tensor Parallelism — NOW
+---
 
-TP splits KV heads across GPUs. Each GPU runs TurboQuant on its local head subset.
+## Later — Phase 5: Upstream contribution
 
-```
-Example: Qwen3-8B (32QO/8KV) at TP=4
-  GPU0: 8QO/2KV heads → bdy=4, grid=1×2×splits
-  GPU1: 8QO/2KV heads → same
-  GPU2: 8QO/2KV heads → same
-  GPU3: 8QO/2KV heads → same
-```
+Each Phase 3 confirmed HYP becomes a single-topic upstream PR. The plugin
+remains the integration test surface; the PR is the shipping vehicle.
 
-#### Results:
+- [ ] **HYP-068** — Land HYP-062 (joint launch-config retune) upstream.
+  PR template: one Triton diff + bench script + regression test.
+- [ ] One PR per confirmed HYP afterwards (HYP-063 / 064 / 065 / 066 /
+  067 as they confirm). Bundle only when topics are inseparable
+  (e.g. HYP-062+063 if the retune ROI depends on the centroid pre-stage).
 
-**FP16 baseline (vLLM TP, Qwen3-1.7B, A100×8, eager mode):**
+---
 
-| TP | TPOT (ms) | Tok/s | Output quality |
-|----|-----------|-------|----------------|
-| 1  | 13.3      | 75.0  | Paris, 100°C, 2 |
-| 2  | 14.5      | 68.9  | Paris, 100°C, 2 |
-| 4  | 15.1      | 66.4  | Rome, 100°C, 2 |
+## First-week Forge jobs (in order; each gated on prior success)
 
-**TurboQuant v4 kernel (attention_backend=CUSTOM, fused decode):**
-
-| TP | TPOT (ms) | Tok/s | vs FP16 | Output quality |
-|----|-----------|-------|---------|----------------|
-| 1  | 68.6      | 14.6  | 5.2×    | 2/3 correct, 1 degraded |
-| 2  | 71.0      | 14.1  | 4.9×    | 2/3 correct, 1 degraded |
-
-Overhead is dominated by Python `do_kv_cache_update` (write path), not the CUDA decode kernel.
-v4 fused kernel runs with no FA fallback. Quality needs investigation on some prompts.
-
-- [x] **11a.** Plugin registration — `register_backend()` with qualname string
-- [x] **11b.** `get_name()` returns `"CUSTOM"` to match AttentionBackendEnum
-- [x] **11c.** FP16 baseline TP=1,2,4 — validated, correct outputs
-- [x] **11d.** TQ backend under TP — loads correctly, selects CUSTOM backend
-- [x] **11e.** Fused CUDA v4 kernel under TP — fixed arg mismatch, runs at TP=1,2
-- [x] **11f.** csrc/ package inclusion — `setup.py` data_files + FlashInfer auto-detect
-
-**Remaining:**
-- [ ] Quality investigation — some prompts produce degraded output
-- [ ] Replace Python `do_kv_cache_update` with CUDA write kernel (major perf win)
-- [ ] TP=4,8 validation with fused kernel
-
-### Phase 12: vLLM upstream PR — IN REVIEW
-
-Seam changes needed for plugin backends to declare custom `page_size_bytes`
-are now filed upstream. Ships as a single commit touching 4 files + 1
-pytest (147+/7- LOC).
-
-- [x] **12a.** Fork `vllm-project/vllm`, branch off current `main`
-- [x] **12b.** Apply seam changes (see "Upstream PR requirements" below)
-- [x] **12c.** Pure-CPU pytest at `tests/v1/core/test_custom_page_size.py`
-- [x] **12d.** Rebuild Docker image + push to ECR (`tq-hyp029:v2`,
-      `847366387031.dkr.ecr.ap-northeast-2.amazonaws.com/vllm-turboquant:latest`)
-- [x] **12e.** Re-run Qwen3-8B bench — 3.20× KV tokens, TPOT 3.53 ms graphs
-      at seq≈100 (see HYP-029 results)
-- [x] **12f.** Opened as draft: https://github.com/vllm-project/vllm/pull/39868
-      (DCO green; waiting on maintainer `ready` label to unblock CI)
-
-### Phase 13: Seq-length scaling — NOW
-
-Phase 12's 3.20× memory win is **unconditional**, but the A100 sweep (see
-`docs/hypotheses/HYP-030-seqlen-sweep-bench.md`) exposes a latency
-regression that grows linearly with `seq_len`:
-
-| seq | FP16 graphs | FP8 native | TQ fp8 graphs | TQ vs FP16 |
-|-----|-------------|-----------|---------------|------------|
-|  128 | 3.88 ms | 4.00 ms |  4.77 ms | 1.23× |
-|  512 | 4.03 ms | 4.07 ms |  6.29 ms | 1.56× |
-| 1024 | 4.02 ms | 4.09 ms |  8.36 ms | 2.08× |
-| 2048 | 4.15 ms | 4.31 ms | 12.43 ms | 3.00× |
-| 4096 | 4.42 ms | 4.31 ms | 20.26 ms | 4.58× |
-
-Root causes (already enumerated in Phase 8's "Architecture gap" section):
-
-1. **Scalar-FMA dequant** — 20 TFLOPS vs 312 TFLOPS (tensor core). ~40%
-   of the gap at short seq, dominates at long seq.
-2. **Split-KV not wired into the vLLM path** — standalone kernel hits
-   48 μs at seq=1024 with split-KV (HYP-018 confirmed), but
-   `decode_v4_from_cache` (HYP-029) ships the non-partitioned path.
-3. **Python-launch overhead scales with block_table size** — every
-   decode step: `kv_indices.reshape(-1).to(int32)`, `seq_lens.to(int32)`,
-   possibly a redundant `q.to(fp16)`. Grows O(batch × max_pages).
-
-Priorities (see HYP-030 for sizing):
-
-- [ ] **13a.** Cheap fixes — profile and remove per-step host→device
-      copies on the Python backend path.
-- [ ] **13b.** HYP-031: Port split-KV into `decode_v4_from_cache`.
-      Target: 2–3× speedup at seq ≥ 1024 (matches standalone-kernel
-      numbers). Prerequisite: reuse the combine kernel from HYP-022.
-- [ ] **13c.** HYP-032 (stretch): Marlin-style dequant→fp16→tensor core
-      (Phase 9b candidate, never implemented). Target: 1.5–2× on compute,
-      closes the scalar-FMA gap without giving up the Lloyd-Max codebook.
-      Effort: ~weeks.
-- [x] **13d.** HYP-033: Make v5 tensor-core decode CUDA-graph-safe via a
-      pre-allocated workspace op (`decode_v5_from_cache_ws` under
-      `torch.ops.turboquant_v5.*`). Confirmed (engineering). v5 runs under
-      full graphs with bit-exact correctness; 1.5–1.9× faster than v4-graph.
-      FP16 gap at seq=4096 stays wide because the kernel still dequants via
-      scalar FMA.
-- [x] **13e.** HYP-034: Port split-KV into `decode_v5_from_cache_splitkv_ws`
-      so grid saturates SMs at long seq. Confirmed (engineering). **5.9×
-      speedup at seq=4096** (1323 → 226 μs); FlashInfer gap shrinks from
-      30.77× (HYP-033) to 5.29×. vLLM backend auto-dispatches to the split
-      variant when `max_len ≥ 512`.
-- [x] **13f.** HYP-035: Delete the paged→contiguous gather, make v5 walk
-      the page table directly (like v4). Confirmed — all predictions hit.
-      seq=4096: **197 → 110 μs (-44%)**, FlashInfer gap shrinks to 2.69×.
-      seq=1024 is **within 1.36× of FlashInfer**. Gather workspaces dropped
-      from the hot path.
-- [x] **13g.** HYP-032: Register-resident codebook with warp-shuffle LUT.
-      Replaces per-nibble constant-memory lookups (serialized across warp
-      lanes) with 1-cycle `__shfl_sync` broadcasts. Confirmed, predictions
-      exceeded. seq=4096: **110 → 64 μs (-42%)**. **TurboQuant now beats
-      FlashInfer at seq=512 (0.87×)** and is within 1.47× at seq=4096 —
-      Phase 13 goal effectively achieved. Cumulative HYP-033→032 at
-      seq=4096: 1323 → 64 μs (20.6× faster).
-
-### Phase 14: vLLM upstream PR — CLOSE-OUT
-
-- [ ] **14a.** Respond to upstream review comments (maintainer labels
-      `ready` → CI runs → address failures)
-- [ ] **14b.** Once merged, delete `docker/vllm_patches/` and bump the
-      pinned vLLM version in `Dockerfile`
-- [ ] **14c.** Announce in README + hypothesis docs
-
-### Phase 15: Multi-architecture support — NOW
-
-HYP-040 proved v5 is at A100's architectural ceiling (~1040 cycles
-WMMA_QK floor from synchronous `ldmatrix.sync`, no async variant on
-SM80). Hopper (SM90) exposes `cp.async.bulk.tensor` (TMA) and
-`wgmma` warpgroup mma with async semantics; Blackwell (SM100) adds
-native FP4 tensor cores that could eliminate our dequant step
-entirely. Close the long-context latency gap to FlashInfer by porting
-to these newer primitives while keeping A100 as the baseline.
-
-Projected at seq=32k, batch=1 (rough, see
-`results/profile_v5_paged/batch-sweep.md` for A100 ground truth):
-
-| GPU          | v5 as-is | v6 rewritten | FlashInfer | v6/FI gap |
-|--------------|---------:|-------------:|-----------:|----------:|
-| A100 (now)   |   328 μs |  — (blocked) |    123 μs  |   2.56×   |
-| H100         | ~240 μs  |   ~100 μs    |    ~55 μs  |   ~1.8×   |
-| H200         | ~220 μs  |    ~90 μs    |    ~50 μs  |   ~1.8×   |
-| B200 + FP4   | ~150 μs  |    ~60 μs    |    ~25 μs  |   ~2.4×   |
-
-Memory-compression serving-throughput win (~1.5-1.7× requests/GPU)
-is **preserved on every platform** — it's driven by the 3.76×
-compression ratio, not the compute specifics.
-
-#### 15a. Dispatcher refactor (SM80 only, zero behavior change)
-
-- [ ] `turboquant/decoder_dispatch.py`: `pick_decode_op(device)` returns
-      the best op for the current compute capability. Current behavior:
-      always pick v5 on SM80+, v4 otherwise. Sets the seam for 15b/15c.
-- [ ] `vllm_backend_fused.py`: replace hardcoded
-      `torch.ops.turboquant_v5.decode_v5_from_cache_paged_splitkv_ws(...)`
-      call with `pick_decode_op()(...)`.
-- [ ] `TQ_FORCE_KERNEL=v4|v5|v6|v7` env var for testing / A/B.
-- [ ] Parameterized correctness test
-      `test_decode_correctness.py::test_output_matches_reference[kernel]`
-      that runs against the chosen kernel and compares to scalar v4
-      reference.
-
-Effort: ~1 day. Ship before any new-arch work so future HYPs slot in
-cleanly.
-
-#### 15b. Hopper port (v6_wgmma) — when H100/H200 access arrives
-
-- [ ] `csrc/include/flashinfer_decode_turboquant_v6_wgmma.cuh`: WMMA_QK
-      phase using `wgmma.mma_async.m64n256k16` with producer/consumer
-      warpgroup pattern. K/V loads via `cp.async.bulk.tensor` (TMA).
-- [ ] `csrc/src/decode_v6_wgmma_binding.cu`: op signature identical to
-      v5's `_paged_splitkv_ws` so workspace + dispatch stay compatible.
-      Guard with `#if __CUDA_ARCH__ >= 900`.
-- [ ] `setup.py`: compile with `-gencode arch=compute_90,code=sm_90`
-      when `TORCH_CUDA_ARCH_LIST` includes 9.0.
-- [ ] HYP-041 (writeup + Forge H100 benchmark): verify async ldmatrix +
-      wgmma actually closes the 688-cycle load→mma stall we measured
-      on A100. Target: seq=32k TPOT ≤ 120 μs; FI gap ≤ 2.0×.
-- [ ] Decision gate: if H100 v6 doesn't reach ≤ 2× FI at seq=32k,
-      revisit block structure (HYP-020 warp-specialization was
-      rejected on A100 — may work on H100 with TMA).
-
-Effort: ~2–3 weeks after H100 access.
-
-#### 15c. Blackwell + FP4 port (v7_fp4) — when B200 access arrives
-
-- [ ] Investigate FP4 layout: map our 4-bit Lloyd-Max codebook indices
-      directly into FP4 tensor-core operand layout, eliminating the
-      dequant phase entirely (currently 10% of kernel). May require
-      a new KV cache format (pending ADR).
-- [ ] `csrc/include/flashinfer_decode_turboquant_v7_fp4.cuh` using
-      `mma.sync.m16n8k32.f16.e4m3.e4m3.f16` or the FP4 equivalent.
-- [ ] HYP-042: measure whether FP4-native dequant fuses with the
-      mma instruction (would be a fundamental architectural win —
-      could flip TQ from "FI-trailing at long context" to
-      "FI-beating").
-
-Effort: ~1–2 months after B200 access (research + implementation).
-ADR required before starting (possible second KV cache format).
-
-#### 15d. Build system + CI
-
-- [ ] `setup.py`: honour `TORCH_CUDA_ARCH_LIST` env, emit correct
-      `-gencode` flags per arch, embed fatbin for all listed archs.
-      Default for production image: `"8.0;9.0;10.0"` (A100+H100+B200).
-- [ ] `Dockerfile` / Forge image build: `tq-multiarch:<tag>` with all
-      three archs compiled. Accept the ~2× build-time cost on
-      release builds; dev stays single-arch via
-      `TORCH_CUDA_ARCH_LIST=8.0`.
-- [ ] CI matrix entry: A100 correctness always; H100/B200 when GPUs
-      are available. Gate releases on "tests pass on every listed
-      arch in the fatbin".
-
-Effort: ~1 week for 15d alone, independent of 15b/15c.
-
-#### 15e. Cross-arch throughput benchmark
-
-- [ ] Once 15b lands: run the batch × seq sweep
-      (`results/profile_v5_paged/batch-sweep.md` format) on H100 and
-      A100 head-to-head. Confirm that the memory-throughput win (1.5–1.7×
-      requests/GPU vs FlashInfer) is preserved and quantify absolute
-      latency deltas.
-
-## Next
-
-### Memory savings roadmap
-
-Current: 2× savings (fp8 hack, 128B/head allocated, 68B/head used, 60B wasted).
-Target: 3.76× savings (68B/head allocated).
-
-| Step | Savings | Approach | Effort |
-|------|---------|----------|--------|
-| **Done: fp8 plugin** | 2× | `kv_cache_dtype="fp8"` → uint8, 128B/head | Plugin only |
-| **vLLM upstream: custom cache size** | 3.76× | `get_kv_cache_shape` returns 68B/head | PR to vLLM |
-| **3-bit quantization** | 5× | 3-bit codebook, 48B/head | Kernel + upstream |
-
-Upstream PR requirements:
-1. Add `"turboquant"` to `CacheDType` Literal in `vllm/config/cache.py`
-2. `AttentionSpec.real_page_size_bytes` uses backend's `get_kv_cache_shape` element count
-3. Raw allocation sized from `page_size_bytes` (not `head_size × dtype_size`)
-4. Cache viewed as uint8 (not float8) for TQ backend
-
-### Other items
-
-- [ ] **3-bit quantization** — GOAL.md target: ≥5× compression with <1% PPL
-- [ ] **LongBench / NIAH** — quality evaluation at long contexts (4K-32K)
-- [ ] **Tensor cores for GQA≥4** — WMMA gives 1.9× at bdy=4 (Llama-3, Mistral)
-- [ ] **Decode TPOT optimization** — remove `.contiguous()` copies, profile single-cache overhead
-- [ ] **TP=4,8 validation** with single-cache mode
-
-## Later
-
-- [ ] Speculative decoding compatibility
-- [ ] Multi-node distributed (TP across nodes via NCCL)
-- [ ] Continuous batching with dynamic KV cache growth
-- [ ] **Cross-arch KV cache format decision (ADR)**: single format
-      that works for SM80+SM90+SM100, or per-arch formats with
-      transparent repacking? Blocks phase 15c when B200 support
-      starts. Tradeoffs: single format = simpler vLLM integration
-      + model portability; per-arch = best perf on each HW but
-      model-checkpoints become HW-tied.
-- [ ] **Forge H100/H200/B200 access procurement** — prerequisite for
-      phase 15b/15c. Currently A100-only on our team quota.
+1. **Job 1 — Phase 1 baseline** (`--security-profile profiling-debug`,
+   1 GPU, ~2 h). Bench grid + nsys + ncu. Writes `/workspace/shared/hyp058_phase1/`.
+2. **Job 2 — Phase 2 analysis** (local, no GPU). Read Job 1 outputs;
+   fill baseline doc TBDs; decide Phase 3 ordering.
+3. **Job 3 — HYP-062 joint sweep** (default profile, 1 GPU, ~1 h).
+   27-cell `(num_warps, num_stages, BLOCK_KV)` × 3 surviving presets.
+   Pick per-preset winner; SHA-256 parity gate; 16-cell perf re-measure.
