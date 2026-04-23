@@ -235,11 +235,63 @@ class TestA35PrimeQuantizer:
         assert (padding == 0).all()
 
 
-# ── Placeholder for the CUDA kernel parity test ───────────────────────
-# When the kernel lands, this test swaps in the CUDA binding and asserts
-# bit-exact tile equality + fp16-tolerant decoded equality.
+# ── CUDA kernel vs Python reference parity ───────────────────────────
+# Bit-exact on the packed tile is the gate for the CUDA kernel. fp16 norm
+# bytes may differ by one ULP (independent computation order); allow that.
 
 
-@pytest.mark.skipif(True, reason="CUDA kernel not yet landed (HYP-056 Phase 2b)")
-def test_cuda_kernel_matches_python_reference():
-    pass
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA kernel parity test requires GPU",
+)
+class TestCudaKernelParity:
+    def _build(self, H=8, seed=3):
+        from turboquant.a35_kernel import quantize_write_a35 as kern_quant
+
+        mask = _random_mask(H=H, seed=seed)
+        q = A35PrimeQuantizer(mask, head_dim=128, device=DEVICE)
+        return q, kern_quant
+
+    def test_tile_bitexact_outlier_and_regular(self):
+        q, kern_quant = self._build(H=4, seed=3)
+        torch.manual_seed(0)
+        x = torch.randn(8, 4, 128, device=DEVICE, dtype=torch.float16)
+        tile_py = q.quantize(x)
+        tile_cu = kern_quant(x, q)
+
+        # Compare outlier region [0..32) and regular region [32..56) byte-for-byte.
+        # Norm bytes [56..60) may differ by 1 ULP in fp16 (independent reduction).
+        assert (tile_py[..., :32] == tile_cu[..., :32]).all(), (
+            "4-bit outlier nibbles mismatch kernel vs reference"
+        )
+        assert (tile_py[..., 32:56] == tile_cu[..., 32:56]).all(), (
+            "3-bit regular GGML bytes mismatch kernel vs reference"
+        )
+        # Padding is zero
+        assert (tile_cu[..., 60:64] == 0).all()
+
+    def test_tile_norms_within_fp16_ulp(self):
+        q, kern_quant = self._build(H=4, seed=4)
+        torch.manual_seed(1)
+        x = torch.randn(4, 4, 128, device=DEVICE, dtype=torch.float16)
+        tile_py = q.quantize(x)
+        tile_cu = kern_quant(x, q)
+        norms_py = tile_py[..., 56:60].view(torch.float16).to(torch.float32)
+        norms_cu = tile_cu[..., 56:60].view(torch.float16).to(torch.float32)
+        diff = (norms_py - norms_cu).abs()
+        # Tolerance: 2× fp16 relative epsilon (~2e-3) on values of magnitude ~10
+        assert diff.max().item() < 5e-2, f"norm bytes diverge: max |Δ|={diff.max().item()}"
+
+    def test_decoded_matches_reference(self):
+        q, kern_quant = self._build(H=4, seed=5)
+        torch.manual_seed(2)
+        x = torch.randn(8, 4, 128, device=DEVICE, dtype=torch.float16)
+        tile_py = q.quantize(x)
+        tile_cu = kern_quant(x, q)
+        # Decode both through the Python reference; compare reconstruction cos.
+        x_py = q.dequantize(tile_py)
+        x_cu = q.dequantize(tile_cu)
+        cos = torch.nn.functional.cosine_similarity(
+            x_py.reshape(-1, 128), x_cu.reshape(-1, 128), dim=-1
+        )
+        assert cos.mean() >= 0.9998, f"decode cos mean={cos.mean():.4f} < 0.9998"
