@@ -73,7 +73,66 @@ torch::Tensor quantize_write_a35(
     return tiles.view(out_shape);
 }
 
+// Signature:
+//   tiles: [..., num_kv_heads, 64] uint8 (from quantize_write_a35)
+//   outlier_idx: [num_kv_heads, 64] int32
+//   regular_idx: [num_kv_heads, 64] int32
+//   signs_out:   [64] fp32
+//   signs_reg:   [64] fp32
+//
+// Returns:
+//   kv_out: [..., num_kv_heads, 128] fp16
+torch::Tensor dequantize_a35(
+    torch::Tensor tiles,
+    torch::Tensor outlier_idx,
+    torch::Tensor regular_idx,
+    torch::Tensor signs_out,
+    torch::Tensor signs_reg
+) {
+    TORCH_CHECK(tiles.is_cuda(), "tiles must be on CUDA");
+    TORCH_CHECK(tiles.dtype() == torch::kUInt8, "tiles must be uint8");
+    TORCH_CHECK(tiles.dim() >= 2);
+    TORCH_CHECK(tiles.size(-1) == 64, "tile last dim must be 64");
+
+    int64_t num_kv_heads = tiles.size(-2);
+    TORCH_CHECK(outlier_idx.size(0) == num_kv_heads);
+    TORCH_CHECK(regular_idx.size(0) == num_kv_heads);
+    TORCH_CHECK(outlier_idx.size(-1) == 64 && regular_idx.size(-1) == 64);
+
+    auto tiles_c = tiles.contiguous();
+    auto orig_shape = tiles_c.sizes().vec();
+    int64_t num_tokens = 1;
+    for (int i = 0; i < (int)orig_shape.size() - 2; i++) num_tokens *= orig_shape[i];
+
+    auto tiles_flat = tiles_c.view({num_tokens, num_kv_heads, 64});
+    auto kv_out = torch::zeros(
+        {num_tokens, num_kv_heads, 128},
+        torch::dtype(torch::kFloat16).device(tiles.device())
+    );
+
+    auto stream = c10::cuda::getCurrentCUDAStream();
+    cudaError_t err = turboquant::launch_dequantize_a35(
+        tiles_flat.data_ptr<uint8_t>(),
+        reinterpret_cast<__half*>(kv_out.data_ptr<at::Half>()),
+        outlier_idx.contiguous().data_ptr<int32_t>(),
+        regular_idx.contiguous().data_ptr<int32_t>(),
+        signs_out.contiguous().data_ptr<float>(),
+        signs_reg.contiguous().data_ptr<float>(),
+        static_cast<uint32_t>(num_tokens),
+        static_cast<uint32_t>(num_kv_heads),
+        stream
+    );
+    TORCH_CHECK(err == cudaSuccess,
+                "dequantize_a35 kernel launch failed: ", cudaGetErrorString(err));
+
+    std::vector<int64_t> out_shape(orig_shape.begin(), orig_shape.end() - 1);
+    out_shape.push_back(128);
+    return kv_out.view(out_shape);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("quantize_write_a35", &quantize_write_a35,
           "HYP-056 A_35_prime outlier-aware quantize-write kernel");
+    m.def("dequantize_a35", &dequantize_a35,
+          "HYP-056 A_35_prime inverse of quantize_write_a35");
 }

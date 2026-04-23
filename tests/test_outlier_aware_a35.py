@@ -295,3 +295,42 @@ class TestCudaKernelParity:
             x_py.reshape(-1, 128), x_cu.reshape(-1, 128), dim=-1
         )
         assert cos.mean() >= 0.9998, f"decode cos mean={cos.mean():.4f} < 0.9998"
+
+    def test_cuda_dequant_matches_python_dequant(self):
+        """CUDA dequant kernel vs Python reference dequant, on a common tile."""
+        from turboquant.a35_kernel import dequantize_a35
+
+        q, kern_quant = self._build(H=4, seed=6)
+        torch.manual_seed(3)
+        x = torch.randn(8, 4, 128, device=DEVICE, dtype=torch.float16)
+        tile = kern_quant(x, q)
+
+        x_py = q.dequantize(tile).to(torch.float32)
+        x_cu = dequantize_a35(tile, q).to(torch.float32)
+        diff = (x_py - x_cu).abs()
+        # Tolerance: centroids scaled × fp16 norms; reasonable fp16-round-to-fp32
+        # tolerance on per-element diff. Cosine is the real gate.
+        cos = torch.nn.functional.cosine_similarity(
+            x_py.reshape(-1, 128), x_cu.reshape(-1, 128), dim=-1
+        )
+        assert cos.mean() >= 0.9998, (
+            f"CUDA dequant cos={cos.mean():.4f}, max|Δ|={diff.max():.4f}"
+        )
+        assert diff.max() < 1e-2, f"max |Δ|={diff.max():.4f} too large"
+
+    def test_full_roundtrip_cuda_vs_python(self):
+        """Quantize+Dequantize on GPU matches Python end-to-end within fp16 tol."""
+        from turboquant.a35_kernel import dequantize_a35
+
+        q, kern_quant = self._build(H=8, seed=7)
+        torch.manual_seed(4)
+        x = torch.randn(16, 8, 128, device=DEVICE, dtype=torch.float16)
+        tile = kern_quant(x, q)
+        x_hat_cu = dequantize_a35(tile, q).to(torch.float32)
+        cos = torch.nn.functional.cosine_similarity(
+            x.to(torch.float32).reshape(-1, 128),
+            x_hat_cu.reshape(-1, 128),
+            dim=-1,
+        )
+        # Same >= 0.90 bound as the Python reference's reconstruction test.
+        assert cos.mean() >= 0.90, f"full kernel roundtrip cos={cos.mean():.4f}"

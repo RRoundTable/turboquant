@@ -35,6 +35,15 @@ def _get_module():
     return _MODULE
 
 
+def _idx_and_signs(quantizer: A35PrimeQuantizer):
+    return (
+        quantizer.outlier_idx.to(torch.int32).contiguous(),
+        quantizer.regular_idx.to(torch.int32).contiguous(),
+        quantizer.out_rot.signs.to(torch.float32).contiguous(),
+        quantizer.reg_rot.signs.to(torch.float32).contiguous(),
+    )
+
+
 @torch.no_grad()
 def quantize_write_a35(
     x: torch.Tensor,
@@ -55,9 +64,28 @@ def quantize_write_a35(
     assert x.shape[-1] == quantizer.head_dim == 128
 
     mod = _get_module()
-    # Kernel expects int32 indices + fp32 signs.
-    outlier_idx = quantizer.outlier_idx.to(torch.int32).contiguous()
-    regular_idx = quantizer.regular_idx.to(torch.int32).contiguous()
-    signs_out = quantizer.out_rot.signs.to(torch.float32).contiguous()
-    signs_reg = quantizer.reg_rot.signs.to(torch.float32).contiguous()
+    outlier_idx, regular_idx, signs_out, signs_reg = _idx_and_signs(quantizer)
     return mod.quantize_write_a35(x, outlier_idx, regular_idx, signs_out, signs_reg)
+
+
+@torch.no_grad()
+def dequantize_a35(
+    tiles: torch.Tensor,
+    quantizer: A35PrimeQuantizer,
+) -> torch.Tensor:
+    """Inverse of `quantize_write_a35` via CUDA kernel.
+
+    Args:
+      tiles:     [..., H, 64] uint8.
+      quantizer: A35PrimeQuantizer with matching num_heads.
+
+    Returns:
+      kv_out:    [..., H, 128] fp16.
+    """
+    assert tiles.is_cuda
+    assert tiles.dtype == torch.uint8
+    assert tiles.shape[-2] == quantizer.num_heads
+    assert tiles.shape[-1] == 64
+    mod = _get_module()
+    outlier_idx, regular_idx, signs_out, signs_reg = _idx_and_signs(quantizer)
+    return mod.dequantize_a35(tiles, outlier_idx, regular_idx, signs_out, signs_reg)

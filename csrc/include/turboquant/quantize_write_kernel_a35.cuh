@@ -267,4 +267,137 @@ inline cudaError_t launch_quantize_write_a35(
     return cudaGetLastError();
 }
 
+// ══ Dequantize kernel (HYP-056 Phase 3a) ═════════════════════════════════════
+//
+// Reads 64 B tiles and writes back fp16 [num_tokens, num_kv_heads, 128] K/V.
+// Inverse of quantize_write_a35. Same per-tier FWHT → scatter pattern as the
+// Python reference's `dequantize`.
+
+// Lloyd-Max centroids for N(0,1). Scaled by 1/sqrt(64) at kernel time.
+__device__ __constant__ float kA35_C_out4[16] = {
+    -2.7326368237440100f, -2.0693470280837980f, -1.6180344937899930f, -1.2562490887894980f,
+    -0.9423683558764893f, -0.6567591430551046f, -0.3880823046410021f, -0.1284153814744918f,
+     0.1284153814744918f,  0.3880823046410021f,  0.6567591430551046f,  0.9423683558764893f,
+     1.2562490887894980f,  1.6180344937899930f,  2.0693470280837980f,  2.7326368237440100f,
+};
+
+__device__ __constant__ float kA35_C_reg3[8] = {
+    -2.1519775207392190f, -1.3439709227384000f, -0.7560052489261838f, -0.2451209601065855f,
+     0.2451209601065855f,  0.7560052489261838f,  1.3439709227384000f,  2.1519775207392190f,
+};
+
+// Decode a 24-byte regular GGML-3b region into (my_lo, my_hi) = 3-bit indices
+// for dims 2*tid and 2*tid+1 of the regular tier. Uses cooperative unpacking:
+// lane 0 of each 4-lane group loads the 3 bytes and broadcasts the 8 indices
+// via __shfl_sync.
+__device__ __forceinline__ void a35_unpack_3bit_group(
+    const uint8_t* in_ptr,   // start of 24-byte region
+    uint32_t& my_lo,
+    uint32_t& my_hi
+) {
+    const uint32_t tid = threadIdx.x & 31;
+    const uint32_t group = tid >> 2;       // 0..7
+    const uint32_t lane_in_grp = tid & 3;  // 0..3
+
+    // Lane 0 of each group reads 3 bytes and forms the 24-bit word.
+    uint32_t p24 = 0;
+    if (lane_in_grp == 0) {
+        uint32_t b0 = in_ptr[group * 3 + 0];
+        uint32_t b1 = in_ptr[group * 3 + 1];
+        uint32_t b2 = in_ptr[group * 3 + 2];
+        p24 = b0 | (b1 << 8) | (b2 << 16);
+    }
+    uint32_t src = group * 4;
+    p24 = __shfl_sync(0xFFFFFFFF, p24, src);
+
+    // dims in group: 0,1 for lane 0; 2,3 for lane 1; 4,5 for lane 2; 6,7 for lane 3
+    uint32_t pair_base = lane_in_grp * 2;  // 0, 2, 4, 6
+    my_lo = (p24 >> (pair_base * 3))       & 0x7;
+    my_hi = (p24 >> ((pair_base + 1) * 3)) & 0x7;
+}
+
+__global__ void dequantize_a35_kernel(
+    const uint8_t* __restrict__ tiles_in,     // [num_tokens, num_kv_heads, 64] uint8
+    __half*        __restrict__ kv_out,       // [num_tokens, num_kv_heads, 128] fp16
+    const int32_t* __restrict__ outlier_idx,  // [num_kv_heads, 64]
+    const int32_t* __restrict__ regular_idx,  // [num_kv_heads, 64]
+    const float*   __restrict__ signs_out,    // [64]
+    const float*   __restrict__ signs_reg,    // [64]
+    uint32_t num_tokens,
+    uint32_t num_kv_heads
+) {
+    const uint32_t t = blockIdx.x;
+    const uint32_t h = blockIdx.y;
+    const uint32_t tid = threadIdx.x;
+
+    if (t >= num_tokens) return;
+    const uint8_t* tile = tiles_in + ((size_t)t * num_kv_heads + h) * 64;
+    __half* out_ptr = kv_out + ((size_t)t * num_kv_heads + h) * 128;
+
+    // ── Unpack outlier nibbles: byte tid = lo | (hi << 4) ──
+    uint8_t byte_o = tile[tid];
+    uint32_t oi0 = byte_o & 0x0F;
+    uint32_t oi1 = (byte_o >> 4) & 0x0F;
+
+    // ── Unpack regular 3-bit GGML (cooperative) ──
+    uint32_t ri0, ri1;
+    a35_unpack_3bit_group(tile + 32, ri0, ri1);
+
+    // ── Centroid lookup (scaled by 1/sqrt(64) = 0.125) ──
+    const float scale64 = 0.125f;
+    float vo0 = kA35_C_out4[oi0] * scale64;
+    float vo1 = kA35_C_out4[oi1] * scale64;
+    float vr0 = kA35_C_reg3[ri0] * scale64;
+    float vr1 = kA35_C_reg3[ri1] * scale64;
+
+    // ── Inverse rotate: Python does FWHT then signs-× then unpad.
+    // The forward was signs-× then FWHT, and FWHT is self-adjoint, so inverse = FWHT then signs-×.
+    a35_fwht_64(vo0, vo1);
+    a35_fwht_64(vr0, vr1);
+
+    vo0 *= signs_out[tid * 2 + 0];
+    vo1 *= signs_out[tid * 2 + 1];
+    vr0 *= signs_reg[tid * 2 + 0];
+    vr1 *= signs_reg[tid * 2 + 1];
+
+    // ── Read norms from tile bytes 56..60 (fp16) ──
+    __half norm_o_h = *reinterpret_cast<const __half*>(tile + 56);
+    __half norm_r_h = *reinterpret_cast<const __half*>(tile + 58);
+    float norm_o = __half2float(norm_o_h);
+    float norm_r = __half2float(norm_r_h);
+
+    vo0 *= norm_o; vo1 *= norm_o;
+    vr0 *= norm_r; vr1 *= norm_r;
+
+    // ── Scatter to [128] output via per-head index tables ──
+    const int32_t* out_idx_h = outlier_idx + (size_t)h * 64;
+    const int32_t* reg_idx_h = regular_idx + (size_t)h * 64;
+
+    out_ptr[out_idx_h[tid * 2 + 0]] = __float2half(vo0);
+    out_ptr[out_idx_h[tid * 2 + 1]] = __float2half(vo1);
+    out_ptr[reg_idx_h[tid * 2 + 0]] = __float2half(vr0);
+    out_ptr[reg_idx_h[tid * 2 + 1]] = __float2half(vr1);
+}
+
+inline cudaError_t launch_dequantize_a35(
+    const uint8_t* tiles_in,
+    __half*        kv_out,
+    const int32_t* outlier_idx,
+    const int32_t* regular_idx,
+    const float*   signs_out,
+    const float*   signs_reg,
+    uint32_t       num_tokens,
+    uint32_t       num_kv_heads,
+    cudaStream_t   stream = nullptr
+) {
+    if (num_tokens == 0 || num_kv_heads == 0) return cudaSuccess;
+    dim3 grid(num_tokens, num_kv_heads);
+    dim3 block(32);
+    dequantize_a35_kernel<<<grid, block, 0, stream>>>(
+        tiles_in, kv_out, outlier_idx, regular_idx,
+        signs_out, signs_reg, num_tokens, num_kv_heads
+    );
+    return cudaGetLastError();
+}
+
 }  // namespace turboquant
