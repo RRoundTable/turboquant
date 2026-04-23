@@ -222,6 +222,27 @@ A_35_prime` on 13 tasks × 100 samples.
   using uniform 4-bit).
 - Phase 4 task quality delta > 1.5 pp vs Python-hook (kernel has a bug).
 
-## Status: pending
+## Status: in_progress (Phase 2a confirmed)
 
-Phase 1 design committed. Phase 2 implementation in progress.
+### Progress log
+
+- **Phase 1 design doc** — committed (`a658c97`).
+- **Phase 2a Python reference + unit tests** — committed (`cabb2ad`).
+  Covers `pack_3bit_ggml` (8 indices → 3 bytes), `pack_4bit_nibble`,
+  `mask_to_indices`, `A35PrimeQuantizer` (two-tier MSE with per-tier FWHT-64).
+  23/23 tests pass on Forge GPU (`b7a8492f`):
+  - 3-bit GGML pack/unpack × 4 shapes + batched
+  - 4-bit nibble pack/unpack × 4 shapes
+  - Mask-to-indices + rejects wrong-count
+  - FWHT-64 norm preservation + involution
+  - Full roundtrip: recon cos 0.9894 on Gaussian input (CPU smoke) and
+    passes on GPU within fp16 tolerance
+  - Tile byte layout: 32 + 24 + 4 = 60 raw, 64 aligned ✓
+  - Deterministic output + zero padding ✓
+- **Phase 2b CUDA write-kernel skeleton** — committed (`9ab3ee8`).
+  Warp-per-slot, smem tier-split, 32-thread FWHT-64 via shfl_xor, cooperative
+  3-bit GGML pack via `__shfl_sync` gather in 4-lane groups. Unbuilt; needs
+  `.cu` binding + `setup.py` registration + parity test vs Python reference.
+- **Phase 2c binding + parity test** — next.
+- **Phase 3 decode kernel + vLLM plugin** — pending.
+- **Phase 4 LongBench eval** — pending.
