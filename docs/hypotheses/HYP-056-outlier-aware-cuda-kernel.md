@@ -241,8 +241,14 @@ A_35_prime` on 13 tasks × 100 samples.
   - Deterministic output + zero padding ✓
 - **Phase 2b CUDA write-kernel skeleton** — committed (`9ab3ee8`).
   Warp-per-slot, smem tier-split, 32-thread FWHT-64 via shfl_xor, cooperative
-  3-bit GGML pack via `__shfl_sync` gather in 4-lane groups. Unbuilt; needs
-  `.cu` binding + `setup.py` registration + parity test vs Python reference.
-- **Phase 2c binding + parity test** — next.
-- **Phase 3 decode kernel + vLLM plugin** — pending.
+  3-bit GGML pack via `__shfl_sync` gather in 4-lane groups.
+- **Phase 2c binding + parity test** — committed (`fc836d8`). **CONFIRMED.**
+  Forge job `c2f8a1ba` built the JIT kernel and ran all 26 tests green on
+  A100. Gate criteria met first try:
+  - Outlier nibbles [0..32) and regular GGML bytes [32..56) are
+    bit-exact between kernel and Python reference.
+  - fp16 norm bytes [56..60) within fp16 ULP tolerance.
+  - Decoded-through-reference cos mean ≥ 0.9998 vs Python tile's decode.
+  No kernel iterations required.
+- **Phase 3 decode kernel + vLLM plugin** — next.
 - **Phase 4 LongBench eval** — pending.
