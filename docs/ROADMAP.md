@@ -78,40 +78,53 @@ turboquant/
 `pyproject.toml` already declares the entry point
 `[project.entry-points."vllm.plugins"] turboquant = "turboquant.vllm_plugin:register"`.
 
-- [ ] **HYP-062** — Joint retune of `(num_warps, num_stages, BLOCK_KV)` on
-  `_tq_decode_stage1` via patched launch wrapper.
-  - Default: `num_warps=1, num_stages=1, BLOCK_KV=4`.
-  - Sweep: `num_warps ∈ {1,2,4}` × `num_stages ∈ {1,2,3}` × `BLOCK_KV ∈ {4,8,16}` = 27 cells × 3 surviving presets.
-  - **Predicted impact**: 8–15 % TPOT reduction at `seq=8k, conc=1`.
-  - **Gate**: `long_scoreboard` stall % must drop ≥ 30 % vs Phase 1 baseline (ncu observable). SHA-256 parity preserved.
-  - **Files**: `turboquant/kernels/decode_stage1.py` (new),
-    `turboquant/vllm_plugin.py` (`_patch_triton_kernels()` call).
+- [x] **HYP-062** — Joint retune of `(num_warps, num_stages, BLOCK_KV)`
+  REJECTED 2026-04-23 (Forge job `2d616eee`). 27-cell sweep found
+  upstream defaults `(1, 1, 4)` are at the local optimum within this
+  grid; best variant lands at +0.20 % TPOT (noise) vs 8–15 % predicted.
+  See `docs/hypotheses/HYP-062-decode-stage1-launch-retune.md` for the
+  full table + Amdahl analysis (TQ kernels are only 4.7 % of total
+  decode time at this cell, capping kernel-only ROI). **Plugin
+  infrastructure works** (parity 85/85 byte-exact, monkey-patch
+  verified) — `turboquant/kernels/decode_stage1.py` +
+  `turboquant/vllm_plugin.py` are merged as the foundation HYP-063+
+  reuse, defaulting to upstream's `(1, 1, 4)` when env vars are
+  unset (so the merge is a no-op without `TQ_PATCH_DECODE=1`).
 
-- [ ] **HYP-063** — SMEM pre-stage of centroids at decode-kernel entry.
-  Replaces per-tile HBM gather (`triton_turboquant_decode.py:193-197`)
-  with select-chain on a register tensor staged once.
-  - **Predicted impact**: 2–4 % TPOT additive on top of HYP-062.
-  - **Gate**: SHA-256 parity preserved (no math change).
-  - **Files**: `turboquant/kernels/decode_stage1.py`.
-
-- [ ] **HYP-064** — Midpoints pre-load in `_tq_fused_store_mse`.
-  Eliminate the 4× repeated load in the binary-search loop
-  (`triton_turboquant_store.py:290`).
-  - **Predicted impact**: 0.5–1 % TPOT via freed L2 bandwidth.
-  - **Gate**: SHA-256 parity preserved (load-reorder only).
-  - **Files**: `turboquant/kernels/store_mse.py` (new).
-
-- [ ] **HYP-065** — Adaptive `NUM_KV_SPLITS` per batch-size bucket.
-  Plugin patches `TurboQuantMetadataBuilder.build` (method-level
-  monkey-patch) so the split count adapts to `(batch, kv_len)` instead
-  of the constant default. Graph-capture-aware.
+- [ ] **HYP-065** — Adaptive `NUM_KV_SPLITS` per batch-size bucket
+  (**promoted** from "next" to first Phase 3 code HYP after HYP-062).
+  Different lever than HYP-062 — changes the GRID, not block params.
+  Targets the largest absolute gap cell from HYP-058
+  (`3bit_nc × s8192 × c8` +35 ms vs fp16) where SM saturation is
+  plausibly the binding constraint.
+  - Plugin patches `TurboQuantMetadataBuilder.build` (method-level
+    monkey-patch).
   - **Predicted impact**: 3–6 % TPOT at `concurrency ≥ 8`.
-  - **Gate (opt-out)**: SHA-256 may break — reduction order changes
-    when split count changes. Use `mean_score within ±0.002 pp per task`.
-    Mathematical justification documented in HYP-065 doc.
+  - **Gate (opt-out)**: SHA-256 may break — reduction order changes.
+    `mean_score within ±0.002 pp per task` with mathematical
+    justification.
   - **Files**: `turboquant/vllm_plugin.py` (extend
     `_patch_triton_kernels()` to also patch
     `TurboQuantMetadataBuilder.build`).
+
+- [ ] **HYP-063** — SMEM pre-stage of centroids at decode-kernel entry.
+  **Lowered priority after HYP-062.** Different mechanism than HYP-062
+  (replaces per-tile HBM gather with one-time SMEM stage), so HYP-062's
+  rejection doesn't predict HYP-063's outcome — but Amdahl bound
+  applies: even a perfect HYP-063 caps at ~2 % TPOT improvement at
+  the `s8192 × c1` cell. Worth trying after HYP-065 if/when we add a
+  workload where TQ kernels are >10 % of total time.
+  - **Predicted impact**: 2–4 % TPOT (revised down post-HYP-062 ceiling).
+  - **Gate**: SHA-256 parity preserved (no math change).
+  - **Files**: `turboquant/kernels/decode_stage1.py` (extend).
+
+- [ ] **HYP-064** — Midpoints pre-load in `_tq_fused_store_mse`.
+  **Demoted to research-only after HYP-059/062.** HYP-059 confirmed
+  `_tq_fused_store_mse` is 0.6 % of total kernel time. Improvement
+  ceiling ~0.3 % TPOT — below noise floor. Skip unless an upstream PR
+  is otherwise blocked and we want to land a small clean diff.
+  - **Predicted impact**: ≤ 0.3 % TPOT.
+  - **Files**: `turboquant/kernels/store_mse.py` (new, deferred).
 
 ---
 

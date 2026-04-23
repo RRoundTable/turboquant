@@ -330,7 +330,7 @@ filled in as Phase 3+ HYPs land.
 | HYP | patches | parity gate | best cell (preset × seq × conc) | TPOT before → after | Δ TPOT |
 |---|---|---|---|---:|---:|
 | HYP-058 (baseline lock) | none | byte-exact 340/340 | reference (table below) | — | — |
-| HYP-062 (joint launch retune) | `_tq_decode_stage1` | SHA-256 | `4bit_nc × 8192 × 1` (17.5 ms ref) | TBD | TBD |
+| HYP-062 (joint launch retune) **REJECTED** | `_tq_decode_stage1` | SHA-256 85/85 ✓ | `4bit_nc × 8192 × 1` | 17.50 → 17.46 (best of 27) | **+0.20 %** (noise; below 5 % gate) |
 | HYP-063 (smem centroid pre-stage) | `_tq_decode_stage1` | SHA-256 | TBD | TBD | TBD |
 | HYP-064 (midpoints pre-load) | `_tq_fused_store_mse` | SHA-256 | TBD | TBD | TBD |
 | HYP-065 (adaptive `NUM_KV_SPLITS`) | `TurboQuantMetadataBuilder.build` | mean ±0.002 pp (opt-out) | `3bit_nc × 8192 × 8` (83.4 ms ref) | TBD | TBD |
