@@ -10,20 +10,31 @@ hypothesis docs in `docs/hypotheses/HYP-058+` capture each experiment.
 
 ---
 
-## Phase 3 status update (2026-04-24, post HYP-068)
+## Phase 3 status update (2026-04-24, post HYP-069)
 
 After HYP-062 + HYP-065 both REJECTED at HYP-058's `s8k × c1` cell,
 HYP-068 measured the workload re-baseline at longer context and
 **confirmed the rejections were Amdahl-bound, not patch-quality bound**.
 TQ overhead grows from 22 % of TQ TPOT (s8k) to 45–53 % at s32k × c1.
 
-**New primary Phase 3 cell**: `4bit_nc / 3bit_nc × s32k × c1`. HYP-058's
-`s8k × c1` becomes a regression-guard cell only.
+**Primary Phase 3 cell**: `4bit_nc / 3bit_nc × s32k × c1`. HYP-058's
+`s8k × c1` is now a regression-guard cell only.
 
-Next active HYP: HYP-062 retry at the new cell. Then HYP-063 (centroid
-SMEM pre-stage) at the same cell. See
-`docs/hypotheses/HYP-068-extended-workload-baseline.md` for the full
-table that motivates this pivot.
+**HYP-069 retry result (2026-04-24, Forge job `acbdd74d`)**: HYP-062
+re-run at the new cell — also REJECTED. Best variant still upstream's
+`(1, 1, 4)` (delta +0.05 % within noise; all other 26 cells regress
+by 2.6 % – 35 %). The Amdahl ceiling lift was real, but the launch-
+config retune *axis itself* is exhausted on A100 — `BLOCK_KV=4` is the
+clear optimum and `(num_warps, num_stages)` are second-order. See
+`docs/hypotheses/HYP-069-decode-stage1-launch-retune-s32k.md`.
+
+**Next active HYP: HYP-063** (centroid SMEM pre-stage) — different
+bottleneck (HBM gather, not launch overhead), predicted 4–8 % at
+`s32k × c1`. Last A100-track Phase 3 mechanism with Amdahl-respecting
+headroom that doesn't break the SHA-256 parity gate. After HYP-063,
+the A100 Phase 3 menu narrows to either Phase 5 (upstream PR
+contributions of HYP-068 measurement infrastructure + plugin
+foundation) or Phase 4 prep (H100/H200/B200 sweeps when hardware lands).
 
 ## Now — Phase 1: Baseline lock
 
@@ -118,14 +129,26 @@ turboquant/
   ships as no-op infrastructure — gated on `TQ_ADAPTIVE_SPLITS=1`,
   default off. `_SM_TARGETS` table ready for H100/H200/B200 sweeps.
 
+- [x] **HYP-069** — HYP-062 retry at `s32k × c1` REJECTED 2026-04-24
+  (Forge job `acbdd74d`). 27-cell launch sweep at the new primary
+  cell — best variant still upstream's `(1, 1, 4)` within noise
+  (+0.05 %); BLOCK_KV=16 catastrophic (-20 % to -35 %), num_warps=4
+  always regresses. Confirms launch-config retune is exhausted on A100
+  even with Amdahl headroom present. See
+  `docs/hypotheses/HYP-069-decode-stage1-launch-retune-s32k.md` for
+  the full table + per-axis breakdown. Plugin code unchanged — all
+  config flips are env-var driven so the rejection doesn't require any
+  code revert.
+
 - [ ] **HYP-063** — SMEM pre-stage of centroids at decode-kernel entry.
-  **Lowered priority after HYP-062.** Different mechanism than HYP-062
-  (replaces per-tile HBM gather with one-time SMEM stage), so HYP-062's
-  rejection doesn't predict HYP-063's outcome — but Amdahl bound
-  applies: even a perfect HYP-063 caps at ~2 % TPOT improvement at
-  the `s8192 × c1` cell. Worth trying after HYP-065 if/when we add a
-  workload where TQ kernels are >10 % of total time.
-  - **Predicted impact**: 2–4 % TPOT (revised down post-HYP-062 ceiling).
+  **Promoted to active after HYP-069.** Last A100-track Phase 3
+  mechanism with Amdahl-respecting headroom: HYP-068 confirmed
+  TQ_extra/TQ = 45 % at `s32k × c1` (so kernel-time cuts pay back),
+  and HYP-069 confirmed launch-config tuning is exhausted (so the
+  remaining lever has to be a different mechanism). HYP-063 replaces
+  per-tile HBM centroid gather with one-time SMEM stage — different
+  bottleneck than HYP-062/069.
+  - **Predicted impact**: 4–8 % TPOT at `s32k × c1`.
   - **Gate**: SHA-256 parity preserved (no math change).
   - **Files**: `turboquant/kernels/decode_stage1.py` (extend).
 

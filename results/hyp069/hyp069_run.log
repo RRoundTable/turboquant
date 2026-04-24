@@ -1,0 +1,1394 @@
+=== HYP-069 launch sweep at s32k × c1 — Fri Apr 24 03:26:08 UTC 2026 ===
+
+=== 1. probe NFS ===
+  ok  /workspace/shared/tq-vllm020/vllm-v0.20.0
+  ok  /workspace/shared/tq-vllm020/turboquant
+  ok  /mnt/models/hf_cache/models--meta-llama--Llama-3.1-8B-Instruct
+  ok  /workspace/shared/tq-vllm020/turboquant/turboquant/kernels/decode_stage1.py
+  ok  /workspace/shared/tq-vllm020/turboquant/turboquant/vllm_plugin.py
+
+=== 2. install vLLM v0.20.0 + turboquant plugin ===
+WARNING: The directory '/workspace/shared/.pip-cache' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+vllm 0.20.0
+WARNING: The directory '/workspace/shared/.pip-cache' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+plugin importable
+
+=== 4. Phase A — 27 cells × 4bit_nc × s32k × c1 ===
+
+  cell  w1-s1-b4-4bit_nc-s32k-c1 — 03:28:06Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=421
+=== waiting for /health (up to 900s) ===
+server up after 134s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=1, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x794e6b188a40>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s1-b4-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-69f5d7f4-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:09<00:27,  9.21s/it] 50%|█████     | 2/4 [00:17<00:16,  8.48s/it] 75%|███████▌  | 3/4 [00:25<00:08,  8.25s/it]100%|██████████| 4/4 [00:33<00:00,  8.14s/it]100%|██████████| 4/4 [00:33<00:00,  8.28s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  33.14     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.45     
+Peak output token throughput (tok/s):    35.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3970.88   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4626.08   
+Median TTFT (ms):                        4320.38   
+P99 TTFT (ms):                           5514.66   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          28.80     
+Median TPOT (ms):                        28.81     
+P99 TPOT (ms):                           28.83     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           28.80     
+Median ITL (ms):                         29.16     
+P99 ITL (ms):                            29.75     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s1-b4-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w1-s1-b8-4bit_nc-s32k-c1 — 03:31:20Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=1828
+=== waiting for /health (up to 900s) ===
+server up after 75s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=1, BLOCK_KV=8, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7741e43a44a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s1-b8-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-509989db-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:09<00:27,  9.30s/it] 50%|█████     | 2/4 [00:17<00:17,  8.58s/it] 75%|███████▌  | 3/4 [00:25<00:08,  8.33s/it]100%|██████████| 4/4 [00:33<00:00,  8.23s/it]100%|██████████| 4/4 [00:33<00:00,  8.37s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  33.49     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.29     
+Peak output token throughput (tok/s):    34.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3929.37   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4614.18   
+Median TTFT (ms):                        4315.52   
+P99 TTFT (ms):                           5510.47   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          29.58     
+Median TPOT (ms):                        29.60     
+P99 TPOT (ms):                           29.61     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           29.58     
+Median ITL (ms):                         29.94     
+P99 ITL (ms):                            30.29     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s1-b8-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w1-s1-b16-4bit_nc-s32k-c1 — 03:33:31Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=2897
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=1, BLOCK_KV=16, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x72da2678c4a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s1-b16-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-00df932c-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:10<00:31, 10.53s/it] 50%|█████     | 2/4 [00:19<00:19,  9.78s/it] 75%|███████▌  | 3/4 [00:29<00:09,  9.54s/it]100%|██████████| 4/4 [00:38<00:00,  9.44s/it]100%|██████████| 4/4 [00:38<00:00,  9.58s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  38.33     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.10      
+Output token throughput (tok/s):         13.36     
+Peak output token throughput (tok/s):    26.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3433.15   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4632.35   
+Median TTFT (ms):                        4322.20   
+P99 TTFT (ms):                           5552.18   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          38.97     
+Median TPOT (ms):                        38.98     
+P99 TPOT (ms):                           39.00     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           38.97     
+Median ITL (ms):                         39.32     
+P99 ITL (ms):                            39.94     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s1-b16-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w1-s2-b4-4bit_nc-s32k-c1 — 03:35:35Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=3905
+=== waiting for /health (up to 900s) ===
+server up after 66s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=2, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7fac59b004a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s2-b4-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-d2ab4e5e-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:24,  8.11s/it] 50%|█████     | 2/4 [00:16<00:16,  8.03s/it] 75%|███████▌  | 3/4 [00:24<00:08,  8.01s/it]100%|██████████| 4/4 [00:32<00:00,  8.00s/it]100%|██████████| 4/4 [00:32<00:00,  8.01s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  32.06     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.97     
+Peak output token throughput (tok/s):    35.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          4104.75   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4354.98   
+Median TTFT (ms):                        4327.67   
+P99 TTFT (ms):                           4450.96   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          28.81     
+Median TPOT (ms):                        28.81     
+P99 TPOT (ms):                           28.84     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           28.81     
+Median ITL (ms):                         29.16     
+P99 ITL (ms):                            29.96     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s2-b4-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w1-s2-b8-4bit_nc-s32k-c1 — 03:37:35Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=4915
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=2, BLOCK_KV=8, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7920edd004a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s2-b8-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-4a5e8939-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:24,  8.23s/it] 50%|█████     | 2/4 [00:16<00:16,  8.13s/it] 75%|███████▌  | 3/4 [00:24<00:08,  8.10s/it]100%|██████████| 4/4 [00:32<00:00,  8.09s/it]100%|██████████| 4/4 [00:32<00:00,  8.11s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  32.43     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.79     
+Peak output token throughput (tok/s):    34.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          4057.45   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4352.23   
+Median TTFT (ms):                        4310.98   
+P99 TTFT (ms):                           4481.70   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          29.57     
+Median TPOT (ms):                        29.58     
+P99 TPOT (ms):                           29.59     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           29.57     
+Median ITL (ms):                         29.94     
+P99 ITL (ms):                            30.44     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s2-b8-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w1-s2-b16-4bit_nc-s32k-c1 — 03:39:33Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=5923
+=== waiting for /health (up to 900s) ===
+server up after 66s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=2, BLOCK_KV=16, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x71a953594a40>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s2-b16-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-53da4167-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:09<00:28,  9.39s/it] 50%|█████     | 2/4 [00:18<00:18,  9.30s/it] 75%|███████▌  | 3/4 [00:27<00:09,  9.28s/it]100%|██████████| 4/4 [00:37<00:00,  9.27s/it]100%|██████████| 4/4 [00:37<00:00,  9.29s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  37.14     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         13.78     
+Peak output token throughput (tok/s):    26.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3542.72   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4332.95   
+Median TTFT (ms):                        4301.22   
+P99 TTFT (ms):                           4433.94   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          38.99     
+Median TPOT (ms):                        38.99     
+P99 TPOT (ms):                           39.02     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           38.99     
+Median ITL (ms):                         39.35     
+P99 ITL (ms):                            39.74     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s2-b16-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w1-s3-b4-4bit_nc-s32k-c1 — 03:41:37Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=6933
+=== waiting for /health (up to 900s) ===
+server up after 66s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=3, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x752907bf8a40>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s3-b4-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-1b5f4901-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:24,  8.11s/it] 50%|█████     | 2/4 [00:16<00:16,  8.03s/it] 75%|███████▌  | 3/4 [00:24<00:08,  8.01s/it]100%|██████████| 4/4 [00:32<00:00,  8.00s/it]100%|██████████| 4/4 [00:32<00:00,  8.01s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  32.06     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.97     
+Peak output token throughput (tok/s):    35.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          4104.89   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4354.47   
+Median TTFT (ms):                        4324.53   
+P99 TTFT (ms):                           4446.68   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          28.81     
+Median TPOT (ms):                        28.81     
+P99 TPOT (ms):                           28.83     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           28.81     
+Median ITL (ms):                         29.16     
+P99 ITL (ms):                            29.71     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s3-b4-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w1-s3-b8-4bit_nc-s32k-c1 — 03:43:37Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=7943
+=== waiting for /health (up to 900s) ===
+server up after 66s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=3, BLOCK_KV=8, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7f456d9ac4a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s3-b8-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-f2f03a9a-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:24,  8.22s/it] 50%|█████     | 2/4 [00:16<00:16,  8.13s/it] 75%|███████▌  | 3/4 [00:24<00:08,  8.10s/it]100%|██████████| 4/4 [00:32<00:00,  8.09s/it]100%|██████████| 4/4 [00:32<00:00,  8.10s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  32.41     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.80     
+Peak output token throughput (tok/s):    34.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          4059.40   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4345.07   
+Median TTFT (ms):                        4306.13   
+P99 TTFT (ms):                           4460.91   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          29.59     
+Median TPOT (ms):                        29.60     
+P99 TPOT (ms):                           29.61     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           29.59     
+Median ITL (ms):                         29.94     
+P99 ITL (ms):                            30.33     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s3-b8-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w1-s3-b16-4bit_nc-s32k-c1 — 03:45:38Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=8953
+=== waiting for /health (up to 900s) ===
+server up after 66s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=3, BLOCK_KV=16, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x737f97590a40>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s3-b16-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-20f12a9c-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:09<00:28,  9.39s/it] 50%|█████     | 2/4 [00:18<00:18,  9.31s/it] 75%|███████▌  | 3/4 [00:27<00:09,  9.28s/it]100%|██████████| 4/4 [00:37<00:00,  9.28s/it]100%|██████████| 4/4 [00:37<00:00,  9.29s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  37.16     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         13.78     
+Peak output token throughput (tok/s):    26.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3540.81   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4340.65   
+Median TTFT (ms):                        4314.18   
+P99 TTFT (ms):                           4444.90   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          38.97     
+Median TPOT (ms):                        38.98     
+P99 TPOT (ms):                           39.03     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           38.97     
+Median ITL (ms):                         39.33     
+P99 ITL (ms):                            39.76     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s3-b16-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w2-s1-b4-4bit_nc-s32k-c1 — 03:47:43Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=9963
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=2, num_stages=1, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x767b6530c4a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w2-s1-b4-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-366e74b2-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:25,  8.49s/it] 50%|█████     | 2/4 [00:16<00:16,  8.42s/it] 75%|███████▌  | 3/4 [00:25<00:08,  8.38s/it]100%|██████████| 4/4 [00:33<00:00,  8.37s/it]100%|██████████| 4/4 [00:33<00:00,  8.39s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  33.54     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.26     
+Peak output token throughput (tok/s):    32.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3922.82   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4348.78   
+Median TTFT (ms):                        4319.06   
+P99 TTFT (ms):                           4456.81   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          31.78     
+Median TPOT (ms):                        31.81     
+P99 TPOT (ms):                           31.83     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           31.78     
+Median ITL (ms):                         32.14     
+P99 ITL (ms):                            32.75     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w2-s1-b4-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w2-s1-b8-4bit_nc-s32k-c1 — 03:49:42Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=10971
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=2, num_stages=1, BLOCK_KV=8, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7e4ff47a84a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w2-s1-b8-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-627ea0c3-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:24,  8.30s/it] 50%|█████     | 2/4 [00:16<00:16,  8.23s/it] 75%|███████▌  | 3/4 [00:24<00:08,  8.20s/it]100%|██████████| 4/4 [00:32<00:00,  8.19s/it]100%|██████████| 4/4 [00:32<00:00,  8.20s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  32.82     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.60     
+Peak output token throughput (tok/s):    33.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          4009.60   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4340.39   
+Median TTFT (ms):                        4308.96   
+P99 TTFT (ms):                           4441.64   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          30.42     
+Median TPOT (ms):                        30.38     
+P99 TPOT (ms):                           30.53     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           30.42     
+Median ITL (ms):                         30.73     
+P99 ITL (ms):                            31.24     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w2-s1-b8-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w2-s1-b16-4bit_nc-s32k-c1 — 03:51:41Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=11979
+=== waiting for /health (up to 900s) ===
+server up after 67s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=2, num_stages=1, BLOCK_KV=16, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7058579004a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w2-s1-b16-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-92fc87e4-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:26,  8.82s/it] 50%|█████     | 2/4 [00:17<00:17,  8.76s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.72s/it]100%|██████████| 4/4 [00:34<00:00,  8.73s/it]100%|██████████| 4/4 [00:34<00:00,  8.74s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  34.95     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.65     
+Peak output token throughput (tok/s):    29.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3765.15   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4337.97   
+Median TTFT (ms):                        4321.13   
+P99 TTFT (ms):                           4426.58   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          34.63     
+Median TPOT (ms):                        34.64     
+P99 TPOT (ms):                           34.66     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           34.63     
+Median ITL (ms):                         34.98     
+P99 ITL (ms):                            35.48     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w2-s1-b16-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w2-s2-b4-4bit_nc-s32k-c1 — 03:53:45Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=12991
+=== waiting for /health (up to 900s) ===
+server up after 67s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=2, num_stages=2, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7bd30b9b04a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w2-s2-b4-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-27febcc7-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:25,  8.47s/it] 50%|█████     | 2/4 [00:16<00:16,  8.41s/it] 75%|███████▌  | 3/4 [00:25<00:08,  8.38s/it]100%|██████████| 4/4 [00:33<00:00,  8.36s/it]100%|██████████| 4/4 [00:33<00:00,  8.38s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  33.52     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.28     
+Peak output token throughput (tok/s):    32.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3926.10   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4340.90   
+Median TTFT (ms):                        4312.70   
+P99 TTFT (ms):                           4437.70   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          31.79     
+Median TPOT (ms):                        31.81     
+P99 TPOT (ms):                           31.83     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           31.79     
+Median ITL (ms):                         32.15     
+P99 ITL (ms):                            32.95     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w2-s2-b4-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w2-s2-b8-4bit_nc-s32k-c1 — 03:55:47Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=14003
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=2, num_stages=2, BLOCK_KV=8, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7750247ec4a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w2-s2-b8-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-7f3e7266-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:24,  8.30s/it] 50%|█████     | 2/4 [00:16<00:16,  8.21s/it] 75%|███████▌  | 3/4 [00:24<00:08,  8.18s/it]100%|██████████| 4/4 [00:32<00:00,  8.18s/it]100%|██████████| 4/4 [00:32<00:00,  8.19s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  32.77     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.62     
+Peak output token throughput (tok/s):    33.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          4015.14   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4337.11   
+Median TTFT (ms):                        4309.63   
+P99 TTFT (ms):                           4445.10   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          30.36     
+Median TPOT (ms):                        30.36     
+P99 TPOT (ms):                           30.39     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           30.36     
+Median ITL (ms):                         30.72     
+P99 ITL (ms):                            31.74     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w2-s2-b8-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w2-s2-b16-4bit_nc-s32k-c1 — 03:57:47Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=15011
+=== waiting for /health (up to 900s) ===
+server up after 66s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=2, num_stages=2, BLOCK_KV=16, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7067d5da84a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w2-s2-b16-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-3d56d883-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:26,  8.83s/it] 50%|█████     | 2/4 [00:17<00:17,  8.75s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.72s/it]100%|██████████| 4/4 [00:34<00:00,  8.72s/it]100%|██████████| 4/4 [00:34<00:00,  8.73s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  34.91     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.66     
+Peak output token throughput (tok/s):    29.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3768.88   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4328.86   
+Median TTFT (ms):                        4299.48   
+P99 TTFT (ms):                           4423.54   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          34.64     
+Median TPOT (ms):                        34.64     
+P99 TPOT (ms):                           34.64     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           34.64     
+Median ITL (ms):                         34.97     
+P99 ITL (ms):                            35.69     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w2-s2-b16-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w2-s3-b4-4bit_nc-s32k-c1 — 03:59:48Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=16021
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=2, num_stages=3, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7d885b7084a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w2-s3-b4-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-71cbefbb-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:25,  8.48s/it] 50%|█████     | 2/4 [00:16<00:16,  8.39s/it] 75%|███████▌  | 3/4 [00:25<00:08,  8.36s/it]100%|██████████| 4/4 [00:33<00:00,  8.36s/it]100%|██████████| 4/4 [00:33<00:00,  8.37s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  33.49     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.29     
+Peak output token throughput (tok/s):    31.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3929.49   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4335.77   
+Median TTFT (ms):                        4301.67   
+P99 TTFT (ms):                           4447.21   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          31.77     
+Median TPOT (ms):                        31.78     
+P99 TPOT (ms):                           31.81     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           31.77     
+Median ITL (ms):                         32.16     
+P99 ITL (ms):                            32.60     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w2-s3-b4-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w2-s3-b8-4bit_nc-s32k-c1 — 04:01:48Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=17029
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=2, num_stages=3, BLOCK_KV=8, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7997ac7b44a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w2-s3-b8-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-15d6b226-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:24,  8.30s/it] 50%|█████     | 2/4 [00:16<00:16,  8.21s/it] 75%|███████▌  | 3/4 [00:24<00:08,  8.18s/it]100%|██████████| 4/4 [00:32<00:00,  8.19s/it]100%|██████████| 4/4 [00:32<00:00,  8.20s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  32.79     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         15.61     
+Peak output token throughput (tok/s):    33.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          4012.58   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4339.41   
+Median TTFT (ms):                        4312.52   
+P99 TTFT (ms):                           4438.22   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          30.38     
+Median TPOT (ms):                        30.39     
+P99 TPOT (ms):                           30.39     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           30.38     
+Median ITL (ms):                         30.71     
+P99 ITL (ms):                            31.20     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w2-s3-b8-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w2-s3-b16-4bit_nc-s32k-c1 — 04:03:47Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=18037
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=2, num_stages=3, BLOCK_KV=16, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x74e5f81a84a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w2-s3-b16-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-fcb857ab-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:26,  8.89s/it] 50%|█████     | 2/4 [00:17<00:17,  8.80s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.75s/it]100%|██████████| 4/4 [00:35<00:00,  8.73s/it]100%|██████████| 4/4 [00:35<00:00,  8.75s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  35.02     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.62     
+Peak output token throughput (tok/s):    29.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3757.56   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4361.37   
+Median TTFT (ms):                        4321.04   
+P99 TTFT (ms):                           4499.26   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          34.59     
+Median TPOT (ms):                        34.62     
+P99 TPOT (ms):                           34.62     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           34.59     
+Median ITL (ms):                         34.96     
+P99 ITL (ms):                            35.45     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w2-s3-b16-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w4-s1-b4-4bit_nc-s32k-c1 — 04:05:49Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=19045
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=4, num_stages=1, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7c054cf004a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w4-s1-b4-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-5bd4e2b5-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:25,  8.63s/it] 50%|█████     | 2/4 [00:17<00:17,  8.59s/it] 75%|███████▌  | 3/4 [00:25<00:08,  8.56s/it]100%|██████████| 4/4 [00:34<00:00,  8.55s/it]100%|██████████| 4/4 [00:34<00:00,  8.56s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  34.24     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         14.95     
+Peak output token throughput (tok/s):    31.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3842.96   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4337.36   
+Median TTFT (ms):                        4315.54   
+P99 TTFT (ms):                           4423.78   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          33.25     
+Median TPOT (ms):                        33.28     
+P99 TPOT (ms):                           33.30     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           33.31     
+Median ITL (ms):                         33.63     
+P99 ITL (ms):                            34.37     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w4-s1-b4-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w4-s1-b8-4bit_nc-s32k-c1 — 04:07:49Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=20053
+=== waiting for /health (up to 900s) ===
+server up after 64s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=4, num_stages=1, BLOCK_KV=8, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7f07f5ff4a40>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w4-s1-b8-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-6783852a-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:26,  8.85s/it] 50%|█████     | 2/4 [00:17<00:17,  8.79s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.77s/it]100%|██████████| 4/4 [00:35<00:00,  8.76s/it]100%|██████████| 4/4 [00:35<00:00,  8.77s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  35.08     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.59     
+Peak output token throughput (tok/s):    29.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3750.76   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4349.72   
+Median TTFT (ms):                        4323.47   
+P99 TTFT (ms):                           4427.66   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          34.80     
+Median TPOT (ms):                        34.82     
+P99 TPOT (ms):                           34.84     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           34.80     
+Median ITL (ms):                         35.17     
+P99 ITL (ms):                            35.71     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w4-s1-b8-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w4-s1-b16-4bit_nc-s32k-c1 — 04:09:50Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=21059
+=== waiting for /health (up to 900s) ===
+server up after 66s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=4, num_stages=1, BLOCK_KV=16, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7fd7a5ba04a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w4-s1-b16-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-262f33d0-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:09<00:27,  9.04s/it] 50%|█████     | 2/4 [00:17<00:17,  8.96s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.94s/it]100%|██████████| 4/4 [00:35<00:00,  8.93s/it]100%|██████████| 4/4 [00:35<00:00,  8.94s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  35.77     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.31     
+Peak output token throughput (tok/s):    28.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3678.30   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4326.04   
+Median TTFT (ms):                        4294.48   
+P99 TTFT (ms):                           4425.82   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          36.35     
+Median TPOT (ms):                        36.35     
+P99 TPOT (ms):                           36.39     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           36.35     
+Median ITL (ms):                         36.72     
+P99 ITL (ms):                            37.15     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w4-s1-b16-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w4-s2-b4-4bit_nc-s32k-c1 — 04:11:53Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=22069
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=4, num_stages=2, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x71389a9f84a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w4-s2-b4-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-77a2d997-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:25,  8.66s/it] 50%|█████     | 2/4 [00:17<00:17,  8.58s/it] 75%|███████▌  | 3/4 [00:25<00:08,  8.56s/it]100%|██████████| 4/4 [00:34<00:00,  8.55s/it]100%|██████████| 4/4 [00:34<00:00,  8.57s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  34.27     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         14.94     
+Peak output token throughput (tok/s):    30.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3839.49   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4341.23   
+Median TTFT (ms):                        4308.56   
+P99 TTFT (ms):                           4441.55   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          33.28     
+Median TPOT (ms):                        33.30     
+P99 TPOT (ms):                           33.31     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           33.28     
+Median ITL (ms):                         33.63     
+P99 ITL (ms):                            34.52     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w4-s2-b4-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w4-s2-b8-4bit_nc-s32k-c1 — 04:13:53Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=23077
+=== waiting for /health (up to 900s) ===
+server up after 64s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=4, num_stages=2, BLOCK_KV=8, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7f62391f4a40>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w4-s2-b8-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-5f41b211-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:26,  8.88s/it] 50%|█████     | 2/4 [00:17<00:17,  8.78s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.76s/it]100%|██████████| 4/4 [00:35<00:00,  8.75s/it]100%|██████████| 4/4 [00:35<00:00,  8.77s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  35.06     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.60     
+Peak output token throughput (tok/s):    29.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3752.77   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4345.20   
+Median TTFT (ms):                        4320.86   
+P99 TTFT (ms):                           4454.36   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          34.80     
+Median TPOT (ms):                        34.81     
+P99 TPOT (ms):                           34.84     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           34.80     
+Median ITL (ms):                         35.18     
+P99 ITL (ms):                            35.61     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w4-s2-b8-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w4-s2-b16-4bit_nc-s32k-c1 — 04:15:54Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=24083
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=4, num_stages=2, BLOCK_KV=16, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7fde31db84a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w4-s2-b16-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-8e2348fd-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:09<00:27,  9.07s/it] 50%|█████     | 2/4 [00:17<00:17,  8.97s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.96s/it]100%|██████████| 4/4 [00:35<00:00,  8.96s/it]100%|██████████| 4/4 [00:35<00:00,  8.97s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  35.88     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.27     
+Peak output token throughput (tok/s):    28.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3667.48   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4351.08   
+Median TTFT (ms):                        4332.37   
+P99 TTFT (ms):                           4452.19   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          36.36     
+Median TPOT (ms):                        36.36     
+P99 TPOT (ms):                           36.42     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           36.36     
+Median ITL (ms):                         36.74     
+P99 ITL (ms):                            37.23     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w4-s2-b16-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w4-s3-b4-4bit_nc-s32k-c1 — 04:17:58Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=25091
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=4, num_stages=3, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7b02bcff0a40>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w4-s3-b4-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-486993bf-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:25,  8.65s/it] 50%|█████     | 2/4 [00:17<00:17,  8.57s/it] 75%|███████▌  | 3/4 [00:25<00:08,  8.55s/it]100%|██████████| 4/4 [00:34<00:00,  8.54s/it]100%|██████████| 4/4 [00:34<00:00,  8.55s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  34.22     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.12      
+Output token throughput (tok/s):         14.96     
+Peak output token throughput (tok/s):    30.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3845.56   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4325.83   
+Median TTFT (ms):                        4297.01   
+P99 TTFT (ms):                           4418.07   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          33.29     
+Median TPOT (ms):                        33.28     
+P99 TPOT (ms):                           33.32     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           33.29     
+Median ITL (ms):                         33.63     
+P99 ITL (ms):                            34.01     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w4-s3-b4-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w4-s3-b8-4bit_nc-s32k-c1 — 04:19:59Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=26099
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=4, num_stages=3, BLOCK_KV=8, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7bef0fdf4a40>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w4-s3-b8-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-3bbfcc6a-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:08<00:26,  8.88s/it] 50%|█████     | 2/4 [00:17<00:17,  8.79s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.77s/it]100%|██████████| 4/4 [00:35<00:00,  8.76s/it]100%|██████████| 4/4 [00:35<00:00,  8.77s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  35.10     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.59     
+Peak output token throughput (tok/s):    29.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3749.27   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4349.42   
+Median TTFT (ms):                        4319.71   
+P99 TTFT (ms):                           4452.27   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          34.84     
+Median TPOT (ms):                        34.84     
+P99 TPOT (ms):                           34.84     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           34.84     
+Median ITL (ms):                         35.17     
+P99 ITL (ms):                            35.63     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w4-s3-b8-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+  cell  w4-s3-b16-4bit_nc-s32k-c1 — 04:22:00Z
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=27107
+=== waiting for /health (up to 900s) ===
+server up after 65s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=4, num_stages=3, BLOCK_KV=16, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7938e43a84a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w4-s3-b16-4bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-e7654fa7-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:09<00:27,  9.04s/it] 50%|█████     | 2/4 [00:17<00:17,  8.98s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.95s/it]100%|██████████| 4/4 [00:35<00:00,  8.94s/it]100%|██████████| 4/4 [00:35<00:00,  8.96s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  35.83     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.29     
+Peak output token throughput (tok/s):    28.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3672.84   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4341.15   
+Median TTFT (ms):                        4320.82   
+P99 TTFT (ms):                           4435.20   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          36.34     
+Median TPOT (ms):                        36.38     
+P99 TPOT (ms):                           36.39     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           36.34     
+Median ITL (ms):                         36.71     
+P99 ITL (ms):                            37.17     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w4-s3-b16-4bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+=== 5. Phase A winner extraction ===
+
+  cell                                                 TPOT (ms)  Δ vs baseline      tput
+  w1-s1-b4-4bit_nc-s32k-c1                                 28.81          +0.05%       15.5
+  w1-s2-b4-4bit_nc-s32k-c1                                 28.81          +0.05%       16.0
+  w1-s3-b4-4bit_nc-s32k-c1                                 28.81          +0.03%       16.0
+  w1-s2-b8-4bit_nc-s32k-c1                                 29.58          -2.65%       15.8
+  w1-s1-b8-4bit_nc-s32k-c1                                 29.60          -2.71%       15.3
+  w1-s3-b8-4bit_nc-s32k-c1                                 29.60          -2.71%       15.8
+  w2-s2-b8-4bit_nc-s32k-c1                                 30.36          -5.35%       15.6
+  w2-s1-b8-4bit_nc-s32k-c1                                 30.38          -5.43%       15.6
+  w2-s3-b8-4bit_nc-s32k-c1                                 30.39          -5.44%       15.6
+  w2-s3-b4-4bit_nc-s32k-c1                                 31.78         -10.28%       15.3
+  w2-s1-b4-4bit_nc-s32k-c1                                 31.81         -10.37%       15.3
+  w2-s2-b4-4bit_nc-s32k-c1                                 31.81         -10.38%       15.3
+  w4-s1-b4-4bit_nc-s32k-c1                                 33.28         -15.48%       15.0
+  w4-s3-b4-4bit_nc-s32k-c1                                 33.28         -15.49%       15.0
+  w4-s2-b4-4bit_nc-s32k-c1                                 33.30         -15.53%       14.9
+  w2-s3-b16-4bit_nc-s32k-c1                                34.62         -20.11%       14.6
+  w2-s2-b16-4bit_nc-s32k-c1                                34.64         -20.18%       14.7
+  w2-s1-b16-4bit_nc-s32k-c1                                34.64         -20.21%       14.7
+  w4-s2-b8-4bit_nc-s32k-c1                                 34.81         -20.79%       14.6
+  w4-s1-b8-4bit_nc-s32k-c1                                 34.82         -20.82%       14.6
+  w4-s3-b8-4bit_nc-s32k-c1                                 34.84         -20.88%       14.6
+  w4-s1-b16-4bit_nc-s32k-c1                                36.35         -26.14%       14.3
+  w4-s2-b16-4bit_nc-s32k-c1                                36.36         -26.17%       14.3
+  w4-s3-b16-4bit_nc-s32k-c1                                36.38         -26.22%       14.3
+  w1-s1-b16-4bit_nc-s32k-c1                                38.98         -35.25%       13.4
+  w1-s3-b16-4bit_nc-s32k-c1                                38.98         -35.25%       13.8
+  w1-s2-b16-4bit_nc-s32k-c1                                38.99         -35.29%       13.8
+
+  WINNER: w1-s1-b4  TPOT 28.81ms  vs baseline 28.82ms  delta=+0.1%
+  winner: w1 s1 b4
+
+=== 6. Phase B — winner × 3bit_nc × s32k × c1 ===
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 32912 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_3bit_nc ===
+server pid=28126
+=== waiting for /health (up to 900s) ===
+server up after 90s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=1, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x70d38afc04a0>, trust_remote_code=True, seed=0, num_prompts=4, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=32768, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s32768-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s1-b4-3bit_nc-s32k-c1', result_filename='upstream-s32768-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-3342a3de-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/4 [00:00<?, ?it/s] 25%|██▌       | 1/4 [00:09<00:29,  9.79s/it] 50%|█████     | 2/4 [00:18<00:18,  9.04s/it] 75%|███████▌  | 3/4 [00:26<00:08,  8.81s/it]100%|██████████| 4/4 [00:35<00:00,  8.71s/it]100%|██████████| 4/4 [00:35<00:00,  8.85s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     4         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  35.39     
+Total input tokens:                      131072    
+Total generated tokens:                  512       
+Request throughput (req/s):              0.11      
+Output token throughput (tok/s):         14.47     
+Peak output token throughput (tok/s):    30.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3717.60   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4619.63   
+Median TTFT (ms):                        4310.04   
+P99 TTFT (ms):                           5525.17   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          33.30     
+Median TPOT (ms):                        33.31     
+P99 TPOT (ms):                           33.32     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           33.30     
+Median ITL (ms):                         33.65     
+P99 ITL (ms):                            34.08     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s1-b4-3bit_nc-s32k-c1/upstream-s32768-c1.json ===
+
+=== 7. Phase C — regression guard at s8k × c1 ===
+vllm version: 0.20.0
+upstream TurboQuantConfig present: <class 'vllm.model_executor.layers.quantization.turboquant.config.TurboQuantConfig'>
+=== launching: vllm serve meta-llama/Llama-3.1-8B-Instruct --dtype float16 --gpu-memory-utilization 0.85 --max-model-len 8336 --disable-log-stats --port 8000 --kv-cache-dtype turboquant_4bit_nc ===
+server pid=29244
+=== waiting for /health (up to 900s) ===
+server up after 90s
+=== running vllm bench serve ===
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=1, BLOCK_KV=4, adaptive_splits=0, split_factor=auto)
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x7ef80ebb84a0>, trust_remote_code=True, seed=0, num_prompts=8, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=8192, random_output_len=128, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label='upstream-s8192-c1', backend='vllm', base_url=None, host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='meta-llama/Llama-3.1-8B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/shared/hyp069_sweep/perf_grid/w1-s1-b4-4bit_nc-s8k-c1', result_filename='upstream-s8192-c1.json', ignore_eos=True, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-4dbfb289-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds=[25.0, 50.0], plot_dataset_stats=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/8 [00:00<?, ?it/s] 12%|█▎        | 1/8 [00:04<00:29,  4.21s/it] 25%|██▌       | 2/8 [00:07<00:20,  3.48s/it] 38%|███▊      | 3/8 [00:10<00:16,  3.25s/it] 50%|█████     | 4/8 [00:13<00:12,  3.14s/it] 62%|██████▎   | 5/8 [00:16<00:09,  3.07s/it] 75%|███████▌  | 6/8 [00:19<00:06,  3.04s/it] 88%|████████▊ | 7/8 [00:21<00:03,  3.01s/it]100%|██████████| 8/8 [00:24<00:00,  2.99s/it]100%|██████████| 8/8 [00:24<00:00,  3.12s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     8         
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  24.95     
+Total input tokens:                      65536     
+Total generated tokens:                  1024      
+Request throughput (req/s):              0.32      
+Output token throughput (tok/s):         41.04     
+Peak output token throughput (tok/s):    58.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          2667.58   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          903.17    
+Median TTFT (ms):                        748.86    
+P99 TTFT (ms):                           1905.90   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          17.44     
+Median TPOT (ms):                        17.45     
+P99 TPOT (ms):                           17.47     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           17.44     
+Median ITL (ms):                         17.53     
+P99 ITL (ms):                            18.12     
+==================================================
+=== DONE: /workspace/shared/hyp069_sweep/perf_grid/w1-s1-b4-4bit_nc-s8k-c1/upstream-s8192-c1.json ===
+
+=== HYP-069 done — Fri Apr 24 04:28:45 UTC 2026 ===
+total 180
+drwxr-xr-x  3 nobody nogroup   4096 Apr 24 04:20 .
+drwxr-xr-x 85    501 staff    12288 Apr 24 03:22 ..
+-rw-r--r--  1 nobody nogroup 157642 Apr 24 04:25 hyp069_run.log
+drwxr-xr-x 31 nobody nogroup   4096 Apr 24 04:23 perf_grid
+-rw-r--r--  1 nobody nogroup      6 Apr 24 04:20 winner.txt

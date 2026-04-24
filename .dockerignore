@@ -9,6 +9,11 @@ __pycache__
 docs/hypotheses
 docs/reference
 tests/bench_*.py
+tests/profile_*.py
 *.nsys-rep
 *.ncu-rep
 *.swp
+results
+dist
+*.whl
+*.tar.gz
