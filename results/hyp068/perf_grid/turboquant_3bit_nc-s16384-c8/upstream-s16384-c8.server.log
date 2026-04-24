@@ -1,0 +1,58 @@
+(APIServer pid=8355) WARNING 04-24 03:07:12 [model.py:2023] Casting torch.bfloat16 to torch.float16.
+(APIServer pid=8355) WARNING 04-24 03:07:12 [arg_utils.py:1982] TurboQuant is not yet compatible with FlashAttention >= 3. Overriding flash_attn_version to 2. To silence this warning, pass --attention-config.flash_attn_version=2
+(EngineCore pid=8576) <frozen importlib._bootstrap_external>:1301: FutureWarning: The cuda.cudart module is deprecated and will be removed in a future release, please switch to use the cuda.bindings.runtime module instead.
+(EngineCore pid=8576) <frozen importlib._bootstrap_external>:1301: FutureWarning: The cuda.nvrtc module is deprecated and will be removed in a future release, please switch to use the cuda.bindings.nvrtc module instead.
+(EngineCore pid=8576) Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+(EngineCore pid=8576) Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:09<00:27,  9.27s/it]
+(EngineCore pid=8576) Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:20<00:20, 10.29s/it]
+(EngineCore pid=8576) Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:31<00:10, 10.94s/it]
+(EngineCore pid=8576) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:33<00:00,  7.18s/it]
+(EngineCore pid=8576) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:33<00:00,  8.35s/it]
+(EngineCore pid=8576) 
+(EngineCore pid=8576) Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   0%|          | 0/51 [00:00<?, ?it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   4%|▍         | 2/51 [00:00<00:03, 14.46it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   8%|▊         | 4/51 [00:00<00:03, 14.75it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  12%|█▏        | 6/51 [00:00<00:02, 15.61it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  16%|█▌        | 8/51 [00:00<00:02, 16.02it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  20%|█▉        | 10/51 [00:00<00:02, 16.87it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  24%|██▎       | 12/51 [00:00<00:02, 17.40it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  27%|██▋       | 14/51 [00:00<00:02, 17.58it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  31%|███▏      | 16/51 [00:00<00:01, 17.73it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  35%|███▌      | 18/51 [00:01<00:01, 16.82it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  39%|███▉      | 20/51 [00:01<00:01, 16.67it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  43%|████▎     | 22/51 [00:01<00:01, 16.56it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  47%|████▋     | 24/51 [00:01<00:01, 16.51it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  51%|█████     | 26/51 [00:01<00:01, 16.62it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  55%|█████▍    | 28/51 [00:01<00:01, 16.59it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  59%|█████▉    | 30/51 [00:01<00:01, 16.63it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  63%|██████▎   | 32/51 [00:01<00:01, 16.67it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  67%|██████▋   | 34/51 [00:02<00:00, 17.38it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  73%|███████▎  | 37/51 [00:02<00:00, 19.00it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  78%|███████▊  | 40/51 [00:02<00:00, 20.03it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  82%|████████▏ | 42/51 [00:02<00:00, 19.90it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  88%|████████▊ | 45/51 [00:02<00:00, 20.51it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  94%|█████████▍| 48/51 [00:02<00:00, 21.20it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 51/51 [00:02<00:00, 20.65it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 51/51 [00:02<00:00, 18.05it/s]
+(EngineCore pid=8576) Capturing CUDA graphs (decode, FULL):   0%|          | 0/35 [00:00<?, ?it/s]Capturing CUDA graphs (decode, FULL):   6%|▌         | 2/35 [00:00<00:02, 15.60it/s]Capturing CUDA graphs (decode, FULL):  11%|█▏        | 4/35 [00:00<00:01, 15.80it/s]Capturing CUDA graphs (decode, FULL):  17%|█▋        | 6/35 [00:00<00:01, 15.84it/s]Capturing CUDA graphs (decode, FULL):  23%|██▎       | 8/35 [00:00<00:01, 15.91it/s]Capturing CUDA graphs (decode, FULL):  29%|██▊       | 10/35 [00:00<00:01, 15.98it/s]Capturing CUDA graphs (decode, FULL):  34%|███▍      | 12/35 [00:00<00:01, 16.07it/s]Capturing CUDA graphs (decode, FULL):  40%|████      | 14/35 [00:00<00:01, 15.92it/s]Capturing CUDA graphs (decode, FULL):  46%|████▌     | 16/35 [00:01<00:01, 16.05it/s]Capturing CUDA graphs (decode, FULL):  51%|█████▏    | 18/35 [00:01<00:01, 16.07it/s]Capturing CUDA graphs (decode, FULL):  57%|█████▋    | 20/35 [00:01<00:00, 16.24it/s]Capturing CUDA graphs (decode, FULL):  63%|██████▎   | 22/35 [00:01<00:00, 16.31it/s]Capturing CUDA graphs (decode, FULL):  69%|██████▊   | 24/35 [00:01<00:00, 16.47it/s]Capturing CUDA graphs (decode, FULL):  74%|███████▍  | 26/35 [00:01<00:00, 16.05it/s]Capturing CUDA graphs (decode, FULL):  80%|████████  | 28/35 [00:01<00:00, 16.16it/s]Capturing CUDA graphs (decode, FULL):  86%|████████▌ | 30/35 [00:01<00:00, 16.26it/s]Capturing CUDA graphs (decode, FULL):  91%|█████████▏| 32/35 [00:01<00:00, 16.48it/s]Capturing CUDA graphs (decode, FULL):  97%|█████████▋| 34/35 [00:02<00:00, 16.62it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 35/35 [00:02<00:00, 16.24it/s]
+(APIServer pid=8355) WARNING 04-24 03:08:12 [model.py:1442] Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'temperature': 0.6, 'top_p': 0.9}`. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+(APIServer pid=8355) INFO:     Started server process [8355]
+(APIServer pid=8355) INFO:     Waiting for application startup.
+(APIServer pid=8355) INFO:     Application startup complete.
+(APIServer pid=8355) INFO:     127.0.0.1:48108 - "GET /health HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:48110 - "GET /health HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39506 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39506 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39524 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39512 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39538 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39554 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39566 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39582 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39506 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39524 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39512 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39538 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39554 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39566 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39582 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39506 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39524 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39512 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39538 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39554 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39566 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39582 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39506 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39524 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39512 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39538 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39554 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39566 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39582 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     127.0.0.1:39506 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=8355) INFO:     Shutting down
+[rank0]:[W424 03:10:03.860287104 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+(APIServer pid=8355) INFO:     Waiting for application shutdown.
+(APIServer pid=8355) INFO:     Application shutdown complete.
+(APIServer pid=8355) INFO:     Finished server process [8355]

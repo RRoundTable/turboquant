@@ -10,6 +10,21 @@ hypothesis docs in `docs/hypotheses/HYP-058+` capture each experiment.
 
 ---
 
+## Phase 3 status update (2026-04-24, post HYP-068)
+
+After HYP-062 + HYP-065 both REJECTED at HYP-058's `s8k × c1` cell,
+HYP-068 measured the workload re-baseline at longer context and
+**confirmed the rejections were Amdahl-bound, not patch-quality bound**.
+TQ overhead grows from 22 % of TQ TPOT (s8k) to 45–53 % at s32k × c1.
+
+**New primary Phase 3 cell**: `4bit_nc / 3bit_nc × s32k × c1`. HYP-058's
+`s8k × c1` becomes a regression-guard cell only.
+
+Next active HYP: HYP-062 retry at the new cell. Then HYP-063 (centroid
+SMEM pre-stage) at the same cell. See
+`docs/hypotheses/HYP-068-extended-workload-baseline.md` for the full
+table that motivates this pivot.
+
 ## Now — Phase 1: Baseline lock
 
 Reproduce HYP-057 on a fresh Forge run, capture reference nsys + ncu

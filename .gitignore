@@ -1,2 +1,12 @@
 .env
 .claude/worktrees/
+
+# Profiling traces — large binary, machine-specific, trip GitHub secret-scan.
+*.nsys-rep
+*.ncu-rep
+*.sqlite
+
+# Python build/cache pollution
+__pycache__/
+*.pyc
+*.egg-info/
