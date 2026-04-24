@@ -1,0 +1,60 @@
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=1, BLOCK_KV=4, adaptive_splits=1, split_factor=8)
+(APIServer pid=9702) WARNING 04-24 02:31:39 [model.py:2023] Casting torch.bfloat16 to torch.float16.
+(APIServer pid=9702) WARNING 04-24 02:31:39 [arg_utils.py:1982] TurboQuant is not yet compatible with FlashAttention >= 3. Overriding flash_attn_version to 2. To silence this warning, pass --attention-config.flash_attn_version=2
+(APIServer pid=9702) WARNING 04-24 02:31:39 [vllm.py:892] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(APIServer pid=9702) WARNING 04-24 02:31:39 [vllm.py:903] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore pid=9923) [tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=1, BLOCK_KV=4, adaptive_splits=1, split_factor=8)
+(EngineCore pid=9923) Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+(EngineCore pid=9923) Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:09<00:27,  9.08s/it]
+(EngineCore pid=9923) Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:19<00:20, 10.15s/it]
+(EngineCore pid=9923) Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:30<00:10, 10.31s/it]
+(EngineCore pid=9923) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:31<00:00,  6.72s/it]
+(EngineCore pid=9923) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:31<00:00,  7.93s/it]
+(EngineCore pid=9923) 
+(EngineCore pid=9923) WARNING 04-24 02:32:27 [vllm.py:892] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore pid=9923) WARNING 04-24 02:32:27 [vllm.py:903] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(APIServer pid=9702) WARNING 04-24 02:32:27 [model.py:1442] Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'temperature': 0.6, 'top_p': 0.9}`. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+(APIServer pid=9702) INFO:     Started server process [9702]
+(APIServer pid=9702) INFO:     Waiting for application startup.
+(APIServer pid=9702) INFO:     Application startup complete.
+(APIServer pid=9702) INFO:     127.0.0.1:40304 - "GET /health HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:40306 - "GET /health HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35776 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35776 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35800 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35804 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35810 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35816 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35828 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35830 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35836 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35776 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35800 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35804 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35810 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35816 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35828 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35830 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35836 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35776 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35800 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35804 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35810 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35816 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35828 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35830 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35836 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35776 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35800 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35804 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35810 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35816 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35828 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35830 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35836 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     127.0.0.1:35776 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9702) INFO:     Shutting down
+[rank0]:[W424 02:33:40.805033145 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+(APIServer pid=9702) INFO:     Waiting for application shutdown.
+(APIServer pid=9702) INFO:     Application shutdown complete.
+(APIServer pid=9702) INFO:     Finished server process [9702]

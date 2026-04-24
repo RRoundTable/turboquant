@@ -71,10 +71,13 @@ def _patch_triton_kernels() -> None:
         nw = os.environ.get("TQ_DECODE_NUM_WARPS", "1")
         ns = os.environ.get("TQ_DECODE_NUM_STAGES", "1")
         bk = os.environ.get("TQ_DECODE_BLOCK_KV", "4")
+        adaptive = os.environ.get("TQ_ADAPTIVE_SPLITS", "0")
+        factor = os.environ.get("TQ_SPLIT_FACTOR", "auto")
         print(
             f"[tq-plugin] patched triton_turboquant_decode_attention in "
             f"{len(_patched)} module(s) "
-            f"(num_warps={nw}, num_stages={ns}, BLOCK_KV={bk})",
+            f"(num_warps={nw}, num_stages={ns}, BLOCK_KV={bk}, "
+            f"adaptive_splits={adaptive}, split_factor={factor})",
             flush=True,
         )
 

@@ -73,6 +73,19 @@ def make_patched_launcher():
         block_kv = _env_int("TQ_DECODE_BLOCK_KV", 4)
 
         B, Hq, D = query.shape
+
+        # HYP-065: adaptive NUM_KV_SPLITS picker (arch-aware).
+        # Gated on TQ_ADAPTIVE_SPLITS=1. Requires a host sync on seq_lens,
+        # so must run under --enforce-eager (sweep harness does this).
+        if os.environ.get("TQ_ADAPTIVE_SPLITS", "").strip() in ("1", "true", "True"):
+            from turboquant.dispatch import pick_adaptive_splits
+            try:
+                max_kv = int(seq_lens.max().item())
+            except RuntimeError:
+                max_kv = 0
+            max_num_kv_splits = pick_adaptive_splits(
+                B, Hq, max_kv, upstream_max_splits=max_num_kv_splits,
+            )
         Hk = kv_cache.shape[2]
         block_size = kv_cache.shape[1]
         kv_group_size = Hq // Hk

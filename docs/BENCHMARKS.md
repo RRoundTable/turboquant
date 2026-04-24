@@ -333,7 +333,7 @@ filled in as Phase 3+ HYPs land.
 | HYP-062 (joint launch retune) **REJECTED** | `_tq_decode_stage1` | SHA-256 85/85 ✓ | `4bit_nc × 8192 × 1` | 17.50 → 17.46 (best of 27) | **+0.20 %** (noise; below 5 % gate) |
 | HYP-063 (smem centroid pre-stage) | `_tq_decode_stage1` | SHA-256 | TBD | TBD | TBD |
 | HYP-064 (midpoints pre-load) | `_tq_fused_store_mse` | SHA-256 | TBD | TBD | TBD |
-| HYP-065 (adaptive `NUM_KV_SPLITS`) | `TurboQuantMetadataBuilder.build` | mean ±0.002 pp (opt-out) | `3bit_nc × 8192 × 8` (83.4 ms ref) | TBD | TBD |
+| HYP-065 (adaptive `NUM_KV_SPLITS`) **REJECTED** | `decode_stage1` launcher | mean ±0.002 pp ✓ (drift 0.0005) | `4bit_nc × 8192 × 8` (eager) | 69.6 → 87.4 (best of 4) | **−25.5 %** (regression; lower splits hurt) |
 | HYP-066 (`tl.dot` QK fp16 acc) | `_tq_decode_stage1` | mean ±0.002 pp (opt-out) | TBD | TBD | TBD |
 | HYP-067 (`tl.dot` V acc + TMA) | `_tq_decode_stage1` | mean ±0.002 pp (opt-out) | TBD | TBD | TBD |
 

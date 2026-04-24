@@ -91,21 +91,17 @@ turboquant/
   reuse, defaulting to upstream's `(1, 1, 4)` when env vars are
   unset (so the merge is a no-op without `TQ_PATCH_DECODE=1`).
 
-- [ ] **HYP-065** — Adaptive `NUM_KV_SPLITS` per batch-size bucket
-  (**promoted** from "next" to first Phase 3 code HYP after HYP-062).
-  Different lever than HYP-062 — changes the GRID, not block params.
-  Targets the largest absolute gap cell from HYP-058
-  (`3bit_nc × s8192 × c8` +35 ms vs fp16) where SM saturation is
-  plausibly the binding constraint.
-  - Plugin patches `TurboQuantMetadataBuilder.build` (method-level
-    monkey-patch).
-  - **Predicted impact**: 3–6 % TPOT at `concurrency ≥ 8`.
-  - **Gate (opt-out)**: SHA-256 may break — reduction order changes.
-    `mean_score within ±0.002 pp per task` with mathematical
-    justification.
-  - **Files**: `turboquant/vllm_plugin.py` (extend
-    `_patch_triton_kernels()` to also patch
-    `TurboQuantMetadataBuilder.build`).
+- [x] **HYP-065** — Adaptive `NUM_KV_SPLITS` REJECTED 2026-04-24
+  (Forge job `ab6c0a9b`). Direction was wrong: lower splits = longer
+  per-CTA serial work → 19–125 % regression at c=8 cells. Upstream's
+  `splits=32` (capped by cudagraph mid_o buffer shape) is already at
+  the as-aggressive-as-possible setting. To improve we'd need
+  splits > 32, which requires changing the upstream buffer contract
+  (out of plugin scope). Parity passes (max|Δscore|=0.0005). See
+  `docs/hypotheses/HYP-065-adaptive-num-kv-splits.md` for the table.
+  Plugin code (`turboquant/dispatch.py` + adaptive launcher branch)
+  ships as no-op infrastructure — gated on `TQ_ADAPTIVE_SPLITS=1`,
+  default off. `_SM_TARGETS` table ready for H100/H200/B200 sweeps.
 
 - [ ] **HYP-063** — SMEM pre-stage of centroids at decode-kernel entry.
   **Lowered priority after HYP-062.** Different mechanism than HYP-062

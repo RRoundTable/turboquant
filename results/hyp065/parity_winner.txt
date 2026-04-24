@@ -1,0 +1,2 @@
+max_drift=0.0005
+pass=yes

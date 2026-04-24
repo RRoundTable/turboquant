@@ -1,0 +1,36 @@
+[tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=1, BLOCK_KV=4, adaptive_splits=1, split_factor=8)
+(APIServer pid=11659) WARNING 04-24 02:35:39 [model.py:2023] Casting torch.bfloat16 to torch.float16.
+(APIServer pid=11659) WARNING 04-24 02:35:39 [arg_utils.py:1982] TurboQuant is not yet compatible with FlashAttention >= 3. Overriding flash_attn_version to 2. To silence this warning, pass --attention-config.flash_attn_version=2
+(APIServer pid=11659) WARNING 04-24 02:35:39 [vllm.py:892] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(APIServer pid=11659) WARNING 04-24 02:35:39 [vllm.py:903] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore pid=11880) [tq-plugin] patched triton_turboquant_decode_attention in 1 module(s) (num_warps=1, num_stages=1, BLOCK_KV=4, adaptive_splits=1, split_factor=8)
+(EngineCore pid=11880) Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+(EngineCore pid=11880) Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:08<00:25,  8.52s/it]
+(EngineCore pid=11880) Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:19<00:19,  9.80s/it]
+(EngineCore pid=11880) Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:29<00:10, 10.12s/it]
+(EngineCore pid=11880) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:30<00:00,  6.61s/it]
+(EngineCore pid=11880) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:30<00:00,  7.73s/it]
+(EngineCore pid=11880) 
+(EngineCore pid=11880) WARNING 04-24 02:36:25 [vllm.py:892] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore pid=11880) WARNING 04-24 02:36:25 [vllm.py:903] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(APIServer pid=11659) WARNING 04-24 02:36:25 [model.py:1442] Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'temperature': 0.6, 'top_p': 0.9}`. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+(APIServer pid=11659) INFO:     Started server process [11659]
+(APIServer pid=11659) INFO:     Waiting for application startup.
+(APIServer pid=11659) INFO:     Application startup complete.
+(APIServer pid=11659) INFO:     127.0.0.1:49014 - "GET /health HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:49026 - "GET /health HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     127.0.0.1:37706 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=11659) INFO:     Shutting down
+[rank0]:[W424 02:37:08.302448360 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+(APIServer pid=11659) INFO:     Waiting for application shutdown.
+(APIServer pid=11659) INFO:     Application shutdown complete.
+(APIServer pid=11659) INFO:     Finished server process [11659]
